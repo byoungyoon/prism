@@ -25,6 +25,8 @@ export default defineConfig(() => ({
           port: 1421,
         }
       : undefined,
+    // browser preview of remote mode: forward /api to Prism's remote server
+    proxy: { "/api": { target: "http://127.0.0.1:7655", ws: true } },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

@@ -6,6 +6,7 @@ import { api, type CliStatus, type Provider } from "../lib/api";
 import { useApp } from "../store";
 import { Installer } from "./SetupSheet";
 import { LoginTerminal } from "./AccountSheet";
+import { isRemote } from "../lib/transport";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 type Step = "pick" | "install" | "login" | "start";
@@ -59,6 +60,7 @@ export function Onboarding() {
 
   // decide on launch whether the guide is needed, and where to resume it
   useEffect(() => {
+    if (isRemote) return; // setup happens on the Mac itself
     void (async () => {
       try {
         const prefs = await api.prefs();

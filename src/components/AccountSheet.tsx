@@ -4,6 +4,7 @@ import { useApp } from "../store";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, pty, type Account, type CliStatus, type Provider } from "../lib/api";
 import { TerminalView } from "./TerminalView";
+import { isRemote } from "../lib/transport";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
@@ -383,6 +384,11 @@ export function AccountSheet() {
               </button>
             </header>
 
+            {isRemote && (
+              <div className="rounded-xl px-3.5 py-2.5 text-[12.5px]" style={{ background: "var(--chip)" }}>
+                다른 기기에서 보는 중이에요. 계정 로그인·설치는 Mac에서 해주세요.
+              </div>
+            )}
             {accountSheet.reason && (
               <div className="rounded-xl px-3.5 py-2.5 text-[13px]" style={{ background: "rgba(232,161,90,0.14)", border: "1px solid var(--amber)" }}>
                 {accountSheet.reason}

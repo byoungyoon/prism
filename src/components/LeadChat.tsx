@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api } from "../lib/api";
+import { isRemote } from "../lib/transport";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useCurrent } from "../store";
 import type { ChatMsg, TeamSnapshot } from "../lib/api";
@@ -149,7 +150,24 @@ export function LeadChat() {
     }
   };
 
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  /** browser (remote) side: upload the bytes instead of passing local paths */
+  const uploadFiles = async (list: FileList | File[]) => {
+    if (!projectId) return;
+    for (const f of [...list]) {
+      try {
+        const bytes = Array.from(new Uint8Array(await f.arrayBuffer()));
+        const path = await api.attachBytes(projectId, f.name || "첨부파일", bytes);
+        setFiles((x) => [...x, path]);
+      } catch (err) {
+        setError(err);
+      }
+    }
+  };
+
   const pickFiles = async () => {
+    if (isRemote) return fileInput.current?.click();
     const picked = await open({ multiple: true });
     if (picked) void attach(Array.isArray(picked) ? picked : [picked]);
   };
@@ -173,6 +191,7 @@ export function LeadChat() {
 
   // files dragged in from Finder / Explorer
   useEffect(() => {
+    if (isRemote) return; // browsers get HTML drag-and-drop instead (see the section below)
     // the listener arrives asynchronously: if this effect is torn down first (StrictMode
     // mounts twice), drop it as soon as it lands — otherwise every drop attaches twice
     let off: (() => void) | undefined;
@@ -208,7 +227,32 @@ export function LeadChat() {
   const leadLine = !lead ? "출근 전" : lead.status === "work" ? "생각하는 중" : lead.status === "off" ? "퇴근" : "지시 받는 중";
 
   return (
-    <section aria-label="총괄 채팅" className="glass flex max-w-80 min-w-0 flex-[1_1_300px] flex-col overflow-hidden rounded-2xl">
+    <section
+      aria-label="총괄 채팅"
+      className="glass flex max-w-80 min-w-0 flex-[1_1_300px] flex-col overflow-hidden rounded-2xl"
+      onDragOver={(e) => {
+        if (!isRemote) return;
+        e.preventDefault();
+        setDropping(true);
+      }}
+      onDragLeave={() => isRemote && setDropping(false)}
+      onDrop={(e) => {
+        if (!isRemote) return;
+        e.preventDefault();
+        setDropping(false);
+        void uploadFiles(e.dataTransfer.files);
+      }}
+    >
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          if (e.target.files) void uploadFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <div className="flex items-center gap-2.5 px-4 py-3.5" style={{ borderBottom: "1px solid var(--line)" }}>
         <span className="glass-soft flex size-[34px] items-center justify-center rounded-xl">
           <Tower />

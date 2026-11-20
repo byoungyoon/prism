@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useApp, useCurrent } from "../store";
 import type { PresetName } from "../lib/api";
 import { initialOf } from "./AccountSheet";
+import { isRemote } from "../lib/transport";
 import { Bell, Branch, ChevronDown, Moon, PanelLeft, PanelRight, Sun } from "./icons";
 
 const PRESETS: { id: PresetName; label: string }[] = [
@@ -144,7 +145,7 @@ export function TopBar() {
     // left padding keeps clear of the macOS traffic lights
     <header
       data-tauri-drag-region
-      className="relative flex min-h-[52px] flex-wrap items-center gap-2.5 py-1.5 pr-4 pl-[88px]"
+      className={`relative flex min-h-[52px] flex-wrap items-center gap-2.5 py-1.5 pr-4 ${isRemote ? "pl-4" : "pl-[88px]"}`}
       style={{ borderBottom: "1px solid var(--line)" }}
     >
       {!onHome && (

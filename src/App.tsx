@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useCurrent, type View } from "./store";
 import { TopBar } from "./components/TopBar";
@@ -73,8 +73,57 @@ function CenterPanel() {
   );
 }
 
+function useNarrow() {
+  const q = "(max-width: 820px)";
+  const [narrow, setNarrow] = useState(() => window.matchMedia(q).matches);
+  useEffect(() => {
+    const m = window.matchMedia(q);
+    const on = () => setNarrow(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return narrow;
+}
+
+const PHONE_TABS = [
+  { id: "chat", label: "총괄" },
+  { id: "feed", label: "보고" },
+  { id: "board", label: "보드" },
+] as const;
+
 function MainView() {
   const { left, right } = useApp();
+  const narrow = useNarrow();
+  const [tab, setTab] = useState<(typeof PHONE_TABS)[number]["id"]>("chat");
+  const { team } = useCurrent();
+  const pending = team?.chat.filter((m) => (m.permission && !m.permission.answer) || (m.escalation && !m.escalation.answer)).length ?? 0;
+
+  if (narrow)
+    return (
+      <div className="relative flex min-h-0 flex-auto flex-col gap-2 p-2">
+        <div role="tablist" aria-label="화면" className="glass flex gap-0.5 self-center rounded-full p-1">
+          {PHONE_TABS.map((t) => {
+            const on = tab === t.id;
+            return (
+              <button key={t.id} role="tab" aria-selected={on} onClick={() => setTab(t.id)} className="relative flex min-h-9 items-center gap-1.5 rounded-full border-0 bg-transparent px-5 text-[13.5px] font-medium" style={{ color: on ? "#2B2520" : "var(--text)" }}>
+                {on && <motion.span layoutId="phone-tab" className="absolute inset-0 rounded-full" style={{ background: "var(--amber)" }} />}
+                <span className="relative">{t.label}</span>
+                {t.id === "feed" && pending > 0 && (
+                  <span className="relative rounded-full px-1.5 text-[11px] font-semibold" style={{ background: "var(--block)", color: "#fff" }}>
+                    {pending}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {/* panels fill the phone width */}
+        <div className="flex min-h-0 flex-auto flex-col [&>section]:max-w-none [&>section]:flex-auto">
+          {tab === "chat" ? <LeadChat /> : tab === "feed" ? <ReportFeed /> : <TaskBoard />}
+        </div>
+      </div>
+    );
+
   return (
     <div className="relative flex min-h-0 flex-auto gap-3 p-3">
       {left && <LeadChat />}

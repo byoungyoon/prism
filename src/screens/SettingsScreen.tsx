@@ -3,6 +3,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { useApp, useCurrent } from "../store";
 import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, type TeamConfig } from "../lib/api";
 import { EffortPicker, ModelPicker } from "../components/ModelPicker";
+import { RemoteCard } from "../components/RemoteCard";
+import { isRemote } from "../lib/transport";
 import { Bot, Briefcase, ChevronLeft, Tower } from "../components/icons";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
@@ -310,6 +312,8 @@ export function SettingsScreen() {
             </span>
           </Card>
         </div>
+
+        {!isRemote && <RemoteCard />}
 
         <Card title="허락 방식">
           <div role="radiogroup" aria-label="허락 방식" className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>

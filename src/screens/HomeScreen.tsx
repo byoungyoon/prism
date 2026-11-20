@@ -1,6 +1,7 @@
 import { useState, type ReactNode, type SVGProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { isRemote } from "../lib/transport";
 import { modelLabel } from "../data/models";
 import { api, type PresetName, type Project } from "../lib/api";
 import { useApp } from "../store";
@@ -213,9 +214,11 @@ export function HomeScreen() {
             </h1>
             <span className="flex items-center gap-1.5 text-xs text-ink-2">
               <span className="font-mono">{root.replace(/^\/Users\/[^/]+/, "~")}</span>
-              <button type="button" onClick={() => void changeRoot()} className="border-0 bg-transparent p-0 text-xs text-ink-2 underline underline-offset-2">
-                위치 변경
-              </button>
+              {!isRemote && (
+                <button type="button" onClick={() => void changeRoot()} className="border-0 bg-transparent p-0 text-xs text-ink-2 underline underline-offset-2">
+                  위치 변경
+                </button>
+              )}
             </span>
           </div>
 

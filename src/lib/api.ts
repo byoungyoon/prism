@@ -1,6 +1,7 @@
 // Typed wrapper over the Rust backend (src-tauri). Field names mirror the serde camelCase structs.
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { call, on } from "./transport";
 
 export type Role = "lead" | "mgr" | "worker";
 export type AgentStatus = "work" | "wait" | "block" | "done" | "off";
@@ -213,70 +214,83 @@ export interface Prefs {
   onboarded: boolean;
 }
 
+export interface RemoteStatus {
+  enabled: boolean;
+  running: boolean;
+  key: string;
+  /** pairing link (tailnet HTTPS + key) once published */
+  url: string | null;
+  tailscale: { installed: boolean; running: boolean; dnsName: string | null };
+  note: string | null;
+}
+
 export const api = {
-  prefs: () => invoke<Prefs>("prefs_get"),
-  setPrefs: (providers: Provider[], onboarded: boolean) => invoke<Prefs>("prefs_set", { providers, onboarded }),
+  remoteStatus: () => call<RemoteStatus>("remote_status"),
+  setRemote: (on: boolean) => call<RemoteStatus>("remote_set", { on }),
+  remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
+  prefs: () => call<Prefs>("prefs_get"),
+  setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
 
   // agent CLIs
-  cliStatus: () => invoke<CliStatus[]>("cli_status"),
-  cliAutoUpdate: () => invoke<boolean>("cli_auto_update"),
-  setCliAutoUpdate: (on: boolean) => invoke<void>("cli_set_auto_update", { on }),
-  cliInstall: (name: string, cols: number, rows: number) => invoke<number>("cli_install", { name, cols, rows }),
-  cliUpdateNow: () => invoke<CliStatus[]>("cli_update_now"),
-  onCliStatus: (fn: (s: CliStatus[]) => void): Promise<UnlistenFn> => listen<CliStatus[]>("cli://status", (e) => fn(e.payload)),
+  cliStatus: () => call<CliStatus[]>("cli_status"),
+  cliAutoUpdate: () => call<boolean>("cli_auto_update"),
+  setCliAutoUpdate: (on: boolean) => call<void>("cli_set_auto_update", { on }),
+  cliInstall: (name: string, cols: number, rows: number) => call<number>("cli_install", { name, cols, rows }),
+  cliUpdateNow: () => call<CliStatus[]>("cli_update_now"),
+  onCliStatus: (fn: (s: CliStatus[]) => void): Promise<UnlistenFn> => on<CliStatus[]>("cli://status", fn),
 
   // accounts
-  accounts: () => invoke<Account[]>("accounts_list"),
-  addAccount: (provider: Provider, name: string) => invoke<string>("account_add", { provider, name }),
-  removeAccount: (id: string) => invoke<void>("account_remove", { id }),
-  setActiveAccount: (id: string) => invoke<void>("account_set_active", { id }),
-  loginAccount: (id: string, cols: number, rows: number) => invoke<number>("account_login", { id, cols, rows }),
-  logoutAccount: (id: string) => invoke<void>("account_logout", { id }),
+  accounts: () => call<Account[]>("accounts_list"),
+  addAccount: (provider: Provider, name: string) => call<string>("account_add", { provider, name }),
+  removeAccount: (id: string) => call<void>("account_remove", { id }),
+  setActiveAccount: (id: string) => call<void>("account_set_active", { id }),
+  loginAccount: (id: string, cols: number, rows: number) => call<number>("account_login", { id, cols, rows }),
+  logoutAccount: (id: string) => call<void>("account_logout", { id }),
 
-  usage: () => invoke<Usage[]>("usage_get"),
-  refreshUsage: () => invoke<void>("usage_refresh"),
-  onUsage: (fn: (u: Usage[]) => void): Promise<UnlistenFn> => listen<Usage[]>("usage://update", (e) => fn(e.payload)),
-  models: (provider: Provider, home?: string | null) => invoke<ModelInfo[]>("models_list", { provider, home: home ?? null }),
-  attachFiles: (projectId: string, paths: string[]) => invoke<string[]>("attach_files", { projectId, paths }),
-  attachBytes: (projectId: string, name: string, data: number[]) => invoke<string>("attach_bytes", { projectId, name, data }),
+  usage: () => call<Usage[]>("usage_get"),
+  refreshUsage: () => call<void>("usage_refresh"),
+  onUsage: (fn: (u: Usage[]) => void): Promise<UnlistenFn> => on<Usage[]>("usage://update", fn),
+  models: (provider: Provider, home?: string | null) => call<ModelInfo[]>("models_list", { provider, home: home ?? null }),
+  attachFiles: (projectId: string, paths: string[]) => call<string[]>("attach_files", { projectId, paths }),
+  attachBytes: (projectId: string, name: string, data: number[]) => call<string>("attach_bytes", { projectId, name, data }),
 
   // projects
-  projects: () => invoke<Project[]>("projects_list"),
-  workspaceRoot: () => invoke<string>("workspace_root"),
-  setWorkspaceRoot: (path: string) => invoke<Project[]>("workspace_set_root", { path }),
-  createProject: (name: string) => invoke<Project>("project_create", { name }),
-  touchProject: (id: string) => invoke<Project>("project_touch", { id }),
-  setTeam: (id: string, team: TeamConfig) => invoke<Project>("project_set_team", { id, team }),
-  setPreset: (id: string, preset: PresetName) => invoke<Project>("project_set_preset", { id, preset }),
-  worktrees: (path: string) => invoke<WorktreeInfo[]>("worktrees_list", { path }),
-  gitChanges: (cwd: string) => invoke<GitChange[]>("git_changes", { cwd }),
-  gitDiff: (cwd: string, path: string) => invoke<string>("git_diff", { cwd, path }),
+  projects: () => call<Project[]>("projects_list"),
+  workspaceRoot: () => call<string>("workspace_root"),
+  setWorkspaceRoot: (path: string) => call<Project[]>("workspace_set_root", { path }),
+  createProject: (name: string) => call<Project>("project_create", { name }),
+  touchProject: (id: string) => call<Project>("project_touch", { id }),
+  setTeam: (id: string, team: TeamConfig) => call<Project>("project_set_team", { id, team }),
+  setPreset: (id: string, preset: PresetName) => call<Project>("project_set_preset", { id, preset }),
+  worktrees: (path: string) => call<WorktreeInfo[]>("worktrees_list", { path }),
+  gitChanges: (cwd: string) => call<GitChange[]>("git_changes", { cwd }),
+  gitDiff: (cwd: string, path: string) => call<string>("git_diff", { cwd, path }),
 
   // team
-  startTeam: (projectId: string, cwd?: string) => invoke<TeamSnapshot>("team_start", { projectId, cwd: cwd ?? null }),
-  stopTeam: (projectId: string) => invoke<void>("team_stop", { projectId }),
-  getTeam: (projectId: string) => invoke<TeamSnapshot | null>("team_get", { projectId }),
-  sendToLead: (projectId: string, text: string) => invoke<void>("lead_send", { projectId, text }),
+  startTeam: (projectId: string, cwd?: string) => call<TeamSnapshot>("team_start", { projectId, cwd: cwd ?? null }),
+  stopTeam: (projectId: string) => call<void>("team_stop", { projectId }),
+  getTeam: (projectId: string) => call<TeamSnapshot | null>("team_get", { projectId }),
+  sendToLead: (projectId: string, text: string) => call<void>("lead_send", { projectId, text }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
-    invoke<void>("escalation_answer", { projectId, msgId, answer }),
+    call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>
-    invoke<void>("permission_answer", { projectId, msgId, answer }),
-  taskFiles: (projectId: string, taskId: string) => invoke<FileStat[]>("task_files", { projectId, taskId }),
-  taskDiff: (projectId: string, taskId: string, path: string) => invoke<string>("task_diff", { projectId, taskId, path }),
-  taskFile: (projectId: string, taskId: string, path: string) => invoke<string>("task_file", { projectId, taskId, path }),
+    call<void>("permission_answer", { projectId, msgId, answer }),
+  taskFiles: (projectId: string, taskId: string) => call<FileStat[]>("task_files", { projectId, taskId }),
+  taskDiff: (projectId: string, taskId: string, path: string) => call<string>("task_diff", { projectId, taskId, path }),
+  taskFile: (projectId: string, taskId: string, path: string) => call<string>("task_file", { projectId, taskId, path }),
   messageAgent: (projectId: string, agentId: string, text: string) =>
-    invoke<void>("agent_message", { projectId, agentId, text }),
+    call<void>("agent_message", { projectId, agentId, text }),
   setAgentModel: (projectId: string, agentId: string, model: string) =>
-    invoke<void>("agent_set_model", { projectId, agentId, model }),
-  killAgent: (projectId: string, agentId: string) => invoke<void>("agent_kill", { projectId, agentId }),
-  pauseAgent: (projectId: string, agentId: string) => invoke<void>("agent_pause", { projectId, agentId }),
-  resumeAgent: (projectId: string, agentId: string) => invoke<void>("agent_resume", { projectId, agentId }),
+    call<void>("agent_set_model", { projectId, agentId, model }),
+  killAgent: (projectId: string, agentId: string) => call<void>("agent_kill", { projectId, agentId }),
+  pauseAgent: (projectId: string, agentId: string) => call<void>("agent_pause", { projectId, agentId }),
+  resumeAgent: (projectId: string, agentId: string) => call<void>("agent_resume", { projectId, agentId }),
 
-  transcript: (projectId: string, agentId: string) => invoke<TranscriptEntry[]>("agent_transcript", { projectId, agentId }),
+  transcript: (projectId: string, agentId: string) => call<TranscriptEntry[]>("agent_transcript", { projectId, agentId }),
   onEntry: (fn: (e: { projectId: string; agentId: string; entry: TranscriptEntry }) => void): Promise<UnlistenFn> =>
-    listen<{ projectId: string; agentId: string; entry: TranscriptEntry }>("agent://entry", (e) => fn(e.payload)),
+    on<{ projectId: string; agentId: string; entry: TranscriptEntry }>("agent://entry", fn),
   onSnapshot: (fn: (s: TeamSnapshot) => void): Promise<UnlistenFn> =>
-    listen<TeamSnapshot>("team://snapshot", (e) => fn(e.payload)),
+    on<TeamSnapshot>("team://snapshot", fn),
 };
 
 // ── terminals ─────────────────────────────────────────

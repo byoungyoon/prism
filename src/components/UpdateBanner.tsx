@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { isRemote } from "../lib/transport";
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 
@@ -14,7 +15,7 @@ export function UpdateBanner() {
   const [later, setLater] = useState(false);
 
   useEffect(() => {
-    if (import.meta.env.DEV) return; // dev builds aren't released
+    if (import.meta.env.DEV || isRemote) return; // dev builds aren't released; remote viewers update via the Mac
     const look = () =>
       void check()
         .then((u) => u && setUpdate(u))

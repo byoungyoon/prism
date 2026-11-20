@@ -4,6 +4,7 @@ mod launch;
 mod projects;
 mod prompts;
 mod pty;
+mod remote;
 mod server;
 mod structured;
 mod sys;
@@ -39,6 +40,8 @@ pub fn run() {
             app.manage(projects::Projects::load(&handle));
             app.manage(accounts::Accounts::load(&handle));
             app.manage(clis::CliState::load(&handle));
+            app.manage(remote::Remote::load(&handle));
+            remote::restore(handle.clone());
 
             let (listener, port) = tauri::async_runtime::block_on(server::bind());
             let token = uuid::Uuid::new_v4().simple().to_string();
@@ -72,6 +75,9 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            remote::remote_status,
+            remote::remote_set,
+            remote::remote_new_key,
             clis::cli_status,
             clis::cli_auto_update,
             clis::cli_set_auto_update,
