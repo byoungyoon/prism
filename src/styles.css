@@ -1,0 +1,307 @@
+@import "tailwindcss";
+@import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+@import "@xterm/xterm/css/xterm.css";
+
+/* Design tokens — from the Claude Design canvas (Main.dc.html), docs/DESIGN.md §5 */
+.t-light {
+  --bg1: #efe6d8;
+  --bg2: #f7f2ea;
+  --glass: rgba(255, 255, 255, 0.45);
+  --glass2: rgba(255, 255, 255, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.7);
+  --shadow: 0 20px 40px rgba(120, 90, 50, 0.15);
+  --hi: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  --text: #2b2520;
+  --text2: #6b6055;
+  --line: rgba(43, 37, 32, 0.1);
+  --amber: #e8a15a;
+  --navy: #2f3e66;
+  --sky: #bfd4e6;
+  --work: #7fb08a;
+  --wait: #e2b866;
+  --block: #d9725f;
+  --done: #9a9188;
+  --work-ink: #3f6b4a;
+  --wait-ink: #7d5a12;
+  --block-ink: #a4432f;
+  --plane: rgba(255, 255, 255, 0.34);
+  --plane-hi: rgba(255, 255, 255, 0.58);
+  --plane-border: rgba(255, 255, 255, 0.85);
+  --plane-shadow: 0 30px 50px rgba(120, 90, 50, 0.16);
+  --tile: rgba(255, 255, 255, 0.72);
+  --blob1: rgba(232, 161, 90, 0.32);
+  --blob2: rgba(191, 212, 230, 0.7);
+  --chip: rgba(47, 62, 102, 0.08);
+  --me-bg: #2f3e66;
+  --me-fg: #f7f2ea;
+  --block-bg: rgba(217, 114, 95, 0.1);
+  --term-bg: #221d18;
+  color-scheme: light;
+}
+
+.t-dark {
+  --bg1: #1c1814;
+  --bg2: #2a231c;
+  --glass: rgba(255, 248, 238, 0.06);
+  --glass2: rgba(255, 248, 238, 0.1);
+  --glass-border: rgba(255, 240, 220, 0.14);
+  --shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  --hi: inset 0 1px 0 rgba(255, 240, 220, 0.08);
+  --text: #f3ece2;
+  --text2: #a89c8e;
+  --line: rgba(255, 240, 220, 0.1);
+  --amber: #f0b070;
+  --navy: #8fa3d6;
+  --sky: #5f7fa0;
+  --work: #7fb08a;
+  --wait: #e2b866;
+  --block: #d9725f;
+  --done: #9a9188;
+  --work-ink: #9ccba6;
+  --wait-ink: #e2b866;
+  --block-ink: #ee9a88;
+  --plane: rgba(255, 248, 238, 0.06);
+  --plane-hi: rgba(255, 248, 238, 0.13);
+  --plane-border: rgba(255, 240, 220, 0.24);
+  --plane-shadow: 0 0 40px rgba(240, 176, 112, 0.14);
+  --tile: rgba(255, 248, 238, 0.12);
+  --blob1: rgba(240, 176, 112, 0.16);
+  --blob2: rgba(95, 127, 160, 0.22);
+  --chip: rgba(143, 163, 214, 0.14);
+  --me-bg: #8fa3d6;
+  --me-fg: #1c1814;
+  --block-bg: rgba(217, 114, 95, 0.14);
+  --term-bg: #17130f;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-ink: var(--text);
+  --color-ink-2: var(--text2);
+  --color-line: var(--line);
+  --color-amber: var(--amber);
+  --color-navy: var(--navy);
+  --color-sky: var(--sky);
+  --color-chip: var(--chip);
+  --color-glass2: var(--glass2);
+  --color-term: var(--term-bg);
+  --color-st-working: var(--work);
+  --color-st-waiting: var(--wait);
+  --color-st-blocked: var(--block);
+  --color-st-done: var(--done);
+  --font-sans: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", D2Coding, Menlo, Consolas, monospace;
+}
+
+@utility glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow), var(--hi);
+}
+
+@utility glass-soft {
+  background: var(--glass2);
+  border: 1px solid var(--glass-border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg2);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  user-select: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+input {
+  user-select: text;
+}
+
+/* ── status motion ─────────────────────────────── */
+.s-work {
+  animation: breathe 2s ease-in-out infinite;
+}
+.s-block {
+  animation: alarm 0.8s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+@keyframes alarm {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.35);
+  }
+}
+
+/* escalation ring: worker → manager → lead, staggered by d1/d2 */
+.ring {
+  position: absolute;
+  inset: -5px;
+  border-radius: 15px;
+  border: 2px solid var(--block);
+  opacity: 0;
+  animation: ringUp 2.4s ease-out infinite;
+  pointer-events: none;
+}
+.d1 {
+  animation-delay: 0.3s;
+}
+.d2 {
+  animation-delay: 0.6s;
+}
+@keyframes ringUp {
+  0% {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  8% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ── layer stack ───────────────────────────────── */
+.gap-c {
+  --gap: 84px;
+}
+.gap-o {
+  --gap: 140px;
+}
+.tz {
+  transition:
+    transform 460ms cubic-bezier(0.22, 1.25, 0.36, 1),
+    background-color 200ms,
+    box-shadow 200ms;
+}
+
+/* task packets travelling between planes */
+.pk {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+}
+.pk-down,
+.pk-down2 {
+  background: var(--amber);
+  box-shadow:
+    0 0 0 3px rgba(232, 161, 90, 0.25),
+    0 0 18px 5px rgba(232, 161, 90, 0.55);
+}
+.pk-down {
+  animation: pkDown 2.8s ease-in-out infinite;
+}
+.pk-down2 {
+  animation: pkDown2 2.8s ease-in-out 1.4s infinite;
+}
+.pk-up {
+  background: var(--navy);
+  box-shadow: 0 0 16px 4px rgba(143, 163, 214, 0.6);
+  animation: pkUp 3.4s ease-in-out 0.7s infinite;
+}
+@keyframes pkDown {
+  0% {
+    transform: translate3d(170px, 190px, calc(var(--gap) * 2 + 24px));
+    opacity: 0;
+  }
+  15%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(118px, 196px, calc(var(--gap) + 24px));
+    opacity: 0;
+  }
+}
+@keyframes pkDown2 {
+  0% {
+    transform: translate3d(222px, 196px, calc(var(--gap) + 24px));
+    opacity: 0;
+  }
+  15%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(214px, 236px, 24px);
+    opacity: 0;
+  }
+}
+@keyframes pkUp {
+  0% {
+    transform: translate3d(130px, 156px, 24px);
+    opacity: 0;
+  }
+  15%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(118px, 196px, calc(var(--gap) + 24px));
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pk-down,
+  .pk-down2,
+  .pk-up {
+    display: none;
+  }
+  .ring {
+    animation: none;
+  }
+  .s-block {
+    animation: breathe 2s ease-in-out infinite;
+  }
+  .tz {
+    transition:
+      background-color 200ms,
+      box-shadow 200ms;
+  }
+}
+
+/* xterm: transparent viewport so the rounded container shows */
+.xterm,
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
