@@ -54,6 +54,7 @@ fn http() -> reqwest::blocking::Client {
 // ── Claude ────────────────────────────────────────────
 
 /// Keychain service for a config dir: "Claude Code-credentials" or "…-<sha256(dir)[..8]>".
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn claude_service(config_dir: Option<&str>) -> String {
     match config_dir {
         None => "Claude Code-credentials".into(),
@@ -64,10 +65,12 @@ fn claude_service(config_dir: Option<&str>) -> String {
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn hex8(bytes: &[u8]) -> String {
     bytes.iter().take(4).map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn keychain_account() -> String {
     let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
     if !user.is_empty() && user.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) { user } else { "claude-code-user".into() }

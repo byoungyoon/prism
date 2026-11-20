@@ -163,6 +163,7 @@ fn antigravity_status() -> AuthStatus {
         return AuthStatus { auth_method: "missing".into(), ..Default::default() };
     }
     let file = std::env::home_dir().map(|h| h.join(".gemini").join("antigravity-cli").join("antigravity-oauth-token"));
+    #[allow(unused_mut)] // only macOS also checks the Keychain
     let mut logged_in = file.is_some_and(|f| f.exists());
     #[cfg(target_os = "macos")]
     if !logged_in {
