@@ -8,6 +8,7 @@ import { TaskBoard } from "./components/TaskBoard";
 import { ReportFeed } from "./components/ReportFeed";
 import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { HomeScreen } from "./screens/HomeScreen";
 import { FocusScreen } from "./screens/FocusScreen";
 import { AgentScreen } from "./screens/AgentScreen";
@@ -178,6 +179,7 @@ export default function App() {
 
       <AccountSheet />
       <Onboarding />
+      <UpdateBanner />
       <ErrorToast />
     </div>
   );

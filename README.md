@@ -24,11 +24,30 @@ pnpm tauri dev          # 개발 실행
 pnpm tauri build        # 현재 OS용 빌드
 ```
 
+릴리스 빌드는 업데이트 서명 키가 필요해요 (`~/.tauri/prism.key`, 비밀번호는 `~/.tauri/prism.key.password`):
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/prism.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat ~/.tauri/prism.key.password)"
+```
+
 Windows 설치 파일을 macOS에서 만들기 (cargo-xwin, llvm, lld, nsis 필요):
 
 ```bash
 PATH=/opt/homebrew/opt/llvm/bin:$PATH pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 ```
+
+## 자동 업데이트 / 릴리스
+
+설치된 앱은 켤 때와 6시간마다 GitHub Releases의 `latest.json`을 확인하고, 새 버전이 있으면 한 번에 업데이트해요 (서명 검증 후 설치).
+
+새 버전 내기:
+
+1. `src-tauri/tauri.conf.json`과 `package.json`의 `version`을 올리고 커밋
+2. `git tag v<버전> && git push origin v<버전>`
+3. GitHub Actions(`.github/workflows/release.yml`)가 macOS(Apple Silicon·Intel)·Windows를 빌드해 Release와 `latest.json`을 올려요
+
+레포 Secrets에 `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`가 있어야 해요. 개인키를 잃어버리면 기존 설치본에 업데이트를 보낼 수 없으니 꼭 백업해 두세요.
 
 - 프론트엔드: React 19 · TypeScript · Tailwind 4 · Motion · zustand (`src/`)
 - 백엔드: Tauri 2 · Rust (`src-tauri/src/`)

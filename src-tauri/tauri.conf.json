@@ -47,6 +47,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYyQTA2QjZFODFERURENTkKUldSWjNkNkJibXVnOG1BcWd5a2M0Ull0S013UERSMVUxTzdVKzd3RlNDWENnMURINEZDYUdEUHQK",
+      "endpoints": [
+        "https://github.com/byoungyoon/prism/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
