@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api } from "../lib/api";
@@ -410,6 +410,11 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chat.length]);
+
+  // changing the filter lands on the newest message, whatever was in view before
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [view]);
 
   const attach = async (paths: string[]) => {
     if (!projectId || !paths.length) return;

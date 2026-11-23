@@ -1,7 +1,7 @@
 // One conversation with every 총괄 at work. Everything they say lands in a single timeline (each
 // line says which team), and orders go out from one box. Every order names its recipients with
 // "@팀이름" — there is no default and no send-to-all. Attachments are copied to each recipient.
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
@@ -83,6 +83,11 @@ export function UnifiedChat() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [items.length]);
+
+  // changing the filter lands on the newest message, whatever was in view before
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [view]);
 
   const live = (t?: TeamSnapshot) => !!t?.agents.some((a) => a.role === "lead" && a.status !== "off");
   const { ids: mentioned, body } = parse(draft, teams);
