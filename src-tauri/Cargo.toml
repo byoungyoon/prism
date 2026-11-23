@@ -1,6 +1,6 @@
 [package]
 name = "prism"
-version = "0.2.4"
+version = "0.2.5"
 description = "Custom Orca: parallel AI coding agents in git worktrees"
 authors = ["byoungyoon"]
 edition = "2024"
