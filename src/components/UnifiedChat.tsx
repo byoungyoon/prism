@@ -12,6 +12,7 @@ import { clock } from "../data/types";
 import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
 import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
+import { ReportFold, isReport } from "./ReportFold";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -268,6 +269,8 @@ export function UnifiedChat() {
                 </span>
                 {it.m.kind === "escalation" ? (
                   <EscalationCard m={it.m} team={team.team} projectId={it.pid} />
+                ) : isReport(it.m.text) ? (
+                  <ReportFold text={it.m.text} />
                 ) : (
                   <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{it.m.text}</div>
                 )}

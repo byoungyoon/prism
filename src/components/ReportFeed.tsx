@@ -8,6 +8,8 @@ import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, 
 import { TeamTag } from "./TeamTag";
 import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
+import { ChevronDown } from "./icons";
+import { FailPill } from "./ReportFold";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -300,7 +302,10 @@ function FollowUp({ project, target, who }: { project: Project; target: Task; wh
   );
 }
 
-function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project }) {
+/** A finished piece of work folds to one line unless opened; `fold` is absent while work is still going. */
+type Fold = { open: boolean; toggle: () => void };
+
+function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project; fold?: Fold }) {
   const openIn = useApp((s) => s.openIn);
   const open = (id: string) => openIn(project.id, { name: "agent", id });
   const st = stateOf(task, team);
@@ -314,6 +319,27 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
   // follow-ups go to the newest card in this line of work, so one in progress isn't overtaken
   const target = [task, ...subs.filter((t) => t.followOf)].sort((a, b) => a.createdAt - b.createdAt).pop()!;
   const canFollow = !!target.assignee && target.stage !== "queued";
+  // folded: only the first line of the result shows until the card is opened
+  const shut = !!fold && !fold.open;
+  const firstLine = (leadNote?.text ?? task.summary ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
+
+  const head = (
+    <>
+      <span className="shrink-0 font-mono text-[12px] font-semibold text-ink-2">{task.id}</span>
+      <span role="heading" aria-level={3} className="m-0 min-w-0 flex-auto truncate text-[15px] font-semibold">
+        {task.title}
+      </span>
+      {task.stage === "failed" ? (
+        <FailPill />
+      ) : (
+        <span className="shrink-0 text-[12px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
+          {st.word}
+        </span>
+      )}
+      <span className="shrink-0 text-[11.5px] text-ink-2">· {elapsed(task.updatedAt)} 전</span>
+      {fold && <ChevronDown size={15} className="shrink-0 self-center text-ink-2" style={{ transform: fold.open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }} />}
+    </>
+  );
 
   return (
     <motion.article
@@ -324,14 +350,13 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
       className="glass flex flex-col gap-2.5 rounded-2xl px-4 py-3.5"
       style={{ boxShadow: `${st.problem ? "inset 3px 0 0 var(--block), " : ""}var(--shadow-sm), var(--hi)` }}
     >
-      <header className="flex items-baseline gap-2">
-        <span className="shrink-0 font-mono text-[12px] font-semibold text-ink-2">{task.id}</span>
-        <h3 className="m-0 min-w-0 flex-auto truncate text-[15px] font-semibold">{task.title}</h3>
-        <span className="shrink-0 text-[12px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
-          {st.word}
-        </span>
-        <span className="shrink-0 text-[11.5px] text-ink-2">· {elapsed(task.updatedAt)} 전</span>
-      </header>
+      {fold ? (
+        <button type="button" aria-expanded={fold.open} onClick={fold.toggle} className="flex w-full min-w-0 items-baseline gap-2 border-0 bg-transparent p-0 text-left">
+          {head}
+        </button>
+      ) : (
+        <header className="flex items-baseline gap-2">{head}</header>
+      )}
 
       <div className="flex min-w-0 items-center gap-2 text-[12px] text-ink-2">
         {assignee ? (
@@ -351,8 +376,13 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
         {!finished && !last && task.stage === "running" && <span>· 시작하는 중</span>}
       </div>
 
-      {finished && (task.summary || leadNote) && (
-        <div className="flex flex-col gap-1.5 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
+      {shut && firstLine && (
+        <p className="m-0 truncate pl-0.5 text-[13px]" style={{ color: task.stage === "failed" ? "var(--block-ink)" : "var(--text2)" }}>
+          {firstLine}
+        </p>
+      )}
+      {finished && !shut && (task.summary || leadNote) && (
+        <div className="flex flex-col gap-1.5 rounded-xl px-3 py-2.5" style={{ background: task.stage === "failed" ? "var(--block-bg)" : "var(--glass2)" }}>
           {leadNote ? (
             <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{leadNote.text}</p>
           ) : (
@@ -361,9 +391,9 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
           {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? "작업자"}: {task.summary}</p>}
         </div>
       )}
-      {finished && task.stage !== "failed" && <Results task={task} pid={project.id} />}
+      {finished && !shut && task.stage !== "failed" && <Results task={task} pid={project.id} />}
 
-      {subs.length > 0 && (
+      {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
           <span className="flex items-center gap-2 px-2 pt-1 text-[11.5px] text-ink-2">
             {subs.some((t) => !t.followOf) ? "하위 작업" : "이어서 한 일"} {doneSubs}/{subs.length} 완료
@@ -376,7 +406,7 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
           ))}
         </div>
       )}
-      {canFollow && <FollowUp project={project} target={target} who={team.agents.find((a) => a.id === target.assignee)?.name ?? "담당자"} />}
+      {canFollow && !shut && <FollowUp project={project} target={target} who={team.agents.find((a) => a.id === target.assignee)?.name ?? "담당자"} />}
     </motion.article>
   );
 }
@@ -408,6 +438,15 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   const active = sorted.filter((t) => eff(t) < ORDER.done);
   const done = sorted.filter((t) => eff(t) >= ORDER.done);
   const shownDone = allDone ? done : done.slice(0, 3);
+  // a piece of work is a finished report once nothing on it is still going; reports fold unless opened
+  const settled = (x: Task) => x.stage === "review" || x.stage === "done" || x.stage === "failed";
+  const isSettled = (t: Task) => settled(t) && subsOf(t).every(settled);
+  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  const isOpen = (t: Task) => !isSettled(t) || !!opened[t.id];
+  const reports = sorted.filter(isSettled);
+  const anyOpen = reports.some(isOpen);
+  const setAll = (open: boolean) => setOpened(Object.fromEntries(reports.map((t) => [t.id, open])));
+  const foldOf = (t: Task): Fold | undefined => (isSettled(t) ? { open: isOpen(t), toggle: () => setOpened((o) => ({ ...o, [t.id]: !isOpen(t) })) } : undefined);
   if (!top.length) return null;
   return (
     <section aria-label={`${project.name} 보고`} className="flex flex-col gap-2.5">
@@ -419,8 +458,13 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
           </span>
         </h2>
       )}
+      {reports.length > 1 && (
+        <button onClick={() => setAll(!anyOpen)} className="self-end border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
+          {anyOpen ? "완료된 보고 모두 접기" : "완료된 보고 모두 펼치기"}
+        </button>
+      )}
       {[...active, ...shownDone].map((t) => (
-        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} />
+        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} fold={foldOf(t)} />
       ))}
       {done.length > 3 && (
         <button onClick={() => setAllDone((v) => !v)} className="self-start border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">

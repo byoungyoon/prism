@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type TranscriptEntry } from "../lib/api";
+import { ReportFold, isReport } from "./ReportFold";
 
 /** Loads an agent's conversation and keeps it live. */
 export function useTranscript(projectId: string | null, agentId: string) {
@@ -28,6 +29,8 @@ const clock = (ms: number) => new Date(ms).toLocaleTimeString("ko-KR", { hour: "
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
 function Row({ e }: { e: TranscriptEntry }) {
+  // a worker's report handed up to this agent: folded like the report feed's cards
+  if (e.kind === "in" && isReport(e.text)) return <ReportFold text={e.text} />;
   if (e.kind === "tool")
     return (
       <div className="flex items-center gap-2 px-1 text-[12px] text-ink-2">
