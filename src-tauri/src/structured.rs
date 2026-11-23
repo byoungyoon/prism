@@ -40,6 +40,50 @@ pub trait Driver: Send + Sync {
     /// Send the user's (or a manager's) message as the next turn.
     fn send(&self, text: &str) -> Result<(), String>;
     fn kill(&self);
+    /// Ask the agent to stop the turn it's on (best effort; `kill` follows when it doesn't).
+    fn cancel(&self) {}
+}
+
+/// Keeps the last few KB of a child's stderr. Every piped stderr must be drained: a CLI that
+/// logs more than the pipe holds (~64 KB) otherwise blocks on its next write and goes silent
+/// mid-turn — no output, no exit, a turn that never ends.
+fn drain_stderr(err: Option<std::process::ChildStderr>) -> Arc<Mutex<String>> {
+    let tail = Arc::new(Mutex::new(String::new()));
+    if let Some(err) = err {
+        let tail = tail.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                let mut t = tail.lock().unwrap();
+                t.push_str(&line);
+                t.push('\n');
+                if t.len() > 4000 {
+                    let mut cut = t.len() - 4000;
+                    while !t.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    t.drain(..cut);
+                }
+            }
+        });
+    }
+    tail
+}
+
+/// The last non-empty stderr line, for "why did it stop".
+fn last_line(tail: &Mutex<String>) -> Option<String> {
+    tail.lock().unwrap().lines().rev().map(str::trim).find(|l| !l.is_empty()).map(String::from)
+}
+
+/// Why a process ended mid-turn, in plain words.
+fn exit_reason(who: &str, code: Option<i32>, tail: &Mutex<String>) -> String {
+    let mut msg = match code {
+        Some(c) => format!("{who} 프로그램이 일하던 중에 끝났어요 (코드 {c})"),
+        None => format!("{who} 프로그램이 일하던 중에 끝났어요"),
+    };
+    if let Some(l) = last_line(tail) {
+        msg += &format!(" — {}", l.chars().take(200).collect::<String>());
+    }
+    msg
 }
 
 /// One line in an agent's conversation, as the UI shows it.
@@ -82,6 +126,8 @@ fn spawn(s: &Spawn) -> Result<Child, String> {
 pub struct Claude {
     stdin: Mutex<Option<ChildStdin>>,
     child: Mutex<Child>,
+    /// a turn was sent and its `result` hasn't come yet
+    busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Claude {
@@ -90,24 +136,11 @@ impl Claude {
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let stderr = child.stderr.take();
-        let me = Arc::new(Self { stdin: Mutex::new(stdin), child: Mutex::new(child) });
+        let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let me = Arc::new(Self { stdin: Mutex::new(stdin), child: Mutex::new(child), busy: busy.clone() });
 
         // stderr: keep the tail for error reporting
-        let tail = Arc::new(Mutex::new(String::new()));
-        if let Some(err) = stderr {
-            let tail = tail.clone();
-            std::thread::spawn(move || {
-                for line in BufReader::new(err).lines().map_while(Result::ok) {
-                    let mut t = tail.lock().unwrap();
-                    t.push_str(&line);
-                    t.push('\n');
-                    if t.len() > 4000 {
-                        let cut = t.len() - 4000;
-                        t.drain(..cut);
-                    }
-                }
-            });
-        }
+        let tail = drain_stderr(stderr);
 
         let weak = Arc::downgrade(&me);
         std::thread::spawn(move || {
@@ -142,19 +175,26 @@ impl Claude {
                             }
                         }
                     }
-                    Some("result") => sink(Event::TurnEnd {
-                        result: v.get("result").and_then(Value::as_str).map(String::from),
-                        cost: v.get("total_cost_usd").and_then(Value::as_f64),
-                        error: v.get("is_error").and_then(Value::as_bool).unwrap_or(false),
-                    }),
+                    Some("result") => {
+                        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                        let error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                        let mut result = v.get("result").and_then(Value::as_str).map(String::from);
+                        if error && result.as_deref().is_none_or(|r| r.trim().is_empty()) {
+                            // an error result without a message still says what kind it was
+                            result = v.get("subtype").and_then(Value::as_str).map(|s| format!("Claude가 오류로 끝났어요 ({s})"));
+                        }
+                        sink(Event::TurnEnd { result, cost: v.get("total_cost_usd").and_then(Value::as_f64), error })
+                    }
                     _ => {}
                 }
             }
             let code = weak.upgrade().and_then(|m| m.child.lock().unwrap().wait().ok()).and_then(|s| s.code());
-            if code.is_some_and(|c| c != 0) {
-                let t = tail.lock().unwrap().clone();
-                if !t.trim().is_empty() {
-                    sink(Event::Text(format!("⚠ {}", t.trim().lines().last().unwrap_or(""))));
+            // died mid-turn: the turn ends here, with the reason (otherwise it'd show "working" forever)
+            if busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                sink(Event::TurnEnd { result: Some(exit_reason("Claude", code, &tail)), cost: None, error: true });
+            } else if code.is_some_and(|c| c != 0) {
+                if let Some(l) = last_line(&tail) {
+                    sink(Event::Text(format!("⚠ {l}")));
                 }
             }
             sink(Event::Exit(code));
@@ -169,12 +209,22 @@ impl Driver for Claude {
         let w = g.as_mut().ok_or("에이전트가 종료됐어요")?;
         let msg = json!({ "type": "user", "message": { "role": "user", "content": text } });
         writeln!(w, "{msg}").map_err(|e| e.to_string())?;
-        w.flush().map_err(|e| e.to_string())
+        w.flush().map_err(|e| e.to_string())?;
+        self.busy.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 
     fn kill(&self) {
         self.stdin.lock().unwrap().take(); // EOF lets it finish cleanly
         let _ = self.child.lock().unwrap().kill();
+    }
+
+    fn cancel(&self) {
+        let mut g = self.stdin.lock().unwrap();
+        if let Some(w) = g.as_mut() {
+            let msg = json!({ "type": "control_request", "request_id": "prism-cancel", "request": { "subtype": "interrupt" } });
+            let _ = writeln!(w, "{msg}").and_then(|_| w.flush());
+        }
     }
 }
 
@@ -236,6 +286,7 @@ impl Codex {
         };
         drop(child.stdin.take());
         let stdout = child.stdout.take();
+        let tail = drain_stderr(child.stderr.take());
         *running = Some(child);
         drop(running);
         (self.sink)(Event::TurnStart);
@@ -298,11 +349,11 @@ impl Codex {
                     _ => {}
                 }
             }
-            if let Some(mut c) = me.running.lock().unwrap().take() {
-                let _ = c.wait();
-            }
+            let child = me.running.lock().unwrap().take();
+            let code = child.and_then(|mut c| c.wait().ok()).and_then(|s| s.code());
             if !ended && !me.killed.load(std::sync::atomic::Ordering::Relaxed) {
-                (me.sink)(Event::TurnEnd { result: Some("Codex가 응답 없이 끝났어요".into()), cost: None, error: true });
+                let why = if code == Some(0) && last_line(&tail).is_none() { "Codex가 응답 없이 끝났어요".to_string() } else { exit_reason("Codex", code, &tail) };
+                (me.sink)(Event::TurnEnd { result: Some(why), cost: None, error: true });
             }
             me.pump();
         });
@@ -378,9 +429,16 @@ pub struct Acp {
     child: Mutex<Child>,
     session: Mutex<Option<String>>,
     busy: std::sync::atomic::AtomicBool,
+    /// id of the `session/prompt` request in flight: its answer (result *or* error) ends the turn
+    prompt: Mutex<Option<u64>>,
     queue: Mutex<std::collections::VecDeque<String>>,
     next_id: std::sync::atomic::AtomicU64,
     sink: Sink,
+}
+
+/// A JSON-RPC id as we got it: agents may use numbers or strings, and a reply must echo it as-is.
+fn rpc_id(v: &Value) -> Option<Value> {
+    v.get("id").filter(|i| i.is_number() || i.is_string()).cloned()
 }
 
 impl Acp {
@@ -397,6 +455,14 @@ impl Acp {
         Ok(id)
     }
 
+    /// End the running turn (whatever ended it) and move on to the next queued prompt.
+    fn finish(&self, result: Option<String>, error: bool) {
+        *self.prompt.lock().unwrap() = None;
+        self.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        (self.sink)(Event::TurnEnd { result, cost: None, error });
+        self.pump();
+    }
+
     /// Send the next queued prompt when the session is ready and idle.
     fn pump(&self) {
         let Some(sid) = self.session.lock().unwrap().clone() else { return };
@@ -408,9 +474,15 @@ impl Acp {
             return;
         };
         (self.sink)(Event::TurnStart);
-        if let Err(e) = self.request("session/prompt", json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] })) {
-            self.busy.store(false, std::sync::atomic::Ordering::SeqCst);
-            (self.sink)(Event::TurnEnd { result: Some(e), cost: None, error: true });
+        // hold the slot while writing so a fast reply can't arrive before we know its id
+        let mut slot = self.prompt.lock().unwrap();
+        match self.request("session/prompt", json!({ "sessionId": sid, "prompt": [{ "type": "text", "text": text }] })) {
+            Ok(id) => *slot = Some(id),
+            Err(e) => {
+                drop(slot);
+                self.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                (self.sink)(Event::TurnEnd { result: Some(e), cost: None, error: true });
+            }
         }
     }
 
@@ -418,14 +490,16 @@ impl Acp {
         let mut child = spawn(&s)?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().ok_or("no stdout")?;
+        let tail = drain_stderr(child.stderr.take());
         let me = Arc::new(Self {
             stdin: Mutex::new(stdin),
             child: Mutex::new(child),
             session: Mutex::new(None),
             busy: Default::default(),
+            prompt: Mutex::new(None),
             queue: Mutex::new(Default::default()),
             next_id: std::sync::atomic::AtomicU64::new(1),
-            sink,
+            sink: sink.clone(),
         });
         let init = me.request(
             "initialize",
@@ -452,21 +526,37 @@ impl Acp {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Some(me) = weak.upgrade() else { break };
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-                let id = v.get("id").and_then(Value::as_u64);
+                let rid = rpc_id(&v);
+                let id = rid.as_ref().and_then(Value::as_u64);
                 let method = v.get("method").and_then(Value::as_str).map(String::from);
-                match (id, method.as_deref()) {
+                match (rid, method.as_deref()) {
                     // our requests' responses
-                    (Some(id), None) => {
+                    (Some(_), None) => {
+                        let Some(id) = id else { continue };
+                        let is_prompt = *me.prompt.lock().unwrap() == Some(id);
                         if let Some(err) = v.get("error") {
-                            let msg = err.get("message").and_then(Value::as_str).unwrap_or("오류").to_string();
+                            let mut msg = err.get("message").and_then(Value::as_str).unwrap_or("오류").to_string();
+                            if let Some(d) = err.get("data").and_then(|d| d.as_str().map(String::from).or_else(|| d.get("message").and_then(Value::as_str).map(String::from))) {
+                                msg += &format!(" ({d})");
+                            }
                             if Some(id) == set_model_id {
                                 // the chosen model isn't available: carry on with Antigravity's default
                                 (me.sink)(Event::Text(format!("⚠ 고른 모델을 쓸 수 없어 기본 모델로 진행해요 ({msg})")));
                                 continue;
                             }
                             let hint = if msg.to_lowercase().contains("auth") { " (계정에서 Google 로그인이 필요해요)" } else { "" };
-                            me.busy.store(false, std::sync::atomic::Ordering::SeqCst);
-                            (me.sink)(Event::TurnEnd { result: Some(format!("{msg}{hint}")), cost: None, error: true });
+                            let why = format!("{msg}{hint}");
+                            if is_prompt {
+                                flush(&mut text, &me); // whatever it had said still shows
+                                last_text.clear();
+                                me.finish(Some(why), true);
+                            } else if id == init || Some(id) == new_session_id {
+                                // no session, so nothing could ever run: say why and stop the process
+                                (me.sink)(Event::TurnEnd { result: Some(format!("Antigravity를 시작하지 못했어요: {why}")), cost: None, error: true });
+                                me.kill();
+                            } else {
+                                (me.sink)(Event::Text(format!("⚠ {why}")));
+                            }
                             continue;
                         }
                         if id == init {
@@ -495,15 +585,21 @@ impl Acp {
                                 }
                                 me.pump();
                             }
-                        } else if v.pointer("/result/stopReason").is_some() {
+                        } else if is_prompt || v.pointer("/result/stopReason").is_some() {
                             // a prompt turn finished
                             let t = flush(&mut text, &me);
                             if !t.is_empty() {
                                 last_text = t;
                             }
-                            me.busy.store(false, std::sync::atomic::Ordering::SeqCst);
-                            (me.sink)(Event::TurnEnd { result: Some(std::mem::take(&mut last_text)), cost: None, error: false });
-                            me.pump();
+                            let stop = v.pointer("/result/stopReason").and_then(Value::as_str).unwrap_or("end_turn");
+                            let result = std::mem::take(&mut last_text);
+                            match stop {
+                                "end_turn" | "cancelled" => me.finish(Some(result), false),
+                                "refusal" => me.finish(Some("에이전트가 이 요청을 거절했어요".into()), true),
+                                // max_tokens, max_turn_requests…: it stopped short, say so
+                                other if result.is_empty() => me.finish(Some(format!("에이전트가 중간에 멈췄어요 ({other})")), true),
+                                _ => me.finish(Some(result), false),
+                            }
                         }
                     }
                     // streaming updates (skipped while session/load replays old history)
@@ -544,7 +640,7 @@ impl Acp {
                             _ => {}
                         }
                     }
-                    // the agent asks us something
+                    // the agent asks us something (its ids may be strings: echo them back as given)
                     (Some(rid), Some("session/request_permission")) => {
                         let params = v.get("params").cloned().unwrap_or(Value::Null);
                         let title = params.pointer("/toolCall/title").and_then(Value::as_str).unwrap_or("도구 사용").to_string();
@@ -557,7 +653,8 @@ impl Acp {
                         let ask = ask.clone();
                         let me2 = me.clone();
                         std::thread::spawn(move || {
-                            let ok = ask(title, raw);
+                            // a panicking approval path must still answer, or the agent waits forever
+                            let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ask(title, raw))).unwrap_or(false);
                             let outcome = match (ok, allow, reject) {
                                 (true, Some(o), _) | (false, _, Some(o)) => json!({ "outcome": "selected", "optionId": o }),
                                 _ => json!({ "outcome": "cancelled" }),
@@ -565,16 +662,24 @@ impl Acp {
                             let _ = me2.write(&json!({ "jsonrpc": "2.0", "id": rid, "result": { "outcome": outcome } }));
                         });
                     }
-                    (Some(rid), Some(_)) => {
-                        let _ = me.write(&json!({ "jsonrpc": "2.0", "id": rid, "error": { "code": -32601, "message": "not supported" } }));
+                    // anything else it asks (fs/terminal we didn't offer…): refuse right away so it doesn't wait on us
+                    (Some(rid), Some(m)) => {
+                        let _ = me.write(&json!({ "jsonrpc": "2.0", "id": rid, "error": { "code": -32601, "message": format!("{m} is not supported by this client") } }));
                     }
                     _ => {}
                 }
             }
-            let code = weak.upgrade().and_then(|m| m.child.lock().unwrap().wait().ok()).and_then(|s| s.code());
-            if let Some(me) = weak.upgrade() {
-                (me.sink)(Event::Exit(code));
+            // stdout closed: the process is gone (or going). Report it even if the driver was
+            // already dropped — a silent end is what leaves the UI "working" forever.
+            let me = weak.upgrade();
+            let code = me.as_ref().and_then(|m| m.child.lock().unwrap().wait().ok()).and_then(|s| s.code());
+            if let Some(me) = &me {
+                if me.busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    *me.prompt.lock().unwrap() = None;
+                    sink(Event::TurnEnd { result: Some(exit_reason("Antigravity", code, &tail)), cost: None, error: true });
+                }
             }
+            sink(Event::Exit(code));
         });
         Ok(me)
     }
@@ -593,6 +698,12 @@ impl Driver for Acp {
     fn kill(&self) {
         self.stdin.lock().unwrap().take();
         let _ = self.child.lock().unwrap().kill();
+    }
+
+    fn cancel(&self) {
+        if let Some(sid) = self.session.lock().unwrap().clone() {
+            let _ = self.write(&json!({ "jsonrpc": "2.0", "method": "session/cancel", "params": { "sessionId": sid } }));
+        }
     }
 }
 
@@ -617,5 +728,76 @@ pub fn run_mcp_bridge(url: &str) {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A fake ACP agent (a shell script): answers initialize (id 1) and session/new (id 2), then `rest`.
+    fn run_fake(rest: &str, ask: Ask) -> mpsc::Receiver<String> {
+        let script = format!(
+            "read l; echo '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\n\
+             read l; echo '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"sessionId\":\"s1\"}}}}'\n{rest}"
+        );
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let sink: Sink = Arc::new(move |ev| {
+            let s = match ev {
+                Event::TurnStart => "start".to_string(),
+                Event::TurnEnd { result, error, .. } => format!("end:{error}:{}", result.unwrap_or_default()),
+                Event::Exit(c) => format!("exit:{c:?}"),
+                _ => return,
+            };
+            let _ = tx.lock().unwrap().send(s);
+        });
+        let spawn = Spawn { program: "sh".into(), args: vec!["-c".into(), script], cwd: ".".into(), env: vec![] };
+        let setup = AcpSetup { cwd: ".".into(), system: String::new(), bridge: ("x".into(), vec![]), model: String::new(), resume: None };
+        let acp = Acp::start(spawn, setup, sink, ask).unwrap();
+        acp.send("hi").unwrap();
+        // keep the driver alive for the test's duration
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            drop(acp);
+        });
+        rx
+    }
+
+    fn next(rx: &mpsc::Receiver<String>) -> String {
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("event")
+    }
+
+    fn no_ask() -> Ask {
+        Arc::new(|_, _| true)
+    }
+
+    #[test]
+    fn prompt_error_ends_the_turn() {
+        let rx = run_fake("read l; echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32000,\"message\":\"boom\"}}'; read l", no_ask());
+        assert_eq!(next(&rx), "start");
+        assert_eq!(next(&rx), "end:true:boom");
+    }
+
+    #[test]
+    fn dying_mid_turn_ends_the_turn() {
+        let rx = run_fake("read l; echo 'fatal: something broke' >&2; exit 3", no_ask());
+        assert_eq!(next(&rx), "start");
+        let end = next(&rx);
+        assert!(end.starts_with("end:true:") && end.contains("코드 3") && end.contains("something broke"), "{end}");
+        assert_eq!(next(&rx), "exit:Some(3)");
+    }
+
+    #[test]
+    fn permission_request_with_string_id_is_answered() {
+        let rest = "read l\n\
+            echo '{\"jsonrpc\":\"2.0\",\"id\":\"p-1\",\"method\":\"session/request_permission\",\"params\":{\"options\":[{\"kind\":\"allow_once\",\"optionId\":\"ok\"}]}}'\n\
+            read r\n\
+            case \"$r\" in *'\"p-1\"'*'\"ok\"'*) echo '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}';; esac\n\
+            read l";
+        let rx = run_fake(rest, no_ask());
+        assert_eq!(next(&rx), "start");
+        assert_eq!(next(&rx), "end:false:");
     }
 }

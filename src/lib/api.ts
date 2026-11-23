@@ -77,6 +77,8 @@ export interface Agent {
   thought?: string | null;
   /** when it last showed any sign of life — tells "slow" from "stuck" */
   lastActive?: number;
+  /** why it looks stuck (long silence, or its process ended unexpectedly): offer "멈추고 다시" */
+  stuck?: string | null;
 }
 
 export interface Task {

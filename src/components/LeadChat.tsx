@@ -371,6 +371,36 @@ export function TeamControls({ project, team }: { project: Project; team?: TeamS
   );
 }
 
+/** The 총괄 went quiet or its program ended: say so and offer a clean restart (same conversation). */
+function StuckBar({ reason, projectId, agentId }: { reason: string; projectId: string; agentId: string }) {
+  const setError = useApp((s) => s.setError);
+  const [busy, setBusy] = useState(false);
+  const restart = async () => {
+    setBusy(true);
+    try {
+      await api.pauseAgent(projectId, agentId);
+      await api.resumeAgent(projectId, agentId);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div role="alert" className="flex items-center gap-2 rounded-xl px-3 py-2 text-[12.5px]" style={{ background: "rgba(220,80,60,0.12)" }}>
+      <span className="min-w-0 flex-auto">⚠ {reason}</span>
+      <button
+        onClick={() => void restart()}
+        disabled={busy}
+        className="shrink-0 rounded-full border-0 px-3 py-1 text-[12px] font-semibold disabled:opacity-60"
+        style={{ background: "var(--block)", color: "#fff" }}
+      >
+        {busy ? "다시 시작하는 중…" : "멈추고 다시"}
+      </button>
+    </div>
+  );
+}
+
 /**
  * One team's 총괄 chat. Without `projectId` it follows the current team. With several teams at
  * work, the 관제탑 stacks one per team (`projectId` + `multi`); touching one makes it the current
@@ -624,6 +654,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
             })}
         </AnimatePresence>
         {lead?.status === "work" && <LiveWork agent={lead} />}
+        {lead?.stuck && projectId && <StuckBar reason={lead.stuck} projectId={projectId} agentId={lead.id} />}
       </div>
 
       <AnimatePresence>
