@@ -116,6 +116,10 @@ body,
 #root {
   height: 100%;
 }
+/* on a phone the keyboard shrinks the visible area; App.tsx publishes it as --app-h */
+#root {
+  height: var(--app-h, 100%);
+}
 
 body {
   margin: 0;
@@ -180,4 +184,38 @@ textarea {
 .xterm,
 .xterm .xterm-viewport {
   background-color: transparent !important;
+}
+
+/* ── phone (≤820px): nothing wider than the screen, thumb-sized buttons, no iOS focus-zoom ── */
+@media (max-width: 820px) {
+  html,
+  body {
+    overflow-x: hidden;
+    overscroll-behavior: none;
+  }
+  /* long commands, branch names and paths wrap instead of poking out */
+  pre,
+  code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+  }
+  pre {
+    overflow-x: auto;
+  }
+  button:where(:not(.xterm *)) {
+    min-height: 40px;
+  }
+  /* small icon buttons: a 40px target without moving the layout much */
+  button:where([class*="size-"]:not(.xterm *)) {
+    min-width: 40px;
+  }
+  input,
+  textarea {
+    font-size: 16px !important;
+  }
+  /* the chat's input box keeps clear of the home bar */
+  section[aria-label$="채팅"] > div:last-child {
+    margin-bottom: 0.5rem;
+  }
 }
