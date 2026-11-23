@@ -12,6 +12,8 @@ import { clock } from "../data/types";
 import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
 import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
+import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
+import { PermissionAsks } from "./PermissionAsks";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -50,6 +52,7 @@ export function UnifiedChat() {
   const [files, setFiles] = useState<Pending[]>([]);
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ query: string; at: number; index: number } | null>(null);
+  const [view, setView] = useState<ChatView>("all");
   const [showSettings, setShowSettings] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -75,6 +78,8 @@ export function UnifiedChat() {
     return out.sort((a, b) => a.at - b.at);
   }, [shown]);
 
+  const shownItems = items.filter((it) => view === "all" || (view === "report") === (it.m.kind === "report"));
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [items.length]);
@@ -84,7 +89,6 @@ export function UnifiedChat() {
   // only who's named, and only teams at work
   const targets = mentioned.filter((id) => live(byId[id]?.team));
   const thinking = shown.filter(({ team }) => team.agents.some((a) => a.role === "lead" && a.status === "work"));
-  const perms = shown.reduce((n, { team }) => n + team.chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length, 0);
 
   // ── @ autocomplete ───────────────────────────────
   const options = menu ? teams.map((t) => t.name).filter((n) => n.toLowerCase().includes(menu.query.toLowerCase())) : [];
@@ -240,6 +244,7 @@ export function UnifiedChat() {
       </div>
 
       {/* one timeline */}
+      {items.some((it) => it.m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {items.length === 0 && (
           <p className="m-auto max-w-[240px] text-center text-[13px] leading-relaxed text-ink-2">
@@ -249,7 +254,7 @@ export function UnifiedChat() {
           </p>
         )}
         <AnimatePresence initial={false}>
-          {items.map((it) => {
+          {shownItems.map((it) => {
             const team = byId[it.pid];
             if (!team) return null;
             if (it.m.kind === "me")
@@ -268,6 +273,13 @@ export function UnifiedChat() {
                 </span>
                 {it.m.kind === "escalation" ? (
                   <EscalationCard m={it.m} team={team.team} projectId={it.pid} />
+                ) : it.m.kind === "report" ? (
+                  <FoldCard
+                    id={it.m.taskIds[0]}
+                    failed={team.team.tasks.find((t) => t.id === it.m.taskIds[0])?.stage === "failed"}
+                    line={firstLine(it.m.text)}
+                    text={it.m.text}
+                  />
                 ) : (
                   <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{it.m.text}</div>
                 )}
@@ -275,7 +287,6 @@ export function UnifiedChat() {
             );
           })}
         </AnimatePresence>
-        {perms > 0 && <span className="self-center rounded-full px-3 py-1 text-[11.5px] text-ink-2" style={{ background: "var(--chip)" }}>허락이 필요한 일 {perms}건 · 가운데 보고에서 처리해요</span>}
         {thinking.map(({ project, team }) => {
           const lead = team.agents.find((a) => a.role === "lead");
           return lead ? <LiveWork key={project.id} agent={lead} label={project.name} /> : null;
@@ -284,6 +295,7 @@ export function UnifiedChat() {
 
       {/* composer */}
       <div className="relative flex flex-col gap-1.5 px-3 pt-2 pb-3" style={{ borderTop: "1px solid var(--line)" }}>
+        <PermissionAsks groups={shown} multi={shown.length > 1} />
         <span className="flex min-w-0 items-center gap-1 text-[11.5px] text-ink-2">
           받는 팀
           {targets.length ? (

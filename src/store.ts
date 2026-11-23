@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { create } from "zustand";
 import { isRemote } from "./lib/transport";
+import { notifyUser } from "./lib/notify";
+import { plainAction } from "./lib/plainAction";
 import { api, LOGIN_REQUIRED, type Account, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 
 export type View =
@@ -117,7 +119,10 @@ export const useApp = create<AppState>((set, get) => {
     setError: (e) => set({ error: e == null ? null : msg(e) }),
 
     init: async () => {
-      await api.onSnapshot((snap) => set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } })));
+      await api.onSnapshot((snap) => {
+        announceAsks(snap, get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀");
+        set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
+      });
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       await get().loadProjects();
@@ -218,6 +223,24 @@ export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status
 /** Waiting for the user: an open question, or a permission request no boss is deciding. */
 export const waitsForMe = (m: { escalation: { answer: string | null } | null; permission: { answer: string | null; decider?: string | null } | null }) =>
   (!!m.escalation && !m.escalation.answer) || (!!m.permission && !m.permission.answer && !m.permission.decider);
+
+/** permission requests already announced by a system notification, as "projectId:msgId" */
+const announced = new Set<string>();
+
+/** Notify once per new request that starts waiting for the user (only when the window is in the background). */
+const announceAsks = (snap: TeamSnapshot, projectName: string) => {
+  const asks = snap.chat.filter((m) => m.permission && waitsForMe(m));
+  const keyOf = (id: number) => `${snap.projectId}:${id}`;
+  const waiting = new Set(asks.map((m) => keyOf(m.id)));
+  for (const k of [...announced]) if (k.startsWith(`${snap.projectId}:`) && !waiting.has(k)) announced.delete(k);
+  const fresh = asks.filter((m) => !announced.has(keyOf(m.id)));
+  if (!fresh.length) return;
+  fresh.forEach((m) => announced.add(keyOf(m.id)));
+  const first = fresh[0].permission!;
+  const who = snap.agents.find((a) => a.id === first.agentId)?.name ?? "팀원";
+  const body = fresh.length > 1 ? `허락이 필요한 일 ${fresh.length}건` : `${who} · ${plainAction(first.tool, first.detail)}`;
+  void notifyUser(`${projectName} · 허락이 필요해요`, body);
+};
 
 /** Teams the 관제탑 shows together: every team at work, plus the open one. */
 export const useShownTeams = () => {

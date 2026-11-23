@@ -10,6 +10,8 @@ import { STATUS } from "../data/types";
 import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
 import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
+import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
+import { PermissionAsks } from "./PermissionAsks";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -383,6 +385,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const switchTeam = useApp((s) => s.switchTeam);
   const selectCard = useApp((s) => s.selectCard);
   const [draft, setDraft] = useState("");
+  const [view, setView] = useState<ChatView>("all");
   const [files, setFiles] = useState<string[]>([]);
   const [dropping, setDropping] = useState(false);
   const setError = useApp((s) => s.setError);
@@ -566,6 +569,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
         {project && <TeamControls project={project} team={team} />}
       </div>
 
+      {chat.some((m) => m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {chat.length === 0 && (
           <p className="m-auto max-w-[220px] text-center text-[13px] leading-relaxed text-ink-2">
@@ -589,6 +593,8 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                   </motion.div>
                 );
               if (m.kind === "permission") return null; // gathered in the report feed
+              if (view === "chat" && m.kind === "report") return null;
+              if (view === "report" && m.kind !== "report") return null;
               if (m.kind === "escalation")
                 return (
                   <motion.div key={m.id} {...bubbleIn}>
@@ -597,25 +603,21 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                 );
               return (
                 <motion.div key={m.id} {...bubbleIn} className="flex max-w-[92%] flex-col gap-2">
-                  <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">
-                    {m.text}
-                  </div>
+                  {m.kind === "report" ? (
+                    <FoldCard
+                      id={m.taskIds[0]}
+                      failed={team.tasks.find((t) => t.id === m.taskIds[0])?.stage === "failed"}
+                      line={firstLine(m.text)}
+                      text={m.text}
+                    />
+                  ) : (
+                    <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{m.text}</div>
+                  )}
                   <Chips ids={m.taskIds} team={team} onPick={pickCard} />
                 </motion.div>
               );
             })}
         </AnimatePresence>
-        {pendingPerms > 0 && (
-          <button
-            onClick={openTeam}
-            className="flex items-center gap-2 self-stretch rounded-[14px] px-3 py-2.5 text-left text-[12.5px]"
-            style={{ background: "rgba(232,161,90,0.12)", border: "1px solid var(--amber)" }}
-          >
-            <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
-            <span className="flex-auto">허락이 필요한 일 {pendingPerms}건 · 보고에서 한 번에 처리</span>
-            <span aria-hidden="true">→</span>
-          </button>
-        )}
         {lead?.status === "work" && <LiveWork agent={lead} />}
       </div>
 
@@ -633,6 +635,11 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
           </motion.div>
         )}
       </AnimatePresence>
+      {team && project && (
+        <div className="mx-3 mb-2">
+          <PermissionAsks groups={[{ project, team }]} multi={multi} />
+        </div>
+      )}
       <div
         onClick={(e) => {
           // the empty space around the box focuses the input (never the attach button)

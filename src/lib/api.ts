@@ -121,7 +121,8 @@ export interface Permission {
 
 export interface ChatMsg {
   id: number;
-  kind: "me" | "lead" | "escalation" | "permission" | "system";
+  /** "report": the 총괄's reply to a worker's report (taskIds[0] is that card) */
+  kind: "me" | "lead" | "report" | "escalation" | "permission" | "system";
   text: string;
   taskIds: string[];
   at: number;

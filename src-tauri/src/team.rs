@@ -166,6 +166,241 @@ fn needs_user(tool: &str, detail: &str, project: &str) -> bool {
     matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") && detail.starts_with('/') && !detail.starts_with(project)
 }
 
+/// Shell commands that only read or check, so they're allowed without asking anyone. Strict: a line split
+/// on `&&` `||` `;` `|` and newlines passes only if every piece is on the list. Anything that writes a file
+/// (other than to /tmp or /dev/null), substitutes a command, backgrounds, or is `needs_user` still asks.
+/// `workspace` is the folder `cd` may move into.
+fn is_safe_readonly(tool: &str, detail: &str, workspace: &str) -> bool {
+    if tool != "Bash" || needs_user(tool, detail, workspace) {
+        return false;
+    }
+    match split_shell(detail) {
+        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace)),
+        None => false,
+    }
+}
+
+/// Splits a shell line into simple commands and drops the redirections it has checked.
+/// `None` = something this check won't vouch for: `$(…)`, backticks, subshells, `&`, or a redirection
+/// other than `2>&1`-style fd dups, `>/dev/null` and `>/tmp/…`.
+fn split_shell(line: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\n' | ';' | '|' => {
+                parts.push(std::mem::take(&mut cur));
+                i += 1;
+            }
+            '&' if chars.get(i + 1) == Some(&'&') => {
+                parts.push(std::mem::take(&mut cur));
+                i += 2;
+            }
+            // `&>` — the `>` is handled on the next pass
+            '&' if chars.get(i + 1) == Some(&'>') => i += 1,
+            '&' | '(' | ')' | '`' => return None,
+            '>' => {
+                // the fd number in front of `>` (the 2 in 2>&1) belongs to the redirection
+                let fd_digit = cur.ends_with(|ch: char| ch.is_ascii_digit()) && cur.chars().rev().nth(1).is_none_or(char::is_whitespace);
+                if fd_digit {
+                    cur.pop();
+                }
+                let mut j = i + 1;
+                if chars.get(j) == Some(&'>') {
+                    j += 1;
+                }
+                while matches!(chars.get(j), Some(' ') | Some('\t')) {
+                    j += 1;
+                }
+                let (ok, end) = if chars.get(j) == Some(&'&') {
+                    let (fd, e) = read_word(&chars, j + 1);
+                    (!fd.is_empty() && fd.chars().all(|d| d.is_ascii_digit()), e)
+                } else {
+                    let (path, e) = read_word(&chars, j);
+                    (path == "/dev/null" || (path.starts_with("/tmp/") && !path.contains("..")), e)
+                };
+                if !ok {
+                    return None;
+                }
+                i = end;
+            }
+            _ => {
+                cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    parts.push(cur);
+    Some(parts)
+}
+
+/// The word starting at `j`, and the index just after it.
+fn read_word(chars: &[char], mut j: usize) -> (String, usize) {
+    let mut w = String::new();
+    while let Some(&c) = chars.get(j) {
+        if c.is_whitespace() || "&|;<>()".contains(c) {
+            break;
+        }
+        w.push(c);
+        j += 1;
+    }
+    (w, j)
+}
+
+/// One simple command (no chaining left in it) on the read-only list.
+fn is_safe_simple(part: &str, workspace: &str) -> bool {
+    let words: Vec<&str> = part.split_whitespace().collect();
+    let Some((&cmd, args)) = words.split_first() else { return false };
+    match cmd {
+        "ls" | "pwd" | "cat" | "head" | "tail" | "wc" | "grep" | "echo" | "which" => true,
+        "rg" => !args.iter().any(|a| *a == "--pre" || a.starts_with("--pre=")),
+        "find" => !args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls" | "-fprint" | "-fprint0" | "-fprintf")),
+        "sed" => is_read_only_sed(args),
+        "git" => is_read_only_git(args),
+        "tsc" => args.contains(&"--noEmit"),
+        "cargo" => args.first() == Some(&"check"),
+        "pnpm" | "npm" => match args.first() {
+            Some(&"build") | Some(&"test") => true,
+            Some(&"exec") => args.get(1) == Some(&"tsc") && args.contains(&"--noEmit"),
+            _ => false,
+        },
+        "cd" => is_inside(args, workspace),
+        _ => false,
+    }
+}
+
+/// `sed -n` that prints: no in-place edit, no -f script file, and no w/W (write) or e (run) in the script.
+fn is_read_only_sed(args: &[&str]) -> bool {
+    let flags: Vec<&str> = args.iter().copied().filter(|a| a.starts_with('-') && !a.starts_with("--")).collect();
+    let quiet = flags.iter().any(|a| a.contains('n')) || args.contains(&"--quiet") || args.contains(&"--silent");
+    let in_place = args.iter().any(|a| a.starts_with("--in-place") || a.starts_with("--file")) || flags.iter().any(|a| a.contains('i') || a.contains('f'));
+    let mut scripts: Vec<&str> = args.windows(2).filter(|w| w[0] == "-e" || w[0] == "--expression").map(|w| w[1]).collect();
+    scripts.extend(args.iter().filter_map(|a| a.strip_prefix("--expression=")));
+    if scripts.is_empty() {
+        scripts.extend(args.iter().find(|a| !a.starts_with('-')).copied());
+    }
+    quiet && !in_place && !scripts.iter().any(|s| s.contains(['w', 'W', 'e']))
+}
+
+/// Read-only git: status/diff/log/show/rev-parse, and `branch` only to list.
+fn is_read_only_git(args: &[&str]) -> bool {
+    let Some((&sub, rest)) = args.split_first() else { return false };
+    if rest.iter().any(|a| a.starts_with("--output")) {
+        return false;
+    }
+    match sub {
+        "status" | "diff" | "log" | "show" | "rev-parse" => true,
+        "branch" => rest.iter().all(|a| matches!(*a, "-a" | "-r" | "-v" | "-vv" | "-l" | "--all" | "--remotes" | "--list" | "--verbose" | "--show-current")),
+        _ => false,
+    }
+}
+
+/// `cd <dir>` where the real (symlink-resolved) directory is inside the workspace.
+fn is_inside(args: &[&str], workspace: &str) -> bool {
+    if args.len() != 1 {
+        return false;
+    }
+    let target = args[0].trim_matches(|c| c == '"' || c == '\'');
+    if target.is_empty() || target == "-" || target.starts_with('~') || target.contains('$') {
+        return false;
+    }
+    match (std::fs::canonicalize(workspace), std::fs::canonicalize(std::path::Path::new(workspace).join(target))) {
+        (Ok(root), Ok(dir)) => dir.starts_with(root),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod safe_readonly_tests {
+    use super::is_safe_readonly;
+
+    /// a real folder to `cd` into: <tmp>/prism-t5-<pid>/work/src
+    fn workspace() -> String {
+        let dir = std::env::temp_dir().join(format!("prism-t5-{}", std::process::id())).join("work");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn read_only_and_check_commands_pass() {
+        let ws = workspace();
+        for cmd in [
+            "ls -la src",
+            "pwd",
+            "git status && git diff --stat",
+            "git log --oneline -5 | head -3",
+            "git branch --show-current",
+            "rg \"fn is_safe\" src | wc -l",
+            "grep -n permission src/team.rs",
+            "find src -name '*.rs' -newer Cargo.toml",
+            "sed -n '1,40p' src/team.rs",
+            "cargo check 2>&1 | tail -5",
+            "cargo check",
+            "tsc --noEmit -p .",
+            "pnpm build",
+            "npm test -- --run",
+            "pnpm exec tsc --noEmit",
+            "echo done >/dev/null 2>&1",
+            "echo ok > /tmp/prism-t5.log",
+            "cd src && ls",
+            "ls\ncat README.md",
+        ] {
+            assert!(is_safe_readonly("Bash", cmd, &ws), "should pass: {cmd}");
+        }
+    }
+
+    #[test]
+    fn writes_risky_and_unlisted_commands_still_ask() {
+        let ws = workspace();
+        for cmd in [
+            "rm -rf target",
+            "ls && rm notes.txt",
+            "echo hi > notes.txt",
+            "echo hi >> notes.txt",
+            "ls 1>out.txt",
+            "sed -i 's/a/b/' src/team.rs",
+            "sed -n '1p;w out.txt' src/team.rs",
+            "sed -n 's/a/b/e' src/team.rs",
+            "curl https://example.com",
+            "echo $(rm -rf x)",
+            "cat `which rm`",
+            "(cd src && ls)",
+            "ls &",
+            "find . -delete",
+            "find . -exec rm {} \\;",
+            "rg --pre sh foo src",
+            "git push",
+            "git -C /tmp status",
+            "git diff --output=out.patch",
+            "git commit -m x",
+            "cargo build",
+            "tsc",
+            "pnpm install",
+            "ls | xargs rm",
+            "ls; mv a b",
+            "echo hi > /tmp/../etc/passwd",
+            "sudo ls",
+            "cat .env",
+            "cd /",
+            "cd ..",
+            "cd ../..",
+            "cd",
+        ] {
+            assert!(!is_safe_readonly("Bash", cmd, &ws), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn only_bash_is_judged_here() {
+        let ws = workspace();
+        assert!(!is_safe_readonly("Edit", "src/team.rs", &ws));
+        assert!(!is_safe_readonly("Write", "notes.txt", &ws));
+    }
+}
+
 /// Outcome of a PermissionRequest hook: decide now, or wait for the user.
 pub enum PermWait {
     Now(&'static str),
@@ -256,6 +491,8 @@ pub struct TeamManager {
     pub token: String,
     data_dir: PathBuf,
     perm_waiters: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<&'static str>>>,
+    /// "project/agent" whose next turn was started by a permission request: its bare reply ("." etc.) stays out of the chat
+    permission_turns: Mutex<std::collections::HashSet<String>>,
     /// structured agents by "project/agent"
     drivers: Mutex<HashMap<String, Arc<dyn crate::structured::Driver>>>,
     /// conversation per structured agent, by "project/agent"
@@ -266,6 +503,21 @@ pub struct TeamManager {
     dirty: Mutex<std::collections::HashSet<String>>,
     /// latest snapshot per team waiting to go to the UI (see `emit`)
     outbox: Mutex<HashMap<String, TeamSnapshot>>,
+    /// "project/agent" whose next turn was started by a worker's report → that card's id. Its reply
+    /// goes to the chat as a 'report' entry, not a plain 'lead' line (see `say_reply`)
+    report_turns: Mutex<HashMap<String, String>>,
+}
+
+/// The 총괄's reply: a 'report' entry when the turn was started by a worker's report (tagged with
+/// that card), otherwise a plain 'lead' line.
+fn say_reply(team: &mut Team, report: Option<String>, text: String) {
+    let kind = if report.is_some() { "report" } else { "lead" };
+    let id = team.say(kind, text, None);
+    if let (Some(tid), Some(m)) = (report, team.chat.iter_mut().find(|m| m.id == id)) {
+        if !m.task_ids.contains(&tid) {
+            m.task_ids.insert(0, tid);
+        }
+    }
 }
 
 /// How long snapshots of one team are gathered before one goes to the UI. A busy team changes many
@@ -320,6 +572,14 @@ fn task_ids_in(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The smallest "W{n}" that no unfinished (not "done") worker is showing. Lone workers' ids never repeat,
+/// so only the shown name is recycled: a new worker can be "W1" while an old finished "W1" sits in the archive.
+fn free_worker_name(team: &Team) -> String {
+    let busy: std::collections::HashSet<&str> =
+        team.agents.iter().filter(|a| a.role == "worker" && a.status != "done").map(|a| a.name.as_str()).collect();
+    (1..).map(|n| format!("W{n}")).find(|s| !busy.contains(s.as_str())).unwrap_or_default()
 }
 
 fn short(s: &str, n: usize) -> String {
@@ -393,7 +653,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -798,17 +1058,18 @@ impl TeamManager {
             }
             _ => {
                 let parent_agent = parent.as_deref().and_then(|p| team.agent_mut(p)).filter(|a| a.role == "mgr");
-                let id = match parent_agent {
+                match parent_agent {
                     Some(p) => {
                         p.children += 1;
-                        format!("{}{}", p.id, p.children)
+                        let id = format!("{}{}", p.id, p.children);
+                        (id.clone(), id, cfg.workers.model.clone())
                     }
                     None => {
+                        // the id stays unique forever; only the name shown is reused once its holder is done
                         team.next_lone += 1;
-                        format!("W{}", team.next_lone)
+                        (format!("W{}", team.next_lone), free_worker_name(team), cfg.workers.model.clone())
                     }
-                };
-                (id.clone(), id, cfg.workers.model.clone())
+                }
             }
         };
         let task = task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).cloned();
@@ -1096,6 +1357,8 @@ impl TeamManager {
             }
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
+                let permission_turn = self.permission_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
+                let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 if let Some(a) = team.agent_mut(aid) {
                     a.thought = None;
                     a.last_active = now_ms();
@@ -1109,8 +1372,10 @@ impl TeamManager {
                 }
                 if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
                     // a turn spent only on a teammate's permission request ends with "—": nothing to tell the user
-                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") {
-                        team.say("lead", text.trim().to_string(), None);
+                    // (the model sometimes answers with another lone mark, so that turn drops any punctuation-only reply)
+                    let bare = text.trim().chars().count() <= 2 && !text.chars().any(char::is_alphanumeric);
+                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") && !(permission_turn && bare) {
+                        say_reply(team, report, text.trim().to_string());
                     }
                     drop(teams);
                     self.push_entry(pid, aid, if error { "error" } else { "done" }, short(&text, 300));
@@ -1366,6 +1631,11 @@ impl TeamManager {
         if team.always_allow.contains(&perm_key(&tool, &detail)) {
             return PermWait::Now("allow");
         }
+        // read-only or check-only commands in the agent's folder: nobody needs to be asked
+        let workspace = team.agent(aid).map(|a| a.cwd.clone()).unwrap_or_else(|| team.cwd.clone());
+        if is_safe_readonly(&tool, &detail, &workspace) {
+            return PermWait::Now("allow");
+        }
         let name = team.name_of(aid);
         // the boss decides first (팀장 for a 작업자, 총괄 for a 팀장) — unless it's risky or nobody's there
         let boss = team
@@ -1384,6 +1654,7 @@ impl TeamManager {
             Some(b) => {
                 let boss_name = team.name_of(b);
                 team.log(format!("{name}이(가) {boss_name}에게 허락을 구한다: {tool} {}", short(&detail, 50)), None);
+                self.permission_turns.lock().unwrap().insert(format!("{pid}/{b}"));
                 self.inject(
                     team,
                     b,
@@ -1500,6 +1771,7 @@ impl TeamManager {
                 }
             }
             "Stop" => {
+                let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 let text = payload
                     .get("last_assistant_message")
                     .and_then(Value::as_str)
@@ -1514,7 +1786,7 @@ impl TeamManager {
                         a.last_note = Some(short(&text, 200));
                     }
                     if agent.role == "lead" {
-                        team.say("lead", text.trim().to_string(), None);
+                        say_reply(team, report, text.trim().to_string());
                     }
                 }
             }
@@ -1702,7 +1974,12 @@ impl TeamManager {
             }
             "message_agent" => {
                 let target = s("agent").ok_or("agent 필요")?;
-                let target = team.agents.iter().find(|a| a.id == target || a.name == target).map(|a| a.id.clone()).ok_or("그런 에이전트가 없어요")?;
+                // a recycled name ("W1") may belong to a finished worker too: the unfinished one wins, then ids
+                let target = team.agents.iter().find(|a| a.name == target && a.status != "done")
+                    .or_else(|| team.agents.iter().find(|a| a.id == target))
+                    .or_else(|| team.agents.iter().find(|a| a.name == target))
+                    .map(|a| a.id.clone())
+                    .ok_or("그런 에이전트가 없어요")?;
                 self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default()));
                 team.set_status(&target, "work");
                 format!("{}에게 전달했어요.", team.name_of(&target))
@@ -1759,6 +2036,7 @@ impl TeamManager {
                     } else {
                         msg += &format!(" — 확인 후 complete_task(\"{tid}\")를 호출하세요.");
                     }
+                    self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
                     team.set_status(&parent, "work");
                     self.inject(team, &parent, msg);
                 }
