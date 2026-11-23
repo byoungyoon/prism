@@ -271,6 +271,19 @@ pub fn warm_models() {
     });
 }
 
+/// Whether agy is signed in, by its own account: it lists models only then ("Auth mode is
+/// unspecified … returning empty response" otherwise). A "no" is re-asked at most every 15 s,
+/// since the account sheet polls while the user signs in and each ask takes ~2 s.
+pub fn agy_signed_in() -> bool {
+    static LAST_NO: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    if LAST_NO.lock().unwrap().is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(15)) {
+        return false;
+    }
+    let yes = !agy_models().is_empty();
+    *LAST_NO.lock().unwrap() = (!yes).then(std::time::Instant::now);
+    yes
+}
+
 /// `agy models`, remembered for a while: one run serves every role (callers queue on the lock).
 fn agy_models() -> Vec<ModelInfo> {
     static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<ModelInfo>)>> = std::sync::Mutex::new(None);

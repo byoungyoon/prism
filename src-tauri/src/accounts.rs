@@ -156,14 +156,15 @@ fn codex_status(dir: Option<&str>) -> AuthStatus {
     AuthStatus { logged_in, auth_method: method.into(), ..Default::default() }
 }
 
-/// Antigravity signs in with a Google account: its credential sits in the macOS Keychain
-/// (service "gemini", account "antigravity") or in a token file. Checked without reading it.
+/// Antigravity signs in with a Google account and keeps the credential in the OS keyring (macOS
+/// Keychain, Windows Credential Manager — service "gemini", account "antigravity") or, without a
+/// keyring, in a token file. Those are checked without reading the secret; if none shows up, agy
+/// itself is asked (it lists models only when signed in).
 fn antigravity_status() -> AuthStatus {
     if sys::which("agy").is_none() {
         return AuthStatus { auth_method: "missing".into(), ..Default::default() };
     }
     let file = std::env::home_dir().map(|h| h.join(".gemini").join("antigravity-cli").join("antigravity-oauth-token"));
-    #[allow(unused_mut)] // only macOS also checks the Keychain
     let mut logged_in = file.is_some_and(|f| f.exists());
     #[cfg(target_os = "macos")]
     if !logged_in {
@@ -172,6 +173,18 @@ fn antigravity_status() -> AuthStatus {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
+    }
+    // go-keyring on Windows stores it as a generic credential named "gemini:antigravity"
+    #[cfg(windows)]
+    if !logged_in {
+        logged_in = sys::command("cmdkey")
+            .arg("/list")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("gemini:antigravity"))
+            .unwrap_or(false);
+    }
+    if !logged_in {
+        logged_in = crate::launch::agy_signed_in();
     }
     AuthStatus { logged_in, auth_method: if logged_in { "google".into() } else { "none".into() }, ..Default::default() }
 }
