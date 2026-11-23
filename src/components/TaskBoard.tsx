@@ -59,11 +59,17 @@ export function TaskBoard() {
   const shown = useShownTeams();
   const multi = shown.length > 1;
   const [logOpen, setLogOpen] = useState(true);
+  const [doneOpen, setDoneOpen] = useState(false);
 
   const tasks = shown.flatMap(({ team }) => team.tasks);
   const count = (stage: string) => tasks.filter((t) => t.stage === stage).length;
+  // finished 팀장·작업자 are folded into one line below; the 총괄 always stays on top
   const members = (team: TeamSnapshot, role: Role) =>
-    team.agents.filter((a) => a.role === role && (a.status !== "off" || role === "lead")).sort((x, y) => x.name.localeCompare(y.name, "ko"));
+    team.agents.filter((a) => a.role === role && (a.status !== "off" || role === "lead") && (a.status !== "done" || role === "lead")).sort((x, y) => x.name.localeCompare(y.name, "ko"));
+  const doneGroups = shown
+    .map(({ project, team }) => ({ project, team, list: team.agents.filter((a) => a.role !== "lead" && a.status === "done").sort((x, y) => x.name.localeCompare(y.name, "ko")) }))
+    .filter((g) => g.list.length);
+  const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
     .flatMap(({ project, team }) => team.events.map((e) => ({ ...e, project })))
@@ -103,6 +109,28 @@ export function TaskBoard() {
             </div>
           );
         })}
+
+        {doneN > 0 && (
+          <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>
+            <button
+              onClick={() => setDoneOpen((v) => !v)}
+              aria-expanded={doneOpen}
+              className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] text-ink-2 hover:bg-[var(--chip)]"
+            >
+              끝난 작업자 {doneN}명
+              <ChevronDown size={13} className="ml-auto" style={{ transform: doneOpen ? undefined : "rotate(-90deg)", transition: "transform 160ms" }} />
+            </button>
+            {doneOpen &&
+              doneGroups.map((g) => (
+                <div key={g.project.id} className="flex flex-col">
+                  {multi && <span className="px-2 pt-1 text-[11px] text-ink-2">{g.project.name}</span>}
+                  {g.list.map((a) => (
+                    <MemberRow key={a.id} a={a} team={g.team} project={g.project} multi={multi} />
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
 
         {unassigned.length > 0 && (
           <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>

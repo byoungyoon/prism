@@ -574,6 +574,14 @@ fn task_ids_in(text: &str) -> Vec<String> {
     out
 }
 
+/// The smallest "W{n}" that no unfinished (not "done") worker is showing. Lone workers' ids never repeat,
+/// so only the shown name is recycled: a new worker can be "W1" while an old finished "W1" sits in the archive.
+fn free_worker_name(team: &Team) -> String {
+    let busy: std::collections::HashSet<&str> =
+        team.agents.iter().filter(|a| a.role == "worker" && a.status != "done").map(|a| a.name.as_str()).collect();
+    (1..).map(|n| format!("W{n}")).find(|s| !busy.contains(s.as_str())).unwrap_or_default()
+}
+
 fn short(s: &str, n: usize) -> String {
     let s = s.trim();
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
@@ -1050,17 +1058,18 @@ impl TeamManager {
             }
             _ => {
                 let parent_agent = parent.as_deref().and_then(|p| team.agent_mut(p)).filter(|a| a.role == "mgr");
-                let id = match parent_agent {
+                match parent_agent {
                     Some(p) => {
                         p.children += 1;
-                        format!("{}{}", p.id, p.children)
+                        let id = format!("{}{}", p.id, p.children);
+                        (id.clone(), id, cfg.workers.model.clone())
                     }
                     None => {
+                        // the id stays unique forever; only the name shown is reused once its holder is done
                         team.next_lone += 1;
-                        format!("W{}", team.next_lone)
+                        (format!("W{}", team.next_lone), free_worker_name(team), cfg.workers.model.clone())
                     }
-                };
-                (id.clone(), id, cfg.workers.model.clone())
+                }
             }
         };
         let task = task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).cloned();
@@ -1965,7 +1974,12 @@ impl TeamManager {
             }
             "message_agent" => {
                 let target = s("agent").ok_or("agent 필요")?;
-                let target = team.agents.iter().find(|a| a.id == target || a.name == target).map(|a| a.id.clone()).ok_or("그런 에이전트가 없어요")?;
+                // a recycled name ("W1") may belong to a finished worker too: the unfinished one wins, then ids
+                let target = team.agents.iter().find(|a| a.name == target && a.status != "done")
+                    .or_else(|| team.agents.iter().find(|a| a.id == target))
+                    .or_else(|| team.agents.iter().find(|a| a.name == target))
+                    .map(|a| a.id.clone())
+                    .ok_or("그런 에이전트가 없어요")?;
                 self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default()));
                 team.set_status(&target, "work");
                 format!("{}에게 전달했어요.", team.name_of(&target))
