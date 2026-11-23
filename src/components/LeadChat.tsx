@@ -11,6 +11,7 @@ import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
 import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
+import { PermissionAsks } from "./PermissionAsks";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -617,17 +618,6 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
               );
             })}
         </AnimatePresence>
-        {pendingPerms > 0 && (
-          <button
-            onClick={openTeam}
-            className="flex items-center gap-2 self-stretch rounded-[14px] px-3 py-2.5 text-left text-[12.5px]"
-            style={{ background: "rgba(232,161,90,0.12)", border: "1px solid var(--amber)" }}
-          >
-            <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
-            <span className="flex-auto">허락이 필요한 일 {pendingPerms}건 · 보고에서 한 번에 처리</span>
-            <span aria-hidden="true">→</span>
-          </button>
-        )}
         {lead?.status === "work" && <LiveWork agent={lead} />}
       </div>
 
@@ -645,6 +635,11 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
           </motion.div>
         )}
       </AnimatePresence>
+      {team && project && (
+        <div className="mx-3 mb-2">
+          <PermissionAsks groups={[{ project, team }]} multi={multi} />
+        </div>
+      )}
       <div
         onClick={(e) => {
           // the empty space around the box focuses the input (never the attach button)

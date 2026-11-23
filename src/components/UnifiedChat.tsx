@@ -13,6 +13,7 @@ import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseNa
 import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
+import { PermissionAsks } from "./PermissionAsks";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -88,7 +89,6 @@ export function UnifiedChat() {
   // only who's named, and only teams at work
   const targets = mentioned.filter((id) => live(byId[id]?.team));
   const thinking = shown.filter(({ team }) => team.agents.some((a) => a.role === "lead" && a.status === "work"));
-  const perms = shown.reduce((n, { team }) => n + team.chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length, 0);
 
   // ── @ autocomplete ───────────────────────────────
   const options = menu ? teams.map((t) => t.name).filter((n) => n.toLowerCase().includes(menu.query.toLowerCase())) : [];
@@ -287,7 +287,6 @@ export function UnifiedChat() {
             );
           })}
         </AnimatePresence>
-        {perms > 0 && <span className="self-center rounded-full px-3 py-1 text-[11.5px] text-ink-2" style={{ background: "var(--chip)" }}>허락이 필요한 일 {perms}건 · 가운데 보고에서 처리해요</span>}
         {thinking.map(({ project, team }) => {
           const lead = team.agents.find((a) => a.role === "lead");
           return lead ? <LiveWork key={project.id} agent={lead} label={project.name} /> : null;
@@ -296,6 +295,7 @@ export function UnifiedChat() {
 
       {/* composer */}
       <div className="relative flex flex-col gap-1.5 px-3 pt-2 pb-3" style={{ borderTop: "1px solid var(--line)" }}>
+        <PermissionAsks groups={shown} multi={shown.length > 1} />
         <span className="flex min-w-0 items-center gap-1 text-[11.5px] text-ink-2">
           받는 팀
           {targets.length ? (
