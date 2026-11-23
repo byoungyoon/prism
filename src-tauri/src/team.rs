@@ -256,6 +256,8 @@ pub struct TeamManager {
     pub token: String,
     data_dir: PathBuf,
     perm_waiters: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<&'static str>>>,
+    /// "project/agent" whose next turn was started by a permission request: its bare reply ("." etc.) stays out of the chat
+    permission_turns: Mutex<std::collections::HashSet<String>>,
     /// structured agents by "project/agent"
     drivers: Mutex<HashMap<String, Arc<dyn crate::structured::Driver>>>,
     /// conversation per structured agent, by "project/agent"
@@ -393,7 +395,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -1096,6 +1098,7 @@ impl TeamManager {
             }
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
+                let permission_turn = self.permission_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 if let Some(a) = team.agent_mut(aid) {
                     a.thought = None;
                     a.last_active = now_ms();
@@ -1109,7 +1112,9 @@ impl TeamManager {
                 }
                 if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
                     // a turn spent only on a teammate's permission request ends with "—": nothing to tell the user
-                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") {
+                    // (the model sometimes answers with another lone mark, so that turn drops any punctuation-only reply)
+                    let bare = text.trim().chars().count() <= 2 && !text.chars().any(char::is_alphanumeric);
+                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") && !(permission_turn && bare) {
                         team.say("lead", text.trim().to_string(), None);
                     }
                     drop(teams);
@@ -1384,6 +1389,7 @@ impl TeamManager {
             Some(b) => {
                 let boss_name = team.name_of(b);
                 team.log(format!("{name}이(가) {boss_name}에게 허락을 구한다: {tool} {}", short(&detail, 50)), None);
+                self.permission_turns.lock().unwrap().insert(format!("{pid}/{b}"));
                 self.inject(
                     team,
                     b,
