@@ -10,7 +10,7 @@ import { STATUS } from "../data/types";
 import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
 import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
-import { ReportFold, isReport } from "./ReportFold";
+import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -384,6 +384,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const switchTeam = useApp((s) => s.switchTeam);
   const selectCard = useApp((s) => s.selectCard);
   const [draft, setDraft] = useState("");
+  const [view, setView] = useState<ChatView>("all");
   const [files, setFiles] = useState<string[]>([]);
   const [dropping, setDropping] = useState(false);
   const setError = useApp((s) => s.setError);
@@ -567,6 +568,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
         {project && <TeamControls project={project} team={team} />}
       </div>
 
+      {chat.some((m) => m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {chat.length === 0 && (
           <p className="m-auto max-w-[220px] text-center text-[13px] leading-relaxed text-ink-2">
@@ -590,6 +592,8 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                   </motion.div>
                 );
               if (m.kind === "permission") return null; // gathered in the report feed
+              if (view === "chat" && m.kind === "report") return null;
+              if (view === "report" && m.kind !== "report") return null;
               if (m.kind === "escalation")
                 return (
                   <motion.div key={m.id} {...bubbleIn}>
@@ -598,8 +602,13 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                 );
               return (
                 <motion.div key={m.id} {...bubbleIn} className="flex max-w-[92%] flex-col gap-2">
-                  {isReport(m.text) ? (
-                    <ReportFold text={m.text} />
+                  {m.kind === "report" ? (
+                    <FoldCard
+                      id={m.taskIds[0]}
+                      failed={team.tasks.find((t) => t.id === m.taskIds[0])?.stage === "failed"}
+                      line={firstLine(m.text)}
+                      text={m.text}
+                    />
                   ) : (
                     <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{m.text}</div>
                   )}

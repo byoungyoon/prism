@@ -12,7 +12,7 @@ import { clock } from "../data/types";
 import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
 import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
-import { ReportFold, isReport } from "./ReportFold";
+import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -51,6 +51,7 @@ export function UnifiedChat() {
   const [files, setFiles] = useState<Pending[]>([]);
   const [dropping, setDropping] = useState(false);
   const [menu, setMenu] = useState<{ query: string; at: number; index: number } | null>(null);
+  const [view, setView] = useState<ChatView>("all");
   const [showSettings, setShowSettings] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -75,6 +76,8 @@ export function UnifiedChat() {
     }
     return out.sort((a, b) => a.at - b.at);
   }, [shown]);
+
+  const shownItems = items.filter((it) => view === "all" || (view === "report") === (it.m.kind === "report"));
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -241,6 +244,7 @@ export function UnifiedChat() {
       </div>
 
       {/* one timeline */}
+      {items.some((it) => it.m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {items.length === 0 && (
           <p className="m-auto max-w-[240px] text-center text-[13px] leading-relaxed text-ink-2">
@@ -250,7 +254,7 @@ export function UnifiedChat() {
           </p>
         )}
         <AnimatePresence initial={false}>
-          {items.map((it) => {
+          {shownItems.map((it) => {
             const team = byId[it.pid];
             if (!team) return null;
             if (it.m.kind === "me")
@@ -269,8 +273,13 @@ export function UnifiedChat() {
                 </span>
                 {it.m.kind === "escalation" ? (
                   <EscalationCard m={it.m} team={team.team} projectId={it.pid} />
-                ) : isReport(it.m.text) ? (
-                  <ReportFold text={it.m.text} />
+                ) : it.m.kind === "report" ? (
+                  <FoldCard
+                    id={it.m.taskIds[0]}
+                    failed={team.team.tasks.find((t) => t.id === it.m.taskIds[0])?.stage === "failed"}
+                    line={firstLine(it.m.text)}
+                    text={it.m.text}
+                  />
                 ) : (
                   <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{it.m.text}</div>
                 )}
