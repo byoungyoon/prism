@@ -30,6 +30,28 @@ function CenterPanel() {
   );
 }
 
+/** Keep the app exactly as tall as what's visible: on a phone the on-screen keyboard covers the
+ * bottom of the layout viewport, which would hide the chat input. */
+function useVisibleHeight() {
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    const apply = () => {
+      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+      // iOS scrolls the page up to reveal the focused input; the app frame never scrolls
+      if (window.scrollY || vv.offsetTop) window.scrollTo(0, 0);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+    };
+  }, []);
+}
+
 function useNarrow() {
   const q = "(max-width: 820px)";
   const [narrow, setNarrow] = useState(() => window.matchMedia(q).matches);
@@ -66,12 +88,12 @@ function MainView() {
 
   if (narrow)
     return (
-      <div className="relative flex min-h-0 flex-auto flex-col gap-2 p-2">
-        <div role="tablist" aria-label="화면" className="glass flex gap-0.5 self-center rounded-full p-1">
+      <div className="relative flex min-h-0 min-w-0 flex-auto flex-col gap-2 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+        <div role="tablist" aria-label="화면" className="glass flex max-w-full gap-0.5 self-center rounded-full p-1">
           {PHONE_TABS.map((t) => {
             const on = tab === t.id;
             return (
-              <button key={t.id} role="tab" aria-selected={on} onClick={() => setTab(t.id)} className="relative flex min-h-9 items-center gap-1.5 rounded-full border-0 bg-transparent px-5 text-[13.5px] font-medium" style={{ color: on ? "#2B2520" : "var(--text)" }}>
+              <button key={t.id} role="tab" aria-selected={on} onClick={() => setTab(t.id)} className="relative flex min-h-10 items-center gap-1.5 rounded-full border-0 bg-transparent px-5 text-[13.5px] font-medium" style={{ color: on ? "#2B2520" : "var(--text)" }}>
                 {on && <motion.span layoutId="phone-tab" className="absolute inset-0 rounded-full" style={{ background: "var(--amber)" }} />}
                 <span className="relative">{t.label}</span>
                 {t.id === "feed" && pending > 0 && (
@@ -84,7 +106,7 @@ function MainView() {
           })}
         </div>
         {/* panels fill the phone width */}
-        <div className="flex min-h-0 flex-auto flex-col [&>section]:max-w-none [&>section]:flex-auto">
+        <div className="flex min-h-0 min-w-0 flex-auto flex-col [&>section]:max-w-none [&>section]:min-w-0 [&>section]:flex-auto">
           {tab === "chat" ? <LeadColumn /> : tab === "feed" ? <ReportFeed /> : <TaskBoard />}
         </div>
       </div>
@@ -132,7 +154,7 @@ function ErrorToast() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
-          className="glass absolute bottom-4 left-1/2 z-50 flex max-w-[520px] -translate-x-1/2 items-center gap-3 rounded-xl px-4 py-3 text-[13px]"
+          className="glass absolute bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-50 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-xl px-4 py-3 text-[13px]"
           style={{ border: "1px solid var(--block)" }}
         >
           <span className="size-2 shrink-0 rounded-full" style={{ background: "var(--block)" }} />
@@ -151,6 +173,8 @@ export default function App() {
   // only whether there is a team: subscribing to the snapshot would re-render the whole app on every update
   const hasTeam = useApp((s) => !!(s.projectId && s.teams[s.projectId]));
 
+  useVisibleHeight();
+
   useEffect(() => {
     void init();
   }, [init]);
@@ -168,7 +192,7 @@ export default function App() {
 
   return (
     <div
-      className="relative flex h-full flex-col overflow-hidden"
+      className="relative flex h-full max-w-full flex-col overflow-hidden"
       style={{ background: "linear-gradient(160deg, var(--bg1), var(--bg2))", color: "var(--text)" }}
     >
       {/* clipped on their own: blobs poking past the window made the app frame scrollable */}

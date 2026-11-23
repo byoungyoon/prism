@@ -55,7 +55,7 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
             <motion.div key={m.id} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
               <span className="shrink-0 text-[12.5px] font-semibold">{name(p.agentId)}</span>
               {p.decider && <span className="shrink-0 text-[11.5px] text-ink-2">{name(p.decider)}가 판단 중</span>}
-              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
+              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
                 {p.tool === "Bash" ? `명령 실행 · ${p.detail}` : `${p.tool} · ${p.detail}`}
               </code>
               <span className="flex shrink-0 gap-1">
@@ -151,7 +151,7 @@ function Results({ task, pid }: { task: Task; pid: string }) {
               title={f.path}
             >
               {isPreviewable(f.path) && <span aria-hidden="true">👁</span>}
-              <span className="max-w-[220px] truncate">{f.path}</span>
+              <span className="max-w-[220px] truncate max-[820px]:max-w-[60vw]">{f.path}</span>
               {f.added >= 0 && (
                 <span className="opacity-80">
                   <span style={{ color: on ? undefined : "var(--work-ink)" }}>+{f.added}</span>{" "}
