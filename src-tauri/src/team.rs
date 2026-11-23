@@ -166,6 +166,241 @@ fn needs_user(tool: &str, detail: &str, project: &str) -> bool {
     matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") && detail.starts_with('/') && !detail.starts_with(project)
 }
 
+/// Shell commands that only read or check, so they're allowed without asking anyone. Strict: a line split
+/// on `&&` `||` `;` `|` and newlines passes only if every piece is on the list. Anything that writes a file
+/// (other than to /tmp or /dev/null), substitutes a command, backgrounds, or is `needs_user` still asks.
+/// `workspace` is the folder `cd` may move into.
+fn is_safe_readonly(tool: &str, detail: &str, workspace: &str) -> bool {
+    if tool != "Bash" || needs_user(tool, detail, workspace) {
+        return false;
+    }
+    match split_shell(detail) {
+        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace)),
+        None => false,
+    }
+}
+
+/// Splits a shell line into simple commands and drops the redirections it has checked.
+/// `None` = something this check won't vouch for: `$(…)`, backticks, subshells, `&`, or a redirection
+/// other than `2>&1`-style fd dups, `>/dev/null` and `>/tmp/…`.
+fn split_shell(line: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\n' | ';' | '|' => {
+                parts.push(std::mem::take(&mut cur));
+                i += 1;
+            }
+            '&' if chars.get(i + 1) == Some(&'&') => {
+                parts.push(std::mem::take(&mut cur));
+                i += 2;
+            }
+            // `&>` — the `>` is handled on the next pass
+            '&' if chars.get(i + 1) == Some(&'>') => i += 1,
+            '&' | '(' | ')' | '`' => return None,
+            '>' => {
+                // the fd number in front of `>` (the 2 in 2>&1) belongs to the redirection
+                let fd_digit = cur.ends_with(|ch: char| ch.is_ascii_digit()) && cur.chars().rev().nth(1).is_none_or(char::is_whitespace);
+                if fd_digit {
+                    cur.pop();
+                }
+                let mut j = i + 1;
+                if chars.get(j) == Some(&'>') {
+                    j += 1;
+                }
+                while matches!(chars.get(j), Some(' ') | Some('\t')) {
+                    j += 1;
+                }
+                let (ok, end) = if chars.get(j) == Some(&'&') {
+                    let (fd, e) = read_word(&chars, j + 1);
+                    (!fd.is_empty() && fd.chars().all(|d| d.is_ascii_digit()), e)
+                } else {
+                    let (path, e) = read_word(&chars, j);
+                    (path == "/dev/null" || (path.starts_with("/tmp/") && !path.contains("..")), e)
+                };
+                if !ok {
+                    return None;
+                }
+                i = end;
+            }
+            _ => {
+                cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    parts.push(cur);
+    Some(parts)
+}
+
+/// The word starting at `j`, and the index just after it.
+fn read_word(chars: &[char], mut j: usize) -> (String, usize) {
+    let mut w = String::new();
+    while let Some(&c) = chars.get(j) {
+        if c.is_whitespace() || "&|;<>()".contains(c) {
+            break;
+        }
+        w.push(c);
+        j += 1;
+    }
+    (w, j)
+}
+
+/// One simple command (no chaining left in it) on the read-only list.
+fn is_safe_simple(part: &str, workspace: &str) -> bool {
+    let words: Vec<&str> = part.split_whitespace().collect();
+    let Some((&cmd, args)) = words.split_first() else { return false };
+    match cmd {
+        "ls" | "pwd" | "cat" | "head" | "tail" | "wc" | "grep" | "echo" | "which" => true,
+        "rg" => !args.iter().any(|a| *a == "--pre" || a.starts_with("--pre=")),
+        "find" => !args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls" | "-fprint" | "-fprint0" | "-fprintf")),
+        "sed" => is_read_only_sed(args),
+        "git" => is_read_only_git(args),
+        "tsc" => args.contains(&"--noEmit"),
+        "cargo" => args.first() == Some(&"check"),
+        "pnpm" | "npm" => match args.first() {
+            Some(&"build") | Some(&"test") => true,
+            Some(&"exec") => args.get(1) == Some(&"tsc") && args.contains(&"--noEmit"),
+            _ => false,
+        },
+        "cd" => is_inside(args, workspace),
+        _ => false,
+    }
+}
+
+/// `sed -n` that prints: no in-place edit, no -f script file, and no w/W (write) or e (run) in the script.
+fn is_read_only_sed(args: &[&str]) -> bool {
+    let flags: Vec<&str> = args.iter().copied().filter(|a| a.starts_with('-') && !a.starts_with("--")).collect();
+    let quiet = flags.iter().any(|a| a.contains('n')) || args.contains(&"--quiet") || args.contains(&"--silent");
+    let in_place = args.iter().any(|a| a.starts_with("--in-place") || a.starts_with("--file")) || flags.iter().any(|a| a.contains('i') || a.contains('f'));
+    let mut scripts: Vec<&str> = args.windows(2).filter(|w| w[0] == "-e" || w[0] == "--expression").map(|w| w[1]).collect();
+    scripts.extend(args.iter().filter_map(|a| a.strip_prefix("--expression=")));
+    if scripts.is_empty() {
+        scripts.extend(args.iter().find(|a| !a.starts_with('-')).copied());
+    }
+    quiet && !in_place && !scripts.iter().any(|s| s.contains(['w', 'W', 'e']))
+}
+
+/// Read-only git: status/diff/log/show/rev-parse, and `branch` only to list.
+fn is_read_only_git(args: &[&str]) -> bool {
+    let Some((&sub, rest)) = args.split_first() else { return false };
+    if rest.iter().any(|a| a.starts_with("--output")) {
+        return false;
+    }
+    match sub {
+        "status" | "diff" | "log" | "show" | "rev-parse" => true,
+        "branch" => rest.iter().all(|a| matches!(*a, "-a" | "-r" | "-v" | "-vv" | "-l" | "--all" | "--remotes" | "--list" | "--verbose" | "--show-current")),
+        _ => false,
+    }
+}
+
+/// `cd <dir>` where the real (symlink-resolved) directory is inside the workspace.
+fn is_inside(args: &[&str], workspace: &str) -> bool {
+    if args.len() != 1 {
+        return false;
+    }
+    let target = args[0].trim_matches(|c| c == '"' || c == '\'');
+    if target.is_empty() || target == "-" || target.starts_with('~') || target.contains('$') {
+        return false;
+    }
+    match (std::fs::canonicalize(workspace), std::fs::canonicalize(std::path::Path::new(workspace).join(target))) {
+        (Ok(root), Ok(dir)) => dir.starts_with(root),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod safe_readonly_tests {
+    use super::is_safe_readonly;
+
+    /// a real folder to `cd` into: <tmp>/prism-t5-<pid>/work/src
+    fn workspace() -> String {
+        let dir = std::env::temp_dir().join(format!("prism-t5-{}", std::process::id())).join("work");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        dir.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn read_only_and_check_commands_pass() {
+        let ws = workspace();
+        for cmd in [
+            "ls -la src",
+            "pwd",
+            "git status && git diff --stat",
+            "git log --oneline -5 | head -3",
+            "git branch --show-current",
+            "rg \"fn is_safe\" src | wc -l",
+            "grep -n permission src/team.rs",
+            "find src -name '*.rs' -newer Cargo.toml",
+            "sed -n '1,40p' src/team.rs",
+            "cargo check 2>&1 | tail -5",
+            "cargo check",
+            "tsc --noEmit -p .",
+            "pnpm build",
+            "npm test -- --run",
+            "pnpm exec tsc --noEmit",
+            "echo done >/dev/null 2>&1",
+            "echo ok > /tmp/prism-t5.log",
+            "cd src && ls",
+            "ls\ncat README.md",
+        ] {
+            assert!(is_safe_readonly("Bash", cmd, &ws), "should pass: {cmd}");
+        }
+    }
+
+    #[test]
+    fn writes_risky_and_unlisted_commands_still_ask() {
+        let ws = workspace();
+        for cmd in [
+            "rm -rf target",
+            "ls && rm notes.txt",
+            "echo hi > notes.txt",
+            "echo hi >> notes.txt",
+            "ls 1>out.txt",
+            "sed -i 's/a/b/' src/team.rs",
+            "sed -n '1p;w out.txt' src/team.rs",
+            "sed -n 's/a/b/e' src/team.rs",
+            "curl https://example.com",
+            "echo $(rm -rf x)",
+            "cat `which rm`",
+            "(cd src && ls)",
+            "ls &",
+            "find . -delete",
+            "find . -exec rm {} \\;",
+            "rg --pre sh foo src",
+            "git push",
+            "git -C /tmp status",
+            "git diff --output=out.patch",
+            "git commit -m x",
+            "cargo build",
+            "tsc",
+            "pnpm install",
+            "ls | xargs rm",
+            "ls; mv a b",
+            "echo hi > /tmp/../etc/passwd",
+            "sudo ls",
+            "cat .env",
+            "cd /",
+            "cd ..",
+            "cd ../..",
+            "cd",
+        ] {
+            assert!(!is_safe_readonly("Bash", cmd, &ws), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn only_bash_is_judged_here() {
+        let ws = workspace();
+        assert!(!is_safe_readonly("Edit", "src/team.rs", &ws));
+        assert!(!is_safe_readonly("Write", "notes.txt", &ws));
+    }
+}
+
 /// Outcome of a PermissionRequest hook: decide now, or wait for the user.
 pub enum PermWait {
     Now(&'static str),
@@ -1385,6 +1620,11 @@ impl TeamManager {
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return PermWait::Now("") };
         if team.always_allow.contains(&perm_key(&tool, &detail)) {
+            return PermWait::Now("allow");
+        }
+        // read-only or check-only commands in the agent's folder: nobody needs to be asked
+        let workspace = team.agent(aid).map(|a| a.cwd.clone()).unwrap_or_else(|| team.cwd.clone());
+        if is_safe_readonly(&tool, &detail, &workspace) {
             return PermWait::Now("allow");
         }
         let name = team.name_of(aid);
