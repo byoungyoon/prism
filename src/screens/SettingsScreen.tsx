@@ -305,6 +305,14 @@ export function SettingsScreen() {
           </Card>
 
 
+          <Card title="원래 폴더 지키기" aside={<Switch on={draft.safe} onChange={(safe) => setDraft({ ...draft, safe })} label="원래 폴더 지키기" />}>
+            <span className="text-[12px] leading-relaxed text-ink-2">
+              {draft.safe
+                ? "팀은 프로젝트를 복사한 작업 공간에서만 일해요. 원래 폴더는 \"결과 반영하기\"를 눌러야 바뀌어요. 기존 프로젝트를 가져왔다면 켜두세요."
+                : "팀이 원래 폴더에서 바로 일하고, 결과도 바로 합쳐져요. 처음부터 Prism으로 만든 프로젝트처럼 부담 없는 경우에만 꺼두세요."}
+            </span>
+          </Card>
+
           <Card title="작업 공간 분리" aside={<Switch on={draft.isolate} onChange={(isolate) => setDraft({ ...draft, isolate })} label="작업 공간 분리" />}>
             <span className="text-[12px] leading-relaxed text-ink-2">
               팀장과 작업자가 각자 따로 복사한 작업 공간에서 일하고, 끝나면 윗선이 검토해서 합쳐요. 끄면 같은 폴더를 함께 써서 서로 덮어쓸 수 있어요.

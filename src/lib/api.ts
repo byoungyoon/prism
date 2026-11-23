@@ -28,6 +28,8 @@ export interface TeamConfig {
   concurrent: number;
   permissionMode: "default" | "acceptEdits" | "bypassPermissions";
   isolate: boolean;
+  /** work in a copy on its own branch; the original folder changes only via "결과 반영하기" */
+  safe: boolean;
 }
 
 export interface Project {
@@ -37,6 +39,10 @@ export interface Project {
   isGit: boolean;
   team: TeamConfig;
   lastOpened: number;
+  /** what every AI on this team should know, written by the user */
+  knowledge: string;
+  /** brought in from outside the workspace folder */
+  linked?: boolean;
 }
 
 export interface WorktreeInfo {
@@ -85,6 +91,8 @@ export interface Task {
   base: string | null;
   createdAt: number;
   updatedAt: number;
+  /** a follow-up ("이어서"): the card this one continues, by the same member */
+  followOf: string | null;
 }
 
 export interface Escalation {
@@ -101,6 +109,10 @@ export interface Permission {
   tool: string;
   detail: string;
   answer: "allow" | "always" | "deny" | "timeout" | null;
+  /** the boss deciding it first (팀장 / 총괄); null = it's waiting for the user */
+  decider?: string | null;
+  /** who answered ("사용자", "팀장 A"…) */
+  decidedBy?: string | null;
 }
 
 export interface ChatMsg {
@@ -124,12 +136,26 @@ export interface TeamSnapshot {
   projectName: string;
   cwd: string;
   branch: string | null;
+  /** safe mode: the original folder's branch results are reflected into ("main"…); null = works in place */
+  home: string | null;
   team: TeamConfig;
   agents: Agent[];
   tasks: Task[];
   chat: ChatMsg[];
   events: LogEvent[];
   costUsd: number;
+}
+
+/** What "결과 반영하기" would bring into the original folder. */
+export interface ReflectInfo {
+  home: string;
+  branch: string;
+  commits: number;
+  files: FileStat[];
+  /** the original folder has unsaved edits */
+  dirty: boolean;
+  /** the branch the original folder is on now */
+  current: string;
 }
 
 export interface FileStat {
@@ -259,9 +285,17 @@ export const api = {
   workspaceRoot: () => call<string>("workspace_root"),
   setWorkspaceRoot: (path: string) => call<Project[]>("workspace_set_root", { path }),
   createProject: (name: string) => call<Project>("project_create", { name }),
+  /** a folder from anywhere on this Mac becomes a project (nothing in it changes) */
+  importProject: (path: string) => call<Project>("project_import", { path }),
+  /** take a brought-in folder off the list; the folder stays as it is */
+  forgetProject: (id: string) => call<void>("project_forget", { id }),
   touchProject: (id: string) => call<Project>("project_touch", { id }),
   setTeam: (id: string, team: TeamConfig) => call<Project>("project_set_team", { id, team }),
   setPreset: (id: string, preset: PresetName) => call<Project>("project_set_preset", { id, preset }),
+  /** notes for every AI: one shared by all teams, and one per project */
+  knowledge: () => call<string>("knowledge_get"),
+  setKnowledge: (text: string) => call<void>("knowledge_set", { text }),
+  setProjectKnowledge: (id: string, text: string) => call<Project>("project_set_knowledge", { id, text }),
   worktrees: (path: string) => call<WorktreeInfo[]>("worktrees_list", { path }),
   gitChanges: (cwd: string) => call<GitChange[]>("git_changes", { cwd }),
   gitDiff: (cwd: string, path: string) => call<string>("git_diff", { cwd, path }),
@@ -271,6 +305,11 @@ export const api = {
   stopTeam: (projectId: string) => call<void>("team_stop", { projectId }),
   getTeam: (projectId: string) => call<TeamSnapshot | null>("team_get", { projectId }),
   sendToLead: (projectId: string, text: string) => call<void>("lead_send", { projectId, text }),
+  /** more work for whoever did `taskId`, with their context intact */
+  followUp: (projectId: string, taskId: string, text: string) => call<void>("task_follow_up", { projectId, taskId, text }),
+  /** safe mode: preview / merge the team's work into the original folder */
+  reflectInfo: (projectId: string) => call<ReflectInfo>("team_reflect_info", { projectId }),
+  reflect: (projectId: string) => call<string>("team_reflect", { projectId }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
     call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>

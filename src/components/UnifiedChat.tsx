@@ -83,7 +83,7 @@ export function UnifiedChat() {
   // only who's named, and only teams at work
   const targets = mentioned.filter((id) => live(byId[id]?.team));
   const thinking = shown.filter(({ team }) => team.agents.some((a) => a.role === "lead" && a.status === "work"));
-  const perms = shown.reduce((n, { team }) => n + team.chat.filter((m) => m.permission && !m.permission.answer).length, 0);
+  const perms = shown.reduce((n, { team }) => n + team.chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length, 0);
 
   // ── @ autocomplete ───────────────────────────────
   const options = menu ? teams.map((t) => t.name).filter((n) => n.toLowerCase().includes(menu.query.toLowerCase())) : [];
@@ -348,7 +348,14 @@ export function UnifiedChat() {
           )}
         </AnimatePresence>
 
-        <label className="glass-soft relative flex items-center gap-2 rounded-[14px] py-2 pr-2 pl-2" style={dropping ? { boxShadow: "0 0 0 2px var(--amber)" } : undefined}>
+        <div
+          onClick={(e) => {
+            // the empty space around the box focuses the input (never the attach button)
+            if (e.target === e.currentTarget) input.current?.focus();
+          }}
+          className="glass-soft relative flex items-center gap-2 rounded-[14px] py-2 pr-2 pl-2"
+          style={dropping ? { boxShadow: "0 0 0 2px var(--amber)" } : undefined}
+        >
           {dropping && (
             <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[14px] text-[12.5px] font-semibold" style={{ background: "rgba(232,161,90,0.18)" }}>
               여기에 놓으면 첨부돼요
@@ -359,9 +366,9 @@ export function UnifiedChat() {
               <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
           </button>
-          <span className="sr-only">총괄에게 지시하기 (@팀이름으로 받을 팀 고르기)</span>
           <input
             ref={input}
+            aria-label="총괄에게 지시하기 (@팀이름으로 받을 팀 지정)"
             value={draft}
             onChange={(e) => {
               setDraft(e.target.value);
@@ -382,7 +389,7 @@ export function UnifiedChat() {
           >
             <ArrowUp size={16} />
           </button>
-        </label>
+        </div>
       </div>
     </section>
   );

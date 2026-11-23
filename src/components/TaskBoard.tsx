@@ -2,7 +2,7 @@
 // each with the card they hold. (The work itself, with results, is in the report feed.)
 // Below: one merged progress log.
 import { useState } from "react";
-import { useApp, useShownTeams } from "../store";
+import { useApp, useShownTeams, waitsForMe } from "../store";
 import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
@@ -29,7 +29,7 @@ function stateOf(a: Agent, team: TeamSnapshot) {
 function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean }) {
   const openIn = useApp((s) => s.openIn);
   const st = stateOf(a, team);
-  const waiting = a.role === "lead" ? team.chat.filter((m) => (m.escalation && !m.escalation.answer) || (m.permission && !m.permission.answer)).length : 0;
+  const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
   return (
     <button
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp, useShownTeams, type View } from "./store";
+import { useApp, useShownTeams, waitsForMe, type View } from "./store";
 import { TopBar } from "./components/TopBar";
 import { LeadChat } from "./components/LeadChat";
 import { UnifiedChat } from "./components/UnifiedChat";
@@ -60,7 +60,7 @@ function MainView() {
   const narrow = useNarrow();
   const [tab, setTab] = useState<(typeof PHONE_TABS)[number]["id"]>("chat");
   const pending = useShownTeams().reduce(
-    (n, { team }) => n + team.chat.filter((m) => (m.permission && !m.permission.answer) || (m.escalation && !m.escalation.answer)).length,
+    (n, { team }) => n + team.chat.filter(waitsForMe).length,
     0,
   );
 

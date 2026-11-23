@@ -4,7 +4,8 @@ import { api } from "../lib/api";
 import { useApp } from "../store";
 import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
-import { Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
+import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
+import { KnowledgeSheet } from "./KnowledgeSheet";
 import { RemoteCard } from "./RemoteCard";
 import { useShallow } from "zustand/react/shallow";
 
@@ -162,19 +163,22 @@ function PhoneAccess() {
   );
 }
 
-/** Dev builds only: load / clear sample teams to look at the 관제탑 without running AI. */
-function DemoToggle() {
-  const demo = useApp((s) => s.demo);
-  const toggleDemo = useApp((s) => s.toggleDemo);
+/** 지식: notes every AI reads before it starts (shared + per project). */
+function KnowledgeButton() {
+  const [open, setOpen] = useState(false);
   return (
-    <button
-      onClick={() => void toggleDemo()}
-      title="개발용: 가짜 팀 3개로 화면 보기 (저장되지 않아요)"
-      className="flex min-h-8 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium"
-      style={demo ? { background: "var(--navy)", color: "var(--me-fg)" } : { border: "1px dashed var(--line)", color: "var(--text2)" }}
-    >
-      {demo ? "데모 끄기" : "데모 데이터"}
-    </button>
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        title="모든 AI가 참고할 메모 (서버 정보, 규칙…)"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        style={{ border: "1px solid var(--line)" }}
+      >
+        <Book size={15} />
+        지식
+      </button>
+      <KnowledgeSheet open={open} onClose={() => setOpen(false)} />
+    </>
   );
 }
 
@@ -212,7 +216,7 @@ export function TopBar() {
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
-      {import.meta.env.DEV && <DemoToggle />}
+      <KnowledgeButton />
       {!isRemote && <PhoneAccess />}
       <UsageMeter />
       <button

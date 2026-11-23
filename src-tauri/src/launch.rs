@@ -94,11 +94,12 @@ pub fn trust(kind: &str, dir: &str, home: Option<&str>) {
 
 // ── Claude Code ───────────────────────────────────────
 
-/// Whether Claude Code saved a conversation for `session_id`. It only writes the transcript
-/// (`<config>/projects/<cwd>/<id>.jsonl`) once the session gets its first message, so a lead that
-/// clocked in but was never spoken to has nothing to `--resume` — and resuming it exits with
-/// "No conversation found". `home` is the account's CLAUDE_CONFIG_DIR (None → ~/.claude).
-pub fn claude_session_exists(home: Option<&str>, session_id: &str) -> bool {
+/// Whether Claude Code has a conversation `session_id` it can resume from `cwd`. It keeps them per
+/// folder (`<config>/projects/<cwd with every non-alphanumeric char as '-'>/<id>.jsonl`) and only
+/// writes one once the session gets its first message — so a lead that clocked in but was never
+/// spoken to, or one whose team moved to another folder, has nothing to `--resume` (doing so exits
+/// with "No conversation found"). `home` is the account's CLAUDE_CONFIG_DIR (None → ~/.claude).
+pub fn claude_session_exists(home: Option<&str>, session_id: &str, cwd: &str) -> bool {
     let base = match home {
         Some(h) => std::path::PathBuf::from(h),
         None => match std::env::var_os("CLAUDE_CONFIG_DIR") {
@@ -109,9 +110,8 @@ pub fn claude_session_exists(home: Option<&str>, session_id: &str) -> bool {
             },
         },
     };
-    let Ok(dirs) = std::fs::read_dir(base.join("projects")) else { return false };
-    let file = format!("{session_id}.jsonl");
-    dirs.flatten().any(|d| d.path().join(&file).is_file())
+    let folder: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    base.join("projects").join(folder).join(format!("{session_id}.jsonl")).is_file()
 }
 
 fn claude(c: &Ctx) -> Result<Launch, String> {

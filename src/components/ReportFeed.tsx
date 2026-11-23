@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useShownTeams } from "../store";
-import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
+import { api, type Agent, type ChatMsg, type FileStat, type Project, type ReflectInfo, type Task, type TeamSnapshot } from "../lib/api";
 import { TeamTag } from "./TeamTag";
 import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
@@ -18,6 +18,8 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
   const answerPermission = useApp((s) => s.answerPermission);
   const answer = (id: number, a: "allow" | "always" | "deny") => answerPermission(id, a, project.id);
   const name = (id: string) => team.agents.find((a) => a.id === id)?.name ?? id;
+  // requests a 팀장/총괄 is deciding don't need the user (who can still answer first)
+  const mine = items.filter((m) => !m.permission!.decider);
   return (
     <motion.section
       layout
@@ -26,15 +28,17 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
       exit={{ opacity: 0, scale: 0.98 }}
       transition={spring}
       className="glass flex flex-col gap-3 rounded-2xl p-4"
-      style={{ border: "1.5px solid var(--amber)", boxShadow: "var(--shadow-sm), var(--hi)" }}
+      style={{ border: `1.5px solid ${mine.length ? "var(--amber)" : "var(--line)"}`, boxShadow: "var(--shadow-sm), var(--hi)" }}
     >
       <div className="flex items-center gap-2">
-        <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
+        {mine.length > 0 && <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />}
         {multi && <TeamTag project={project} className="text-[12px]" />}
-        <h3 className="m-0 flex-auto text-[14px] font-semibold">허락이 필요해요 · {items.length}건</h3>
-        {items.length > 1 && (
+        <h3 className="m-0 flex-auto text-[14px] font-semibold">
+          {mine.length ? `허락이 필요해요 · ${mine.length}건` : `윗선이 판단 중 · ${items.length}건`}
+        </h3>
+        {mine.length > 1 && (
           <button
-            onClick={() => items.forEach((m) => void answer(m.id, "allow"))}
+            onClick={() => mine.forEach((m) => void answer(m.id, "allow"))}
             className="min-h-8 rounded-full border-0 px-3.5 text-[12.5px] font-semibold"
             style={{ background: "var(--amber)", color: "#2B2520" }}
           >
@@ -48,6 +52,7 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
           return (
             <motion.div key={m.id} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
               <span className="shrink-0 text-[12.5px] font-semibold">{name(p.agentId)}</span>
+              {p.decider && <span className="shrink-0 text-[11.5px] text-ink-2">{name(p.decider)}가 판단 중</span>}
               <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
                 {p.tool === "Bash" ? `명령 실행 · ${p.detail}` : `${p.tool} · ${p.detail}`}
               </code>
@@ -208,19 +213,90 @@ function latest(agents: Agent[]) {
 function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen: (id: string) => void }) {
   const a = team.agents.find((x) => x.id === task.assignee);
   const st = stateOf(task, team);
+  const follow = !!task.followOf;
   return (
     <button
       onClick={() => a && onOpen(a.id)}
       disabled={!a}
-      className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)] disabled:hover:bg-transparent"
+      className="flex min-h-8 w-full flex-wrap items-center gap-x-2 rounded-lg border-0 bg-transparent px-2 py-1 text-left text-[12.5px] hover:bg-[var(--chip)] disabled:hover:bg-transparent"
     >
       <span className="w-9 shrink-0 font-mono text-[11.5px] font-semibold">{task.id}</span>
+      {follow && (
+        <span className="shrink-0 rounded px-1.5 text-[10.5px] font-medium text-ink-2" style={{ background: "var(--chip)" }}>
+          이어서
+        </span>
+      )}
       <span className="min-w-0 flex-auto truncate">{task.title}</span>
       <span className="shrink-0 text-[11.5px] text-ink-2">{a?.name ?? "배정 전"}</span>
       <span className="w-12 shrink-0 text-right text-[11.5px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
         {st.word}
       </span>
+      {follow && task.summary && (task.stage === "review" || task.stage === "done") && (
+        <span className="basis-full pt-0.5 pl-11 text-[12px] leading-snug text-ink-2 select-text">{task.summary}</span>
+      )}
     </button>
+  );
+}
+
+/** "이어서 시키기": hand more work on this card to whoever did it, right from the report. */
+function FollowUp({ project, target, who }: { project: Project; target: Task; who: string }) {
+  const setError = useApp((s) => s.setError);
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    try {
+      await api.followUp(project.id, target.id, t);
+      setText("");
+      setOpen(false);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!open)
+    return (
+      <button onClick={() => setOpen(true)} className="self-start rounded-full border-0 px-3 py-1 text-[12px] font-medium" style={{ background: "var(--chip)", color: "var(--text)" }}>
+        이어서 시키기
+      </button>
+    );
+  return (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) e.currentTarget.querySelector("input")?.focus();
+      }}
+      className="glass-soft flex items-center gap-2 rounded-xl py-1.5 pr-1.5 pl-3"
+    >
+      <input
+        autoFocus
+        aria-label={`${who}에게 이어서 시킬 일`}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing) return;
+          if (e.key === "Enter") void send();
+          if (e.key === "Escape") setOpen(false);
+        }}
+        onBlur={() => !text.trim() && setOpen(false)}
+        placeholder={`${who}에게 이어서 시킬 일 (예: 버튼 색을 파란색으로)`}
+        className="min-h-8 min-w-0 flex-auto border-0 bg-transparent text-[13px] outline-none"
+      />
+      <button
+        onClick={() => void send()}
+        disabled={!text.trim() || busy}
+        aria-label="이어서 시키기"
+        className="flex size-8 shrink-0 items-center justify-center rounded-lg border-0 disabled:opacity-50"
+        style={{ background: "var(--amber)", color: "#2B2520" }}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 19V5M5 12l7-7 7 7" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
@@ -235,6 +311,9 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
   const leadNote = [...team.chat].reverse().find((m) => m.kind === "lead" && m.taskIds.includes(task.id) && m.at >= task.updatedAt - 1000);
   const finished = task.stage === "review" || task.stage === "done" || task.stage === "failed";
   const doneSubs = subs.filter((t) => t.stage === "done").length;
+  // follow-ups go to the newest card in this line of work, so one in progress isn't overtaken
+  const target = [task, ...subs.filter((t) => t.followOf)].sort((a, b) => a.createdAt - b.createdAt).pop()!;
+  const canFollow = !!target.assignee && target.stage !== "queued";
 
   return (
     <motion.article
@@ -287,7 +366,7 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
       {subs.length > 0 && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
           <span className="flex items-center gap-2 px-2 pt-1 text-[11.5px] text-ink-2">
-            하위 작업 {doneSubs}/{subs.length} 완료
+            {subs.some((t) => !t.followOf) ? "하위 작업" : "이어서 한 일"} {doneSubs}/{subs.length} 완료
             <span className="h-1 max-w-[120px] flex-auto overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
               <span className="block h-full rounded-full" style={{ width: `${(doneSubs / subs.length) * 100}%`, background: "var(--text2)" }} />
             </span>
@@ -297,7 +376,138 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
           ))}
         </div>
       )}
+      {canFollow && <FollowUp project={project} target={target} who={team.agents.find((a) => a.id === target.assignee)?.name ?? "담당자"} />}
     </motion.article>
+  );
+}
+
+// ── putting the team's work into the original folder ──
+
+/** Safe mode: the team works in a copy; this brings its results into the original folder. */
+function ReflectBar({ project, team }: { project: Project; team: TeamSnapshot }) {
+  const setError = useApp((s) => s.setError);
+  const sendToLead = useApp((s) => s.sendToLead);
+  const [open, setOpen] = useState(false);
+  const [info, setInfo] = useState<ReflectInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<{ kind: "ok" | "conflict"; text: string } | null>(null);
+  const home = team.home;
+
+  const load = async () => {
+    setInfo(null);
+    try {
+      setInfo(await api.reflectInfo(project.id));
+    } catch (e) {
+      setError(e);
+      setOpen(false);
+    }
+  };
+  const toggle = () => {
+    setNote(null);
+    if (!open) void load();
+    setOpen((v) => !v);
+  };
+  const reflect = async () => {
+    setBusy(true);
+    try {
+      const msg = await api.reflect(project.id);
+      setNote({ kind: "ok", text: msg });
+      void load();
+    } catch (e) {
+      const m = e instanceof Error ? e.message : String(e);
+      if (m.includes("CONFLICT")) setNote({ kind: "conflict", text: `그사이 '${home}'도 바뀌어서 겹치는 부분이 있어요. 원래 폴더는 그대로예요.` });
+      else setError(m);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!home) return null;
+
+  const blocked = info ? (info.current !== info.home ? `원래 폴더가 지금 '${info.current}'에 있어요. '${info.home}'로 바꾼 뒤 반영할 수 있어요.` : info.dirty ? "원래 폴더에 저장하지 않은 수정이 있어요. 정리한 뒤 반영할 수 있어요." : null) : null;
+
+  return (
+    // laid out by the header row: the button on its right, the panel on its own line below
+    <div className="contents">
+      <button
+        onClick={toggle}
+        aria-expanded={open}
+        title={`팀은 작업 공간에서 일해요. 눌러서 결과를 원래 폴더의 '${home}'에 반영해요`}
+        className="ml-auto flex min-h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        style={open ? { background: "var(--tile)", border: "1px solid var(--amber)" } : { border: "1px solid var(--line)" }}
+      >
+        결과 반영하기 <span className="text-ink-2">→ {home}</span>
+      </button>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={spring}
+          className="glass flex basis-full flex-col gap-2.5 rounded-2xl p-3.5 text-[12.5px]"
+          style={{ boxShadow: "var(--shadow-sm), var(--hi)" }}
+        >
+          {!info ? (
+            <span className="text-ink-2">확인하는 중…</span>
+          ) : info.commits === 0 ? (
+            <span className="text-ink-2">'{info.home}'에 아직 반영하지 않은 새 결과가 없어요.</span>
+          ) : (
+            <>
+              <span>
+                변경 <b>{info.commits}</b>개 · 파일 <b>{info.files.length}</b>개를 원래 폴더의 <b>'{info.home}'</b>에 합쳐요.
+              </span>
+              <ul className="m-0 flex max-h-36 list-none flex-col gap-0.5 overflow-y-auto p-0 font-mono text-[11.5px]">
+                {info.files.map((f) => (
+                  <li key={f.path} className="flex gap-2">
+                    <span className="min-w-0 flex-auto truncate" title={f.path}>
+                      {f.path}
+                    </span>
+                    {f.added >= 0 && (
+                      <span className="shrink-0 text-ink-2">
+                        +{f.added} −{f.removed}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {blocked && <span style={{ color: "var(--block-ink)" }}>{blocked}</span>}
+          {note?.kind === "ok" && <span className="font-medium">{note.text}</span>}
+          {note?.kind === "conflict" && (
+            <div className="flex flex-col gap-2">
+              <span style={{ color: "var(--block-ink)" }}>{note.text}</span>
+              <button
+                onClick={() => {
+                  void sendToLead(
+                    `원래 폴더의 '${home}' 최신 내용을 지금 작업 공간에 합쳐 주세요 (git merge ${home}). 겹치는 부분이 있으면 작업자에게 정리를 맡기고, 끝나면 알려주세요.`,
+                    project.id,
+                  );
+                  setOpen(false);
+                }}
+                className="self-start rounded-full border-0 px-3 py-1.5 text-[12px] font-semibold"
+                style={{ background: "var(--amber)", color: "#2B2520" }}
+              >
+                총괄에게 정리 맡기기
+              </button>
+            </div>
+          )}
+          <div className="flex justify-end gap-1.5">
+            <button onClick={() => setOpen(false)} className="min-h-8 rounded-full px-3 text-[12px]" style={{ border: "1px solid var(--line)" }}>
+              닫기
+            </button>
+            {info && info.commits > 0 && note?.kind !== "conflict" && (
+              <button
+                onClick={() => void reflect()}
+                disabled={!!blocked || busy}
+                className="min-h-8 rounded-full border-0 px-3.5 text-[12px] font-semibold disabled:opacity-50"
+                style={{ background: "var(--amber)", color: "#2B2520" }}
+              >
+                {busy ? "반영하는 중…" : `'${info.home}'에 반영하기`}
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </div>
   );
 }
 
@@ -309,22 +519,42 @@ const rank = (t: Task, team: TeamSnapshot) => (stateOf(t, team).problem ? 0 : OR
 
 function TeamSection({ project, team, multi }: { project: Project; team: TeamSnapshot; multi: boolean }) {
   const [allDone, setAllDone] = useState(false);
-  const top = team.tasks.filter((t) => !parentOf(t, team) || !team.tasks.some((x) => x.id === parentOf(t, team)));
-  const subsOf = (t: Task) => team.tasks.filter((x) => parentOf(x, team) === t.id);
-  const sorted = [...top].sort((a, b) => rank(a, team) - rank(b, team) || b.updatedAt - a.updatedAt);
-  const active = sorted.filter((t) => t.stage !== "done");
-  const done = sorted.filter((t) => t.stage === "done");
+  const byId = new Map(team.tasks.map((t) => [t.id, t]));
+  // the card a piece of work hangs under: follow-ups and sub-work climb to their first card
+  const rootOf = (t: Task): Task => {
+    for (let cur = t, i = 0; i < 20; i++) {
+      const up = byId.get(cur.followOf ?? parentOf(cur, team) ?? "");
+      if (!up) return cur;
+      cur = up;
+    }
+    return t;
+  };
+  const top = team.tasks.filter((t) => rootOf(t) === t);
+  const subsOf = (t: Task) => team.tasks.filter((x) => x !== t && rootOf(x) === t).sort((a, b) => a.createdAt - b.createdAt);
+  // a finished card with a follow-up in progress counts as in progress
+  const eff = (t: Task) => Math.min(rank(t, team), ...subsOf(t).map((x) => rank(x, team)));
+  const last = (t: Task) => Math.max(t.updatedAt, ...subsOf(t).map((x) => x.updatedAt));
+  const sorted = [...top].sort((a, b) => eff(a) - eff(b) || last(b) - last(a));
+  const active = sorted.filter((t) => eff(t) < ORDER.done);
+  const done = sorted.filter((t) => eff(t) >= ORDER.done);
   const shownDone = allDone ? done : done.slice(0, 3);
   if (!top.length) return null;
   return (
     <section aria-label={`${project.name} 보고`} className="flex flex-col gap-2.5">
-      {multi && (
-        <h2 className="m-0 flex items-baseline gap-2 px-1 pt-1 text-[14px] font-semibold">
-          {project.name}
-          <span className="text-[12px] font-normal text-ink-2">
-            진행 {active.length} · 완료 {done.length}
-          </span>
-        </h2>
+      {(multi || team.home) && (
+        <div className="flex flex-col gap-2 px-1 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
+            {multi && (
+              <h2 className="m-0 flex items-baseline gap-2 text-[14px] font-semibold">
+                {project.name}
+                <span className="text-[12px] font-normal text-ink-2">
+                  진행 {active.length} · 완료 {done.length}
+                </span>
+              </h2>
+            )}
+            <ReflectBar project={project} team={team} />
+          </div>
+        </div>
       )}
       {[...active, ...shownDone].map((t) => (
         <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} />

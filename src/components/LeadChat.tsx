@@ -262,7 +262,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const live = !!lead && lead.status !== "off";
   const queued = team?.tasks.filter((t) => t.stage === "queued").length ?? 0;
   const chat = team?.chat ?? [];
-  const pendingPerms = chat.filter((m) => m.permission && !m.permission.answer).length;
+  const pendingPerms = chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length;
   const waiting = pendingPerms + chat.filter((m) => m.escalation && !m.escalation.answer).length;
   const active = !multi || projectId === current;
   /** make this the team the report feed and board show */
@@ -506,7 +506,11 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
           </motion.div>
         )}
       </AnimatePresence>
-      <label
+      <div
+        onClick={(e) => {
+          // the empty space around the box focuses the input (never the attach button)
+          if (e.target === e.currentTarget) e.currentTarget.querySelector("input")?.focus();
+        }}
         className="glass-soft relative mx-3 mb-3 flex items-end gap-2 rounded-[14px] py-2 pr-2 pl-2"
         style={dropping && live ? { boxShadow: "0 0 0 2px var(--amber)" } : undefined}
       >
@@ -527,8 +531,8 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
             <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
-        <span className="sr-only">총괄에게 지시하기</span>
         <input
+          aria-label="총괄에게 지시하기"
           value={draft}
           disabled={!live}
           onChange={(e) => setDraft(e.target.value)}
@@ -549,7 +553,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
         >
           <ArrowUp size={16} />
         </button>
-      </label>
+      </div>
     </section>
   );
 }

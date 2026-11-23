@@ -90,6 +90,41 @@ export function HomeScreen() {
     }
   };
 
+  /** a folder from anywhere on this Mac becomes a project */
+  const importFolder = async () => {
+    try {
+      const dir = await open({ directory: true, title: "팀으로 만들 폴더 고르기" });
+      if (typeof dir !== "string") return;
+      const p = await api.importProject(dir);
+      await useApp.getState().loadProjects();
+      setSelId(p.id);
+    } catch (e) {
+      useApp.getState().setError(e);
+    }
+  };
+
+  const forget = async (p: Project) => {
+    try {
+      await api.forgetProject(p.id);
+      await useApp.getState().loadProjects();
+      setSelId(null);
+    } catch (e) {
+      useApp.getState().setError(e);
+    }
+  };
+
+  const importButton = isRemote ? null : (
+    <button
+      type="button"
+      onClick={() => void importFolder()}
+      title="이미 있는 폴더를 팀으로 만들어요. 폴더는 옮기지 않아요"
+      className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-transparent text-[13px] text-ink-2"
+      style={{ border: "1px dashed color-mix(in srgb, var(--text) 25%, transparent)" }}
+    >
+      다른 위치의 폴더 가져오기
+    </button>
+  );
+
   const changeRoot = async () => {
     try {
       const dir = await open({ directory: true, defaultPath: root || undefined });
@@ -253,7 +288,10 @@ export function HomeScreen() {
                 <br />
                 총괄, 팀장, 작업자로 이뤄진 AI 팀이 출근해요.
               </p>
-              <div className="mt-2 w-full text-left">{newProject}</div>
+              <div className="mt-2 flex w-full flex-col gap-2 text-left">
+                {newProject}
+                {importButton}
+              </div>
             </motion.div>
           ) : (
             <div className="flex flex-col gap-2.5">
@@ -312,6 +350,7 @@ export function HomeScreen() {
               </AnimatePresence>
               {projects.length > 1 && <span className="px-1 text-[12px] text-ink-2">오른쪽 동그라미를 눌러 여러 팀을 골라두면 한 번에 출근시킬 수 있어요.</span>}
               {newProject}
+              {importButton}
             </div>
           )}
         </section>
@@ -380,9 +419,19 @@ export function HomeScreen() {
                   <br />
                   동시에 최대 {t.concurrent}명까지 일해요
                 </span>
-                <button type="button" onClick={() => void openSettings()} className="flex w-fit items-center gap-1 border-0 bg-transparent p-0 text-[12.5px] text-ink-2 underline underline-offset-2">
-                  <Gear />팀 설정
-                </button>
+                <span className="flex flex-wrap items-center gap-3">
+                  <button type="button" onClick={() => void openSettings()} className="flex w-fit items-center gap-1 border-0 bg-transparent p-0 text-[12.5px] text-ink-2 underline underline-offset-2">
+                    <Gear />팀 설정
+                  </button>
+                  {cur.linked && !live && (
+                    <button type="button" onClick={() => void forget(cur)} title="목록에서만 빠져요. 폴더는 그대로예요" className="w-fit border-0 bg-transparent p-0 text-[12.5px] text-ink-2 underline underline-offset-2">
+                      목록에서 빼기
+                    </button>
+                  )}
+                </span>
+                {cur.linked && !cur.isGit && (
+                  <span className="text-[11.5px] leading-relaxed">처음 출근할 때 이 폴더에 변경 기록(git)을 만들어요. 그 뒤로 팀은 복사본에서 일해서 폴더 안 파일은 그대로예요.</span>
+                )}
               </div>
               <button
                 type="button"

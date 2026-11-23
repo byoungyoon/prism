@@ -121,3 +121,9 @@ export const Phone = (p: P) => (
     <path d="M11 18.5h2" />
   </Svg>
 );
+export const Book = (p: P) => (
+  <Svg {...p}>
+    <path d="M4 19.5V5a2 2 0 0 1 2-2h13v15H6.5A2.5 2.5 0 0 0 4 20.5 2.5 2.5 0 0 0 6.5 23H19" />
+    <path d="M8 7h7M8 11h5" />
+  </Svg>
+);

@@ -2,7 +2,7 @@
 
 pub fn lead(can_use_managers: bool) -> String {
     let to = if can_use_managers {
-        "큰 기능은 to:\"manager\"(팀장)에게, 작은 단일 작업은 to:\"worker\"에게 맡긴다."
+        "기본은 to:\"worker\"(작업자)에게 바로 맡긴다 — 단계가 적을수록 빨리 끝난다. 서로 다른 부분이 여럿이라 작업자 여러 명을 나눠 굴려야 하는 큰 기능일 때만 to:\"manager\"(팀장)에게 맡긴다. 나눌 수 있는 일은 작업자 카드 여러 장으로 동시에 맡겨도 된다."
     } else {
         "모든 작업은 to:\"worker\"에게 맡긴다."
     };
@@ -14,6 +14,8 @@ pub fn lead(can_use_managers: bool) -> String {
 - 하청을 준 뒤 결과를 기다리지 말고 즉시 사용자에게 '접수'를 1~2줄로 답한다. 결과는 나중에 '[Prism 보고]' 메시지로 온다.\n\
 - '[Prism 보고]'를 받으면 결과를 검토하고, 브랜치가 적혀 있으면 지금 브랜치로 git merge 한 뒤 complete_task를 호출하고, 사용자에게 2~3줄로 요약한다.\n\
 - 진행 상황이 궁금하면 list_tasks를 쓴다. 하위 에이전트에게 추가 지시는 message_agent.\n\
+- '[Prism 허락 요청 #번호]'가 오면 decide_permission으로 바로 답한다: 맡긴 일에 필요한 평범한 개발 작업(설치·빌드·테스트·파일 작업)은 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 할 일이면 ask_user. 허락 처리는 사용자에게 말하지 않는다: 허락 요청만 처리한 차례는 다른 말 없이 — 한 글자로 끝낸다.\n\
+- 사용자가 이미 있는 일을 고치거나 이어서 해달라고 하면(예: \"아까 장바구니에 할인도 넣어줘\"), 새 카드를 만들지 말고 list_tasks로 그 카드를 찾아 delegate에 follow_up: 그 카드 ID를 넣는다. 그러면 그 일을 했던 담당자가 맥락을 이어서 맡는다.\n\
 - 사용자는 개발을 모를 수 있다. 전문 용어(브랜치, 머지, 커밋, 빌드 등) 없이 쉬운 말로 답하고, 기술적인 결정(언어·도구·구조)은 네가 알아서 정한다. 꼭 필요할 때만 쉬운 선택지로 묻는다.
 - 결과를 보고할 때는 '무엇이 생겼고, 어떻게 보거나 써보면 되는지'를 알려준다 (예: 어떤 파일을 열면 되는지).
 - 답변은 한국어로 짧게. 작업 카드는 T-숫자 ID로 부른다."
@@ -27,6 +29,8 @@ pub fn manager(task_id: &str) -> String {
 - 작업을 작업자 카드로 쪼개 delegate(to:\"worker\")로 하청을 준다. 직접 구현은 최소화한다.\n\
 - 하청 후 기다리지 말고 턴을 끝낸다. 작업자 보고는 '[Prism 보고]' 메시지로 온다.\n\
 - 보고를 받으면 작업자 브랜치를 검토(git diff)하고 네 브랜치에 merge 한 뒤 complete_task를 호출한다.\n\
+- '[Prism 허락 요청 #번호]'가 오면 decide_permission으로 바로 답한다: 맡긴 일에 필요한 평범한 개발 작업은 allow, 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.\n\
+- 이미 맡긴 작업자 카드를 고치거나 이어서 할 일이면 새 카드 대신 delegate에 follow_up: 그 카드 ID를 넣어 같은 작업자에게 맡긴다.\n\
 - 모든 하위 작업이 끝나면 테스트/빌드로 확인하고 commit 한 뒤 report(status:\"done\", summary)로 총괄에게 보고한다.\n\
 - 사용자 판단이 필요하면 escalate로 질문한다. 사용자는 개발을 모를 수 있으니 쉬운 말과 쉬운 선택지로 묻는다. 답은 '[Prism 답변]'으로 온다."
     )
@@ -55,4 +59,15 @@ pub fn task_card(id: &str, title: &str, goal: &str, files: &[String], done_when:
     }
     s += "끝나면 prism report 도구로 보고해.";
     s
+}
+
+/// The user's notes for every AI (shared + this team's), appended to each role's instructions.
+pub fn knowledge(shared: &str, team: &str) -> String {
+    let mut out = String::new();
+    for (title, text) in [("모든 팀 공통 지식", shared.trim()), ("이 팀(프로젝트) 지식", team.trim())] {
+        if !text.is_empty() {
+            out += &format!("\n\n[{title} — 사용자가 적어둔 내용. 일할 때 참고한다]\n{text}");
+        }
+    }
+    out
 }

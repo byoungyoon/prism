@@ -81,6 +81,9 @@ pub struct Task {
     pub base: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// a follow-up: the card this one continues (same member, same context)
+    #[serde(default)]
+    pub follow_of: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -116,6 +119,28 @@ pub struct Permission {
     pub detail: String,
     /// "allow" | "always" | "deny" | "timeout"
     pub answer: Option<String>,
+    /// the boss deciding it (팀장 for a 작업자, 총괄 for a 팀장); None = the user decides
+    #[serde(default)]
+    pub decider: Option<String>,
+    /// who answered, for the record ("사용자", "팀장 A"…)
+    #[serde(default)]
+    pub decided_by: Option<String>,
+}
+
+/// Never left to an AI boss: these always go to the user.
+fn needs_user(tool: &str, detail: &str, project: &str) -> bool {
+    const RISKY: &[&str] = &[
+        "sudo ", "rm -rf /", "rm -rf ~", "rm -rf $home", "git push", "--force", "| sh", "|sh", "| bash", "|bash", "curl ", "wget ",
+        "chmod -r 777", "chown ", "ssh ", "scp ", "rsync ", "npm publish", "pnpm publish", "yarn publish", "cargo publish", "docker push",
+        "deploy", "drop table", "drop database", "truncate table", "mkfs", "dd if=", "launchctl", "defaults write", "security ", "keychain",
+        ".env", "id_rsa", "credential", "password", "secret", "token",
+    ];
+    let d = detail.to_lowercase();
+    if RISKY.iter().any(|p| d.contains(p)) {
+        return true;
+    }
+    // writing or editing files outside the project
+    matches!(tool, "Write" | "Edit" | "MultiEdit" | "NotebookEdit") && detail.starts_with('/') && !detail.starts_with(project)
 }
 
 /// Outcome of a PermissionRequest hook: decide now, or wait for the user.
@@ -148,6 +173,9 @@ struct Team {
     run: String,
     cwd: String,
     branch: Option<String>,
+    /// safe mode: the original folder's branch results go back to ("결과 반영하기"); None = the team
+    /// works right in the original folder
+    home: Option<String>,
     agents: Vec<Agent>,
     tasks: Vec<Task>,
     chat: Vec<ChatMsg>,
@@ -166,6 +194,8 @@ pub struct TeamSnapshot {
     pub project_name: String,
     pub cwd: String,
     pub branch: Option<String>,
+    /// safe mode: the original folder's branch ("main"…) results are reflected into
+    pub home: Option<String>,
     pub team: crate::projects::TeamConfig,
     pub agents: Vec<Agent>,
     pub tasks: Vec<Task>,
@@ -181,6 +211,8 @@ struct SavedTeam {
     run: String,
     cwd: String,
     branch: Option<String>,
+    #[serde(default)]
+    home: Option<String>,
     agents: Vec<Agent>,
     tasks: Vec<Task>,
     chat: Vec<ChatMsg>,
@@ -315,6 +347,7 @@ impl Team {
             project_name: self.project.name.clone(),
             cwd: self.cwd.clone(),
             branch: self.branch.clone(),
+            home: self.home.clone(),
             team: self.project.team.clone(),
             agents: self.agents.clone(),
             tasks: self.tasks.clone(),
@@ -385,6 +418,7 @@ impl TeamManager {
                     run: t.run.clone(),
                     cwd: t.cwd.clone(),
                     branch: t.branch.clone(),
+                    home: t.home.clone(),
                     agents: t.agents.clone(),
                     tasks: t.tasks.clone(),
                     chat: t.chat.clone(),
@@ -447,6 +481,7 @@ impl TeamManager {
                     run: saved.run,
                     cwd: saved.cwd,
                     branch: saved.branch,
+                    home: saved.home,
                     agents,
                     tasks: saved.tasks,
                     chat: saved.chat,
@@ -527,10 +562,12 @@ impl TeamManager {
             }
             // a saved (stopped) team: same history, sessions continue
             if t.agents.iter().any(|a| a.role == "lead") {
-                for (kind, home) in &homes {
-                    crate::launch::trust(kind, &project.path, home.as_deref());
-                }
                 t.project = project;
+                Self::place(t)?;
+                for (kind, home) in &homes {
+                    crate::launch::trust(kind, &t.project.path, home.as_deref());
+                    crate::launch::trust(kind, &t.cwd, home.as_deref());
+                }
                 t.homes = homes;
                 self.resume_team(t);
                 let snap = t.snapshot();
@@ -541,18 +578,13 @@ impl TeamManager {
         if project.is_git {
             sys::exclude_prism_dir(&project.path);
         }
-        for (kind, home) in &homes {
-            crate::launch::trust(kind, &project.path, home.as_deref());
-            if cwd != project.path {
-                crate::launch::trust(kind, &cwd, home.as_deref());
-            }
-        }
         let mut team = Team {
             branch: if project.is_git { sys::current_branch(&cwd) } else { None },
             project,
-            homes,
+            homes: HashMap::new(),
             run: uuid::Uuid::new_v4().to_string()[..4].to_string(),
             cwd,
+            home: None,
             agents: vec![],
             tasks: vec![],
             chat: vec![],
@@ -563,12 +595,120 @@ impl TeamManager {
             next_lone: 0,
             always_allow: Default::default(),
         };
+        Self::place(&mut team)?;
+        for (kind, home) in &homes {
+            crate::launch::trust(kind, &team.project.path, home.as_deref());
+            crate::launch::trust(kind, &team.cwd, home.as_deref());
+        }
+        team.homes = homes;
         self.spawn_agent(&mut team, "lead", None, None)?;
         team.log("팀이 출근했다. 총괄이 지시를 기다린다.", None);
         let snap = team.snapshot();
         let _ = self.app.emit("team://snapshot", &snap);
         teams.insert(team.project.id.clone(), team);
         Ok(snap)
+    }
+
+    /// Where the team works. Safe mode: its own copy of the project on its own branch, inside
+    /// `.prism/worktrees/` (made, or brought back, here); results reach the original folder only via
+    /// "결과 반영하기". Otherwise: the original folder itself.
+    fn place(team: &mut Team) -> Result<(), String> {
+        let root = team.project.path.clone();
+        let safe = team.project.team.safe && team.project.is_git;
+        let was = team.cwd.clone();
+        if safe {
+            let path = PathBuf::from(&root).join(".prism").join("worktrees").join(format!("team-{}", team.run));
+            let branch = format!("prism/{}/team", team.run);
+            if team.home.is_none() {
+                team.home = Some(sys::current_branch(&root).unwrap_or_else(|| "main".into()));
+            }
+            if !path.exists() {
+                let _ = sys::git(&root, &["worktree", "prune"]);
+                std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+                let p = path.to_string_lossy().into_owned();
+                if sys::git(&root, &["rev-parse", "--verify", "--quiet", &branch]).is_ok() {
+                    sys::git(&root, &["worktree", "add", &p, &branch]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
+                } else {
+                    sys::git(&root, &["worktree", "add", "-b", &branch, &p, "HEAD"]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
+                }
+            }
+            team.cwd = path.to_string_lossy().into_owned();
+            team.branch = Some(branch);
+        } else {
+            // safe mode turned off: back to the original folder (the team branch stays for later)
+            team.home = None;
+            team.cwd = root.clone();
+            team.branch = sys::current_branch(&root);
+        }
+        // the 총괄 works wherever the team works (a moved one starts a fresh conversation there)
+        if team.cwd != was {
+            let cwd = team.cwd.clone();
+            for a in team.agents.iter_mut().filter(|a| a.role == "lead") {
+                a.cwd = cwd.clone();
+                a.branch = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn reflect_refs(&self, pid: &str) -> Result<(String, String, String, String), String> {
+        let teams = self.teams.lock().unwrap();
+        let team = teams.get(pid).ok_or("팀이 없어요")?;
+        let home = team.home.clone().ok_or("이 팀은 원래 폴더에서 바로 일하고 있어요")?;
+        let branch = team.branch.clone().ok_or("작업 공간이 없어요")?;
+        Ok((team.project.path.clone(), home, branch, team.project.name.clone()))
+    }
+
+    /// What "결과 반영하기" would bring into the original folder.
+    pub fn reflect_info(&self, pid: &str) -> Result<ReflectInfo, String> {
+        let (root, home, branch, _) = self.reflect_refs(pid)?;
+        let commits = sys::git(&root, &["rev-list", "--count", &format!("{home}..{branch}")]).ok().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+        let files = sys::git(&root, &["diff", "--numstat", &format!("{home}...{branch}")])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.splitn(3, '\t');
+                let (a, r, p) = (it.next()?, it.next()?, it.next()?);
+                Some(FileStat { path: p.into(), added: a.parse().unwrap_or(-1), removed: r.parse().unwrap_or(-1) })
+            })
+            .filter(|f| !f.path.starts_with(".prism/"))
+            .collect();
+        let current = sys::current_branch(&root).unwrap_or_default();
+        let dirty = !sys::changes(&root).is_empty();
+        Ok(ReflectInfo { home: home.clone(), branch, commits, files, dirty, current })
+    }
+
+    /// "결과 반영하기": merge the team's branch into the original folder's branch. Only on a clean
+    /// checkout of that branch; a conflict is rolled back and reported as "CONFLICT".
+    pub fn reflect(&self, pid: &str) -> Result<String, String> {
+        let (root, home, branch, name) = self.reflect_refs(pid)?;
+        let info = self.reflect_info(pid)?;
+        if info.current != home {
+            return Err(format!("원래 폴더가 지금 '{}'에 있어요. '{home}'로 바꾼 뒤 다시 해주세요.", info.current));
+        }
+        if info.dirty {
+            return Err("원래 폴더에 저장하지 않은 수정이 있어요. 정리한 뒤 다시 해주세요.".into());
+        }
+        if info.commits == 0 {
+            return Ok("반영할 새 결과가 없어요.".into());
+        }
+        let has_identity = sys::git(&root, &["config", "user.email"]).map(|e| !e.is_empty()).unwrap_or(false);
+        let mut args = vec![];
+        if !has_identity {
+            args.extend(["-c", "user.name=Prism", "-c", "user.email=prism@localhost"]);
+        }
+        let msg = format!("Prism: {name} 결과 반영");
+        args.extend(["merge", "--no-ff", "-m", &msg, &branch]);
+        if sys::git(&root, &args).is_err() {
+            let _ = sys::git(&root, &["merge", "--abort"]);
+            return Err("CONFLICT".into());
+        }
+        let mut teams = self.teams.lock().unwrap();
+        if let Some(team) = teams.get_mut(pid) {
+            team.log(format!("결과를 원래 폴더의 '{home}'에 반영했다 (변경 {}개).", info.commits), None);
+            self.emit(team);
+        }
+        Ok(format!("'{home}'에 반영했어요."))
     }
 
     pub fn stop(&self, pid: &str) {
@@ -691,15 +831,19 @@ impl TeamManager {
         let cfg = team.project.team.clone();
         let a = team.agent(aid).cloned().ok_or("no agent")?;
         let task = a.task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).cloned();
-        let system = match a.role.as_str() {
+        let mut system = match a.role.as_str() {
             "lead" => prompts::lead(cfg.managers.max > 0),
             "mgr" => prompts::manager(task.as_ref().map(|t| t.id.as_str()).unwrap_or("?")),
             _ => prompts::worker(),
         };
+        // what the user wrote down for every AI: shared, then this team's (latest saved, not the
+        // copy the team clocked in with)
+        let team_notes = self.app.try_state::<Projects>().and_then(|p| p.get(&team.project.id)).map(|p| p.knowledge).unwrap_or_default();
+        system += &prompts::knowledge(&crate::projects::shared_knowledge(&self.app), &team_notes);
         let pid = team.project.id.clone();
         // a Claude session that never got a message has nothing saved to resume: start it fresh
         let home = team.homes.get(&a.kind).cloned().flatten();
-        let resume = resume.filter(|sid| a.kind != "claude" || crate::launch::claude_session_exists(home.as_deref(), sid));
+        let resume = resume.filter(|sid| a.kind != "claude" || crate::launch::claude_session_exists(home.as_deref(), sid, &a.cwd));
         let session_id = resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // a fresh session gets its task card; a resumed one already has it
         let prompt = if resume.is_none() {
@@ -893,7 +1037,8 @@ impl TeamManager {
                     }
                 }
                 if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
-                    if role == "lead" {
+                    // a turn spent only on a teammate's permission request ends with "—": nothing to tell the user
+                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") {
                         team.say("lead", text.trim().to_string(), None);
                     }
                     drop(teams);
@@ -933,6 +1078,126 @@ impl TeamManager {
     }
 
     // ── user actions ──────────────────────────────────
+
+    /// "Keep going on T-n": more work for whoever did T-n, with their context intact.
+    /// Still working on it → the instruction goes straight to them. Already reported or finished →
+    /// a follow-up card (`follow_of`) for the same member; a member who clocked out comes back with
+    /// its own conversation, in its own work folder (Claude keeps a conversation per folder), which
+    /// is recreated from the latest state if it was cleared after merging.
+    fn follow_up(&self, team: &mut Team, tid: &str, text: &str, from_user: bool) -> Result<String, String> {
+        let task = team.tasks.iter().find(|t| t.id == tid).cloned().ok_or("그런 작업 카드가 없어요")?;
+        if task.stage == "queued" {
+            return Err(format!("{tid}는 아직 시작 전이에요"));
+        }
+        let aid = task.assignee.clone().ok_or("아직 아무도 맡지 않은 일이에요")?;
+        let agent = team.agent(&aid).cloned().ok_or("담당자를 찾을 수 없어요")?;
+        let pid = team.project.id.clone();
+        let running = |a: &str| self.drivers.lock().unwrap().contains_key(&format!("{pid}/{a}"));
+        let alive = running(&aid);
+        let by = if from_user { "사용자" } else { "총괄" };
+
+        if task.stage == "running" && alive {
+            if let Some(t) = team.task_mut(tid) {
+                t.goal = format!("{}\n추가: {text}", t.goal);
+                t.updated_at = now_ms();
+            }
+            team.log(format!("{by}가 {}에게 {tid} 추가 지시를 보냈다.", agent.name), None);
+            self.inject(team, &aid, format!("[Prism 추가 지시 · {tid}] {text}"));
+            return Ok(format!("{tid}를 하고 있는 {}에게 추가 지시를 바로 전달했어요.", agent.name));
+        }
+
+        team.next_task += 1;
+        let fid = format!("T-{}", team.next_task);
+        let now = now_ms();
+        team.tasks.push(Task {
+            id: fid.clone(),
+            title: short(text, 30),
+            goal: text.into(),
+            files: vec![],
+            done_when: vec![],
+            requested_by: task.requested_by.clone(),
+            assignee: Some(aid.clone()),
+            role: task.role.clone(),
+            model: None,
+            stage: "running".into(),
+            summary: None,
+            branch: None,
+            base: None,
+            created_at: now,
+            updated_at: now,
+            follow_of: Some(tid.into()),
+        });
+
+        let mut fresh = false;
+        if !alive {
+            let wt = agent.cwd.clone();
+            let base = if wt.contains("/.prism/worktrees/") && !std::path::Path::new(&wt).exists() {
+                // its folder was cleared after merging: same place, cut from the latest state
+                let parent_cwd = agent
+                    .parent_id
+                    .as_deref()
+                    .and_then(|p| team.agent(p))
+                    .map(|p| p.cwd.clone())
+                    .filter(|c| std::path::Path::new(c).exists())
+                    .unwrap_or_else(|| team.cwd.clone());
+                let branch = format!("prism/{}/{}", team.run, fid.to_lowercase());
+                let base = sys::git(&parent_cwd, &["rev-parse", "HEAD"]).ok();
+                sys::add_worktree(&parent_cwd, std::path::Path::new(&wt), &branch)?;
+                if let Some(a) = team.agent_mut(&aid) {
+                    a.branch = Some(branch);
+                }
+                base
+            } else {
+                sys::git(&wt, &["rev-parse", "HEAD"]).ok()
+            };
+            if let Some(t) = team.task_mut(&fid) {
+                t.base = base;
+            }
+            // whoever it used to report to may have clocked out: report to the 총괄 then
+            let parent_alive = agent.parent_id.as_deref().is_some_and(&running);
+            if let Some(a) = team.agent_mut(&aid) {
+                a.task_id = Some(fid.clone());
+                if !parent_alive {
+                    a.parent_id = Some("lead".into());
+                }
+            }
+            let resume = (!agent.session_id.is_empty()).then(|| agent.session_id.clone());
+            if self.launch_agent(team, &aid, resume).is_err() {
+                self.launch_agent(team, &aid, None)?;
+                fresh = true; // a fresh start already got the card as its first message
+            }
+        } else {
+            if let Some(t) = team.task_mut(&fid) {
+                t.base = sys::git(&agent.cwd, &["rev-parse", "HEAD"]).ok();
+            }
+            if let Some(a) = team.agent_mut(&aid) {
+                a.task_id = Some(fid.clone());
+            }
+        }
+        team.log(format!("{by}가 {tid}에 이어서 {fid}를 {}에게 맡겼다.", agent.name), None);
+        if !fresh {
+            let branch = team.agent(&aid).and_then(|a| a.branch.clone());
+            let card = prompts::task_card(&fid, &short(text, 30), text, &[], &[], branch.as_deref());
+            self.inject(team, &aid, format!("[Prism 추가 작업 · {tid}에 이어서]\n{card}"));
+        }
+        Ok(format!("{tid}에 이어서 {fid}를 {}에게 맡겼어요. 끝나면 '[Prism 보고]'가 와요.", agent.name))
+    }
+
+    /// The report card's "이어서 시키기": the user hands more work to whoever did `tid`.
+    pub fn task_follow_up(&self, pid: &str, tid: &str, text: String) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
+        let out = self.follow_up(team, tid, text.trim(), true)?;
+        team.say("me", format!("{tid}에 이어서: {}", text.trim()), None);
+        // the 총괄 stays in the loop: it reviews and merges when the report comes
+        self.inject(
+            team,
+            "lead",
+            format!("[Prism 알림] 사용자가 작업 카드에서 직접 맡겼어요 — {out} 보고가 오면 평소처럼 검토·머지하고 complete_task 하세요. 사용자에게는 접수했다고 한 줄만 답하세요."),
+        );
+        self.emit(team);
+        Ok(())
+    }
 
     pub fn lead_send(&self, pid: &str, text: String) -> Result<(), String> {
         let mut teams = self.teams.lock().unwrap();
@@ -1031,31 +1296,80 @@ impl TeamManager {
             return PermWait::Now("allow");
         }
         let name = team.name_of(aid);
+        // the boss decides first (팀장 for a 작업자, 총괄 for a 팀장) — unless it's risky or nobody's there
+        let boss = team
+            .agent(aid)
+            .and_then(|a| a.parent_id.clone())
+            .filter(|b| !needs_user(&tool, &detail, &team.project.path) && self.drivers.lock().unwrap().contains_key(&format!("{pid}/{b}")));
         let (tx, rx) = tokio::sync::oneshot::channel();
         let id = team.say("permission", format!("{name}이(가) 실행하려고 해요"), None);
         if let Some(m) = team.chat.iter_mut().find(|m| m.id == id) {
             m.task_ids.clear();
-            m.permission = Some(Permission { agent_id: aid.into(), tool: tool.clone(), detail: detail.clone(), answer: None });
+            m.permission = Some(Permission { agent_id: aid.into(), tool: tool.clone(), detail: detail.clone(), answer: None, decider: boss.clone(), decided_by: None });
         }
         team.set_status(aid, "block");
-        team.log(format!("{name}이(가) 허락을 기다린다: {tool} {}", short(&detail, 50)), Some("block"));
         self.perm_waiters.lock().unwrap().insert(id, tx);
-        self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
+        match &boss {
+            Some(b) => {
+                let boss_name = team.name_of(b);
+                team.log(format!("{name}이(가) {boss_name}에게 허락을 구한다: {tool} {}", short(&detail, 50)), None);
+                self.inject(
+                    team,
+                    b,
+                    format!(
+                        "[Prism 허락 요청 #{id}] {name}이(가) 실행하려고 해요 — {tool}: {}\n\
+프로젝트 안의 평범한 개발 작업(설치·빌드·테스트·파일 작업)이면 decide_permission(request_id: {id}, decision: \"allow\"), \
+맡긴 일과 상관없거나 위험하면 \"deny\", 사용자 판단이 필요하면 \"ask_user\". 판단한 뒤 하던 일을 이어서 하세요.",
+                        short(&detail, 300)
+                    ),
+                );
+                // a busy boss mustn't stall the team: hand it to the user after a while
+                let app = self.app.clone();
+                let pid2 = pid.to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(90));
+                    if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                        m.escalate_permission(&pid2, id, "윗선이 바로 답하지 못했어요");
+                    }
+                });
+            }
+            None => {
+                team.log(format!("{name}이(가) 허락을 기다린다: {tool} {}", short(&detail, 50)), Some("block"));
+                self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
+            }
+        }
         self.emit(team);
         PermWait::Wait(id, rx)
     }
 
-    /// `answer`: "allow" | "always" | "deny" | "timeout"
-    pub fn answer_permission(&self, pid: &str, msg_id: u64, answer: &str) -> Result<(), String> {
+    /// Hand a request the boss is holding over to the user (boss asked, or took too long).
+    fn escalate_permission(&self, pid: &str, msg_id: u64, why: &str) {
         let mut teams = self.teams.lock().unwrap();
-        let team = teams.get_mut(pid).ok_or("no team")?;
+        let Some(team) = teams.get_mut(pid) else { return };
+        let Some(m) = team.chat.iter_mut().find(|m| m.id == msg_id) else { return };
+        let Some(p) = m.permission.as_mut() else { return };
+        if p.answer.is_some() || p.decider.is_none() {
+            return;
+        }
+        p.decider = None;
+        let (aid, tool, detail) = (p.agent_id.clone(), p.tool.clone(), p.detail.clone());
+        let name = team.name_of(&aid);
+        team.log(format!("{name}의 허락 요청을 사용자에게 넘겼다 ({why})."), Some("block"));
+        self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
+        self.emit(team);
+    }
+
+    /// One way to settle a request, whoever answers. `by`: "사용자" or the deciding boss's name.
+    fn resolve_permission(&self, team: &mut Team, msg_id: u64, answer: &str, by: &str) -> Result<(), String> {
         let msg = team.chat.iter_mut().find(|m| m.id == msg_id).ok_or("no such message")?;
         let perm = msg.permission.as_mut().ok_or("not a permission request")?;
         if perm.answer.is_some() {
             return Ok(());
         }
         perm.answer = Some(answer.into());
-        let (aid, key) = (perm.agent_id.clone(), perm_key(&perm.tool, &perm.detail));
+        perm.decided_by = Some(by.into());
+        perm.decider = None;
+        let (aid, key, detail) = (perm.agent_id.clone(), perm_key(&perm.tool, &perm.detail), perm.detail.clone());
         if answer == "always" {
             team.always_allow.insert(key);
         }
@@ -1069,10 +1383,17 @@ impl TeamManager {
         if answer != "timeout" {
             team.set_status(&aid, "work");
             let name = team.name_of(&aid);
-            team.log(format!("사용자가 {name}의 요청을 {}했다.", if answer == "deny" { "거부" } else { "허락" }), None);
+            team.log(format!("{by}가 {name}의 요청을 {}했다: {}", if answer == "deny" { "거부" } else { "허락" }, short(&detail, 40)), None);
         }
         self.emit(team);
         Ok(())
+    }
+
+    /// `answer`: "allow" | "always" | "deny" | "timeout"
+    pub fn answer_permission(&self, pid: &str, msg_id: u64, answer: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("no team")?;
+        self.resolve_permission(team, msg_id, answer, if answer == "timeout" { "시간 초과" } else { "사용자" })
     }
 
     // ── hooks & status line ───────────────────────────
@@ -1171,7 +1492,8 @@ impl TeamManager {
                 "goal": { "type": "string", "description": "무엇을 해야 하는지 구체적으로" },
                 "to": { "type": "string", "enum": to_enum },
                 "files": strs, "done_when": strs,
-                "model": { "type": "string", "description": "이 카드만 다른 모델로 (opus/sonnet/haiku). 보통 생략" }
+                "model": { "type": "string", "description": "이 카드만 다른 모델로 (opus/sonnet/haiku). 보통 생략" },
+                "follow_up": { "type": "string", "description": "이미 있는 카드의 추가·수정 작업이면 그 카드 ID (예: T-1). 같은 담당자가 맥락을 이어서 맡는다. 새 일이면 생략" }
             }, "required": ["title", "goal", "to"] }
         });
         let list = json!({ "name": "list_tasks", "description": "팀의 작업 카드와 에이전트 상태를 본다.", "inputSchema": { "type": "object", "properties": {} } });
@@ -1205,9 +1527,18 @@ impl TeamManager {
                 "tool_name": { "type": "string" }, "input": { "type": "object" }, "tool_use_id": { "type": "string" }
             }, "required": ["tool_name", "input"] }
         });
+        let decide = json!({
+            "name": "decide_permission",
+            "description": "아래 팀원이 보낸 '[Prism 허락 요청 #번호]'에 답한다. 평범한 개발 작업이면 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.",
+            "inputSchema": { "type": "object", "properties": {
+                "request_id": { "type": "integer" },
+                "decision": { "type": "string", "enum": ["allow", "deny", "ask_user"] },
+                "reason": { "type": "string", "description": "한 줄 이유 (기록용)" }
+            }, "required": ["request_id", "decision"] }
+        });
         match role.as_str() {
-            "lead" => vec![delegate, list, message, complete, approve],
-            "mgr" => vec![delegate, list, message, complete, report, escalate, approve],
+            "lead" => vec![delegate, list, message, complete, decide, approve],
+            "mgr" => vec![delegate, list, message, complete, report, escalate, decide, approve],
             "worker" => vec![report, escalate, approve],
             _ => vec![],
         }
@@ -1226,6 +1557,15 @@ impl TeamManager {
         let me = team.agent(aid).cloned().ok_or("알 수 없는 에이전트")?;
 
         let out = match tool {
+            "delegate" if s("follow_up").is_some_and(|x| !x.trim().is_empty()) => {
+                let of = s("follow_up").unwrap();
+                let mine = team.tasks.iter().any(|t| t.id == of && (t.requested_by == aid || me.role == "lead"));
+                if !mine {
+                    return Err(format!("{of}는 네가 맡긴 카드가 아니에요"));
+                }
+                let text = [s("title"), s("goal")].into_iter().flatten().collect::<Vec<_>>().join(" — ");
+                self.follow_up(team, &of, &text, false)?
+            }
             "delegate" => {
                 let role = if s("to").as_deref() == Some("manager") && me.role == "lead" { "mgr" } else { "worker" };
                 team.next_task += 1;
@@ -1247,6 +1587,7 @@ impl TeamManager {
                     base: None,
                     created_at: now,
                     updated_at: now,
+                    follow_of: None,
                 });
                 team.log(format!("{}이(가) {id} \"{}\"를 만들었다.", me.name, short(&s("title").unwrap_or_default(), 30)), None);
                 self.process_queue(team);
@@ -1254,6 +1595,28 @@ impl TeamManager {
                 match &t.assignee {
                     Some(a) => format!("{id} 배정 → {} ({}). 끝나면 '[Prism 보고]'가 옵니다. 기다리지 말고 다음 일을 하세요.", team.name_of(a), team.agent(a).map(|x| x.model.clone()).unwrap_or_default()),
                     None => format!("{id} 대기열에 들어갔어요 (동시 실행 한도). 자리가 나면 자동 배정됩니다."),
+                }
+            }
+            "decide_permission" => {
+                let id = args.get("request_id").and_then(Value::as_u64).ok_or("request_id 필요")?;
+                let decision = s("decision").unwrap_or_default();
+                let perm = team.chat.iter().find(|m| m.id == id).and_then(|m| m.permission.clone()).ok_or("그런 허락 요청이 없어요")?;
+                if perm.answer.is_some() {
+                    "이미 처리된 요청이에요. 하던 일을 이어서 하세요.".to_string()
+                } else if perm.decider.as_deref() != Some(aid) {
+                    return Err("네가 판단할 요청이 아니에요".into());
+                } else {
+                    match decision.as_str() {
+                        "allow" | "deny" => {
+                            self.resolve_permission(team, id, &decision, &me.name)?;
+                            format!("{} 처리했어요. 하던 일을 이어서 하세요.", if decision == "allow" { "허락" } else { "거부" })
+                        }
+                        _ => {
+                            drop(teams);
+                            self.escalate_permission(pid, id, &s("reason").unwrap_or_else(|| "윗선이 사용자 판단을 요청".into()));
+                            return Ok("사용자에게 넘겼어요. 답은 그 팀원에게 바로 가요. 하던 일을 이어서 하세요.".into());
+                        }
+                    }
                 }
             }
             "list_tasks" => {
@@ -1277,7 +1640,9 @@ impl TeamManager {
                 let t = team.task_mut(&tid).ok_or("그런 작업 카드가 없어요")?;
                 t.stage = "done".into();
                 t.updated_at = now_ms();
-                let assignee = t.assignee.clone();
+                // clock the member out only if this is still the card it holds: after a follow-up
+                // ("이어서") it is already busy with the next one in the same folder
+                let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid.as_str())));
                 if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
                     a.status = "done".into();
                     a.status_since = now_ms();
@@ -1557,6 +1922,11 @@ pub fn team_get(teams: Teams<'_>, project_id: String) -> Option<TeamSnapshot> {
 }
 
 #[tauri::command]
+pub fn task_follow_up(teams: Teams<'_>, project_id: String, task_id: String, text: String) -> Result<(), String> {
+    teams.task_follow_up(&project_id, &task_id, text)
+}
+
+#[tauri::command]
 pub fn lead_send(teams: Teams<'_>, project_id: String, text: String) -> Result<(), String> {
     teams.lead_send(&project_id, text)
 }
@@ -1569,6 +1939,32 @@ pub fn escalation_answer(teams: Teams<'_>, project_id: String, msg_id: u64, answ
 #[tauri::command]
 pub fn permission_answer(teams: Teams<'_>, project_id: String, msg_id: u64, answer: String) -> Result<(), String> {
     teams.answer_permission(&project_id, msg_id, &answer)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReflectInfo {
+    /// the original folder's branch results go into
+    pub home: String,
+    /// the team's branch
+    pub branch: String,
+    /// commits on the team branch not yet in `home`
+    pub commits: u32,
+    pub files: Vec<FileStat>,
+    /// the original folder has unsaved edits
+    pub dirty: bool,
+    /// the branch the original folder is on right now
+    pub current: String,
+}
+
+#[tauri::command]
+pub async fn team_reflect_info(app: AppHandle, project_id: String) -> Result<ReflectInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().reflect_info(&project_id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn team_reflect(app: AppHandle, project_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().reflect(&project_id)).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

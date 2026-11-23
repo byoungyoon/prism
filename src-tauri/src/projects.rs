@@ -33,6 +33,14 @@ pub struct TeamConfig {
     pub permission_mode: String,
     /// Give managers/workers their own git worktree + branch.
     pub isolate: bool,
+    /// Work in a copy of the project on its own branch and touch the original folder only when the
+    /// user presses "결과 반영하기". Off: work (and merge) right in the original folder.
+    #[serde(default = "yes")]
+    pub safe: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for TeamConfig {
@@ -47,6 +55,7 @@ impl Default for TeamConfig {
             concurrent: 6,
             permission_mode: "acceptEdits".into(),
             isolate: true,
+            safe: true,
         }
     }
 }
@@ -62,6 +71,12 @@ pub struct Project {
     pub team: TeamConfig,
     #[serde(default)]
     pub last_opened: u64,
+    /// what every AI on this team should know (server info, conventions…), user-edited
+    #[serde(default)]
+    pub knowledge: String,
+    /// brought in from outside the workspace folder ("다른 위치의 폴더 가져오기")
+    #[serde(default)]
+    pub linked: bool,
 }
 
 pub struct Projects {
@@ -182,13 +197,19 @@ impl Projects {
                 }
                 None => {
                     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let p = Project { id: uuid::Uuid::new_v4().to_string()[..8].to_string(), name, path, is_git, team: self.default_team(), last_opened: 0 };
+                    let p = Project { id: uuid::Uuid::new_v4().to_string()[..8].to_string(), name, path, is_git, team: self.default_team(), last_opened: 0, knowledge: String::new(), linked: false };
                     list.push(p.clone());
                     changed = true;
                     p
                 }
             };
             out.push(p);
+        }
+        // folders brought in from elsewhere, while they still exist
+        for p in list.iter().filter(|p| p.linked && std::path::Path::new(&p.path).is_dir()) {
+            if !out.iter().any(|o| o.path == p.path) {
+                out.push(p.clone());
+            }
         }
         if changed {
             self.save(&list);
@@ -276,6 +297,57 @@ pub fn project_create(projects: State<'_, Projects>, name: String) -> Result<Pro
     projects.update(&p.id, |p| p.last_opened = now_ms())
 }
 
+/// "다른 위치의 폴더 가져오기": make a project of a folder outside the workspace. Nothing in the
+/// folder changes now (a folder without git gets one when its team first clocks in).
+#[tauri::command]
+pub fn project_import(projects: State<'_, Projects>, path: String) -> Result<Project, String> {
+    let dir = PathBuf::from(path.trim());
+    if !dir.is_dir() {
+        return Err("폴더를 찾을 수 없어요".into());
+    }
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let path = dir.to_string_lossy().into_owned();
+    if let Some(home) = std::env::home_dir() {
+        if dir == home || dir.parent().is_none() {
+            return Err("홈 폴더나 디스크 전체는 프로젝트로 가져올 수 없어요. 프로젝트 폴더를 골라주세요.".into());
+        }
+    }
+    let existing = projects.sync().into_iter().find(|p| p.path == path);
+    if let Some(p) = existing {
+        return projects.update(&p.id, |p| p.last_opened = now_ms());
+    }
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "프로젝트".into());
+    let p = Project {
+        id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
+        name,
+        is_git: dir.join(".git").exists(),
+        path,
+        team: projects.default_team(),
+        last_opened: now_ms(),
+        knowledge: String::new(),
+        linked: true,
+    };
+    {
+        let mut list = projects.list.lock().unwrap();
+        list.push(p.clone());
+        projects.save(&list);
+    }
+    Ok(p)
+}
+
+/// Take a brought-in folder off the list. The folder itself is left as it is.
+#[tauri::command]
+pub fn project_forget(projects: State<'_, Projects>, id: String) -> Result<(), String> {
+    let mut list = projects.list.lock().unwrap();
+    let p = list.iter().find(|p| p.id == id).ok_or("그런 프로젝트가 없어요")?;
+    if !p.linked {
+        return Err("작업 폴더 안의 프로젝트는 목록에서 뺄 수 없어요".into());
+    }
+    list.retain(|p| p.id != id);
+    projects.save(&list);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn prefs_get(projects: State<'_, Projects>) -> Settings {
     projects.prefs.lock().unwrap().clone()
@@ -300,6 +372,33 @@ pub fn project_touch(projects: State<'_, Projects>, id: String) -> Result<Projec
 #[tauri::command]
 pub fn project_set_team(projects: State<'_, Projects>, id: String, team: TeamConfig) -> Result<Project, String> {
     projects.update(&id, |p| p.team = team)
+}
+
+#[tauri::command]
+pub fn project_set_knowledge(projects: State<'_, Projects>, id: String, text: String) -> Result<Project, String> {
+    projects.update(&id, |p| p.knowledge = text)
+}
+
+// ── shared knowledge: what every AI on every team should know ──
+
+fn knowledge_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("knowledge.md"))
+}
+
+pub fn shared_knowledge(app: &AppHandle) -> String {
+    knowledge_file(app).and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn knowledge_get(app: AppHandle) -> String {
+    shared_knowledge(&app)
+}
+
+#[tauri::command]
+pub fn knowledge_set(app: AppHandle, text: String) -> Result<(), String> {
+    let f = knowledge_file(&app).ok_or("저장할 곳을 찾지 못했어요")?;
+    let _ = std::fs::create_dir_all(f.parent().unwrap());
+    std::fs::write(f, text).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

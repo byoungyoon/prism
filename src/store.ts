@@ -36,9 +36,6 @@ interface AppState {
   projectId: string | null;
   /** latest snapshot per project id */
   teams: Record<string, TeamSnapshot>;
-  /** dev builds: sample teams shown in place (see src/dev/demo.ts) */
-  demo: boolean;
-  toggleDemo(): Promise<void>;
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -110,31 +107,6 @@ export const useApp = create<AppState>((set, get) => {
     root: "",
     projectId: null,
     teams: {},
-    demo: false,
-    toggleDemo: async () => {
-      const { makeDemo, DEMO_PREFIX } = await import("./dev/demo");
-      const isDemo = (id: string) => id.startsWith(DEMO_PREFIX);
-      if (!get().demo) {
-        const { projects, teams } = makeDemo();
-        set((s) => ({
-          demo: true,
-          projects: [...projects, ...s.projects.filter((p) => !isDemo(p.id))],
-          teams: { ...s.teams, ...teams },
-          projectId: projects[0].id,
-          view: { name: "main" },
-          selectedCard: null,
-        }));
-      } else {
-        set((s) => ({
-          demo: false,
-          projects: s.projects.filter((p) => !isDemo(p.id)),
-          teams: Object.fromEntries(Object.entries(s.teams).filter(([id]) => !isDemo(id))),
-          projectId: null,
-          view: { name: "home" },
-          selectedCard: null,
-        }));
-      }
-    },
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -242,6 +214,10 @@ export const useApp = create<AppState>((set, get) => {
 
 export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status !== "off");
 
+
+/** Waiting for the user: an open question, or a permission request no boss is deciding. */
+export const waitsForMe = (m: { escalation: { answer: string | null } | null; permission: { answer: string | null; decider?: string | null } | null }) =>
+  (!!m.escalation && !m.escalation.answer) || (!!m.permission && !m.permission.answer && !m.permission.decider);
 
 /** Teams the 관제탑 shows together: every team at work, plus the open one. */
 export const useShownTeams = () => {
