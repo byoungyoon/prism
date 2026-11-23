@@ -849,6 +849,22 @@ impl TeamManager {
 
     // ── lifecycle ─────────────────────────────────────
 
+    /// What batches (묶음 지시) need to judge whether a team has finished; None if the team is gone.
+    pub fn batch_facts(&self, pid: &str) -> Option<crate::batch::Facts> {
+        let teams = self.teams.lock().unwrap();
+        let t = teams.get(pid)?;
+        Some(crate::batch::Facts {
+            name: t.project.name.clone(),
+            lead_status: t.agent("lead").map(|a| a.status.clone()).unwrap_or_else(|| "off".into()),
+            lead_stuck: t.agent("lead").is_some_and(|a| a.stuck.is_some()),
+            tasks: t.tasks.iter().map(|k| (k.created_at, k.stage.clone())).collect(),
+            replies: {
+                let all: Vec<(u64, String)> = t.chat.iter().filter(|m| m.kind == "lead" || m.kind == "report").map(|m| (m.at, m.text.clone())).collect();
+                all[all.len().saturating_sub(20)..].to_vec()
+            },
+        })
+    }
+
     pub fn snapshot(&self, pid: &str) -> Option<TeamSnapshot> {
         self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())
     }
