@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useShownTeams } from "../store";
-import { api, type Agent, type ChatMsg, type FileStat, type Project, type ReflectInfo, type Task, type TeamSnapshot } from "../lib/api";
+import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
 import { TeamTag } from "./TeamTag";
 import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
@@ -381,136 +381,6 @@ function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; tea
   );
 }
 
-// ── putting the team's work into the original folder ──
-
-/** Safe mode: the team works in a copy; this brings its results into the original folder. */
-function ReflectBar({ project, team }: { project: Project; team: TeamSnapshot }) {
-  const setError = useApp((s) => s.setError);
-  const sendToLead = useApp((s) => s.sendToLead);
-  const [open, setOpen] = useState(false);
-  const [info, setInfo] = useState<ReflectInfo | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ kind: "ok" | "conflict"; text: string } | null>(null);
-  const home = team.home;
-
-  const load = async () => {
-    setInfo(null);
-    try {
-      setInfo(await api.reflectInfo(project.id));
-    } catch (e) {
-      setError(e);
-      setOpen(false);
-    }
-  };
-  const toggle = () => {
-    setNote(null);
-    if (!open) void load();
-    setOpen((v) => !v);
-  };
-  const reflect = async () => {
-    setBusy(true);
-    try {
-      const msg = await api.reflect(project.id);
-      setNote({ kind: "ok", text: msg });
-      void load();
-    } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      if (m.includes("CONFLICT")) setNote({ kind: "conflict", text: `그사이 '${home}'도 바뀌어서 겹치는 부분이 있어요. 원래 폴더는 그대로예요.` });
-      else setError(m);
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!home) return null;
-
-  const blocked = info ? (info.current !== info.home ? `원래 폴더가 지금 '${info.current}'에 있어요. '${info.home}'로 바꾼 뒤 반영할 수 있어요.` : info.dirty ? "원래 폴더에 저장하지 않은 수정이 있어요. 정리한 뒤 반영할 수 있어요." : null) : null;
-
-  return (
-    // laid out by the header row: the button on its right, the panel on its own line below
-    <div className="contents">
-      <button
-        onClick={toggle}
-        aria-expanded={open}
-        title={`팀은 작업 공간에서 일해요. 눌러서 결과를 원래 폴더의 '${home}'에 반영해요`}
-        className="ml-auto flex min-h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
-        style={open ? { background: "var(--tile)", border: "1px solid var(--amber)" } : { border: "1px solid var(--line)" }}
-      >
-        결과 반영하기 <span className="text-ink-2">→ {home}</span>
-      </button>
-      {open && (
-        <motion.div
-          initial={{ opacity: 0, y: -4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={spring}
-          className="glass flex basis-full flex-col gap-2.5 rounded-2xl p-3.5 text-[12.5px]"
-          style={{ boxShadow: "var(--shadow-sm), var(--hi)" }}
-        >
-          {!info ? (
-            <span className="text-ink-2">확인하는 중…</span>
-          ) : info.commits === 0 ? (
-            <span className="text-ink-2">'{info.home}'에 아직 반영하지 않은 새 결과가 없어요.</span>
-          ) : (
-            <>
-              <span>
-                변경 <b>{info.commits}</b>개 · 파일 <b>{info.files.length}</b>개를 원래 폴더의 <b>'{info.home}'</b>에 합쳐요.
-              </span>
-              <ul className="m-0 flex max-h-36 list-none flex-col gap-0.5 overflow-y-auto p-0 font-mono text-[11.5px]">
-                {info.files.map((f) => (
-                  <li key={f.path} className="flex gap-2">
-                    <span className="min-w-0 flex-auto truncate" title={f.path}>
-                      {f.path}
-                    </span>
-                    {f.added >= 0 && (
-                      <span className="shrink-0 text-ink-2">
-                        +{f.added} −{f.removed}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {blocked && <span style={{ color: "var(--block-ink)" }}>{blocked}</span>}
-          {note?.kind === "ok" && <span className="font-medium">{note.text}</span>}
-          {note?.kind === "conflict" && (
-            <div className="flex flex-col gap-2">
-              <span style={{ color: "var(--block-ink)" }}>{note.text}</span>
-              <button
-                onClick={() => {
-                  void sendToLead(
-                    `원래 폴더의 '${home}' 최신 내용을 지금 작업 공간에 합쳐 주세요 (git merge ${home}). 겹치는 부분이 있으면 작업자에게 정리를 맡기고, 끝나면 알려주세요.`,
-                    project.id,
-                  );
-                  setOpen(false);
-                }}
-                className="self-start rounded-full border-0 px-3 py-1.5 text-[12px] font-semibold"
-                style={{ background: "var(--amber)", color: "#2B2520" }}
-              >
-                총괄에게 정리 맡기기
-              </button>
-            </div>
-          )}
-          <div className="flex justify-end gap-1.5">
-            <button onClick={() => setOpen(false)} className="min-h-8 rounded-full px-3 text-[12px]" style={{ border: "1px solid var(--line)" }}>
-              닫기
-            </button>
-            {info && info.commits > 0 && note?.kind !== "conflict" && (
-              <button
-                onClick={() => void reflect()}
-                disabled={!!blocked || busy}
-                className="min-h-8 rounded-full border-0 px-3.5 text-[12px] font-semibold disabled:opacity-50"
-                style={{ background: "var(--amber)", color: "#2B2520" }}
-              >
-                {busy ? "반영하는 중…" : `'${info.home}'에 반영하기`}
-              </button>
-            )}
-          </div>
-        </motion.div>
-      )}
-    </div>
-  );
-}
-
 // ── feed ──────────────────────────────────────────────
 
 /** problems first, then work in progress, then results to check, then what's waiting, then done */
@@ -541,20 +411,13 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   if (!top.length) return null;
   return (
     <section aria-label={`${project.name} 보고`} className="flex flex-col gap-2.5">
-      {(multi || team.home) && (
-        <div className="flex flex-col gap-2 px-1 pt-1">
-          <div className="flex flex-wrap items-center gap-2">
-            {multi && (
-              <h2 className="m-0 flex items-baseline gap-2 text-[14px] font-semibold">
-                {project.name}
-                <span className="text-[12px] font-normal text-ink-2">
-                  진행 {active.length} · 완료 {done.length}
-                </span>
-              </h2>
-            )}
-            <ReflectBar project={project} team={team} />
-          </div>
-        </div>
+      {multi && (
+        <h2 className="m-0 flex items-baseline gap-2 px-1 pt-1 text-[14px] font-semibold">
+          {project.name}
+          <span className="text-[12px] font-normal text-ink-2">
+            진행 {active.length} · 완료 {done.length}
+          </span>
+        </h2>
       )}
       {[...active, ...shownDone].map((t) => (
         <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} />

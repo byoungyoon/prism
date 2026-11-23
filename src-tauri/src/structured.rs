@@ -23,12 +23,17 @@ pub enum Event {
     TurnStart,
     /// a complete assistant message
     Text(String),
+    /// what the agent is thinking right now (reasoning it streams before acting)
+    Thought(String),
     /// a tool the agent decided to use
     Tool { name: String, input: Value },
     TurnEnd { result: Option<String>, cost: Option<f64>, error: bool },
     Exit(Option<i32>),
 }
 
+/// Where a driver reports. Drivers may call it from inside `send`/`kill`, i.e. while their caller
+/// holds locks, so a sink must never block or take those locks itself (TeamManager's queues the
+/// event for its own thread).
 pub type Sink = Arc<dyn Fn(Event) + Send + Sync>;
 
 pub trait Driver: Send + Sync {
@@ -121,6 +126,12 @@ impl Claude {
                                     let t = block.get("text").and_then(Value::as_str).unwrap_or("").trim();
                                     if !t.is_empty() {
                                         sink(Event::Text(t.into()));
+                                    }
+                                }
+                                Some("thinking") => {
+                                    let t = block.get("thinking").and_then(Value::as_str).unwrap_or("").trim();
+                                    if !t.is_empty() {
+                                        sink(Event::Thought(t.into()));
                                     }
                                 }
                                 Some("tool_use") => sink(Event::Tool {
@@ -249,6 +260,11 @@ impl Codex {
                             if let Some(t) = s("/item/text").filter(|t| !t.trim().is_empty()) {
                                 last_text = Some(t.clone());
                                 (me.sink)(Event::Text(t));
+                            }
+                        }
+                        Some("reasoning") => {
+                            if let Some(t) = s("/item/text").filter(|t| !t.trim().is_empty()) {
+                                (me.sink)(Event::Thought(t));
                             }
                         }
                         Some("command_execution") => (me.sink)(Event::Tool { name: "shell".into(), input: json!({ "command": s("/item/command").unwrap_or_default() }) }),
@@ -419,6 +435,7 @@ impl Acp {
         let weak = Arc::downgrade(&me);
         std::thread::spawn(move || {
             let mut new_session_id: Option<u64> = None;
+            let mut set_model_id: Option<u64> = None;
             let mut loading = setup.resume.is_some(); // replayed history while loading: don't re-show it
             let mut text = String::new();
             let flush = |text: &mut String, me: &Acp| {
@@ -430,6 +447,8 @@ impl Acp {
                 t
             };
             let mut last_text = String::new();
+            let mut thought = String::new();
+            let mut thought_sent = std::time::Instant::now();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Some(me) = weak.upgrade() else { break };
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
@@ -440,6 +459,11 @@ impl Acp {
                     (Some(id), None) => {
                         if let Some(err) = v.get("error") {
                             let msg = err.get("message").and_then(Value::as_str).unwrap_or("오류").to_string();
+                            if Some(id) == set_model_id {
+                                // the chosen model isn't available: carry on with Antigravity's default
+                                (me.sink)(Event::Text(format!("⚠ 고른 모델을 쓸 수 없어 기본 모델로 진행해요 ({msg})")));
+                                continue;
+                            }
                             let hint = if msg.to_lowercase().contains("auth") { " (계정에서 Google 로그인이 필요해요)" } else { "" };
                             me.busy.store(false, std::sync::atomic::Ordering::SeqCst);
                             (me.sink)(Event::TurnEnd { result: Some(format!("{msg}{hint}")), cost: None, error: true });
@@ -467,7 +491,7 @@ impl Acp {
                                 *me.session.lock().unwrap() = Some(sid.to_string());
                                 (me.sink)(Event::Started(sid.to_string()));
                                 if !setup.model.is_empty() {
-                                    let _ = me.request("session/set_model", json!({ "sessionId": sid, "modelId": setup.model }));
+                                    set_model_id = me.request("session/set_model", json!({ "sessionId": sid, "modelId": setup.model })).ok();
                                 }
                                 me.pump();
                             }
@@ -487,12 +511,27 @@ impl Acp {
                     (None, Some("session/update")) => {
                         let u = v.pointer("/params/update").cloned().unwrap_or(Value::Null);
                         match u.get("sessionUpdate").and_then(Value::as_str) {
+                            Some("agent_thought_chunk") => {
+                                if let Some(t) = u.pointer("/content/text").and_then(Value::as_str) {
+                                    thought.push_str(t);
+                                    if thought_sent.elapsed() > std::time::Duration::from_millis(300) {
+                                        thought_sent = std::time::Instant::now();
+                                        (me.sink)(Event::Thought(thought.trim().to_string()));
+                                    }
+                                }
+                            }
                             Some("agent_message_chunk") => {
+                                if !thought.is_empty() {
+                                    (me.sink)(Event::Thought(std::mem::take(&mut thought).trim().to_string()));
+                                }
                                 if let Some(t) = u.pointer("/content/text").and_then(Value::as_str) {
                                     text.push_str(t);
                                 }
                             }
                             Some("tool_call") => {
+                                if !thought.is_empty() {
+                                    (me.sink)(Event::Thought(std::mem::take(&mut thought).trim().to_string()));
+                                }
                                 let t = flush(&mut text, &me);
                                 if !t.is_empty() {
                                     last_text = t;

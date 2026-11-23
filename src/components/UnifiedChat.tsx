@@ -9,8 +9,9 @@ import { api, type ChatMsg, type Project, type TeamSnapshot } from "../lib/api";
 import { isRemote } from "../lib/transport";
 import { useApp, useShownTeams } from "../store";
 import { clock } from "../data/types";
-import { ATTACH_MARK, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
+import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
 import { ArrowUp, ChevronDown, Gear } from "./icons";
+import { LiveWork } from "./LiveWork";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -228,8 +229,11 @@ export function UnifiedChat() {
         </div>
         {showSettings &&
           shown.map(({ project, team }) => (
-            <div key={project.id} className="flex items-center gap-2">
-              <span className="min-w-0 flex-auto truncate text-[12.5px] font-medium">{project.name}</span>
+            <div key={project.id} className="relative flex items-center gap-2 pb-1">
+              <span className="flex min-w-0 flex-auto items-center gap-1.5">
+                <span className="min-w-0 shrink truncate text-[12.5px] font-medium">{project.name}</span>
+                <BranchTag team={team} />
+              </span>
               <TeamControls project={project} team={team} />
             </div>
           ))}
@@ -272,16 +276,10 @@ export function UnifiedChat() {
           })}
         </AnimatePresence>
         {perms > 0 && <span className="self-center rounded-full px-3 py-1 text-[11.5px] text-ink-2" style={{ background: "var(--chip)" }}>허락이 필요한 일 {perms}건 · 가운데 보고에서 처리해요</span>}
-        {thinking.length > 0 && (
-          <span className="flex items-center gap-2 self-start text-[12px] text-ink-2">
-            <span className="flex gap-1">
-              {[0, 1, 2].map((i) => (
-                <span key={i} className="s-work size-1.5 rounded-full" style={{ background: "var(--text2)", animationDelay: `${i * 0.2}s` }} />
-              ))}
-            </span>
-            {thinking.map((t) => t.project.name).join(", ")} 생각하는 중
-          </span>
-        )}
+        {thinking.map(({ project, team }) => {
+          const lead = team.agents.find((a) => a.role === "lead");
+          return lead ? <LiveWork key={project.id} agent={lead} label={project.name} /> : null;
+        })}
       </div>
 
       {/* composer */}

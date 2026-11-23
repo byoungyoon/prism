@@ -28,7 +28,7 @@ export interface TeamConfig {
   concurrent: number;
   permissionMode: "default" | "acceptEdits" | "bypassPermissions";
   isolate: boolean;
-  /** work in a copy on its own branch; the original folder changes only via "결과 반영하기" */
+  /** work in a copy on a team branch; the original folder is never touched (results leave as a PR) */
   safe: boolean;
 }
 
@@ -73,6 +73,10 @@ export interface Agent {
   structured: boolean;
   /** recent tool activity, newest last */
   activity: { at: number; text: string }[];
+  /** what it's thinking right now (tail of its streamed reasoning), while a turn runs */
+  thought?: string | null;
+  /** when it last showed any sign of life — tells "slow" from "stuck" */
+  lastActive?: number;
 }
 
 export interface Task {
@@ -136,7 +140,7 @@ export interface TeamSnapshot {
   projectName: string;
   cwd: string;
   branch: string | null;
-  /** safe mode: the original folder's branch results are reflected into ("main"…); null = works in place */
+  /** safe mode: the original folder's branch the team branch was cut from ("main"…); null = works in place */
   home: string | null;
   team: TeamConfig;
   agents: Agent[];
@@ -146,16 +150,11 @@ export interface TeamSnapshot {
   costUsd: number;
 }
 
-/** What "결과 반영하기" would bring into the original folder. */
-export interface ReflectInfo {
-  home: string;
-  branch: string;
-  commits: number;
-  files: FileStat[];
-  /** the original folder has unsaved edits */
-  dirty: boolean;
-  /** the branch the original folder is on now */
+/** Branches the team can be pointed at (not Prism's own work branches). */
+export interface BranchList {
+  /** the branch the team works on now */
   current: string;
+  list: string[];
 }
 
 export interface FileStat {
@@ -307,9 +306,9 @@ export const api = {
   sendToLead: (projectId: string, text: string) => call<void>("lead_send", { projectId, text }),
   /** more work for whoever did `taskId`, with their context intact */
   followUp: (projectId: string, taskId: string, text: string) => call<void>("task_follow_up", { projectId, taskId, text }),
-  /** safe mode: preview / merge the team's work into the original folder */
-  reflectInfo: (projectId: string) => call<ReflectInfo>("team_reflect_info", { projectId }),
-  reflect: (projectId: string) => call<string>("team_reflect", { projectId }),
+  teamBranches: (projectId: string) => call<BranchList>("team_branches", { projectId }),
+  /** put the team on another branch (`create`: a new one, cut from where the team started) */
+  setTeamBranch: (projectId: string, branch: string, create: boolean) => call<void>("team_set_branch", { projectId, branch, create }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
     call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>

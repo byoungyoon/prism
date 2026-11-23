@@ -306,6 +306,58 @@ function CliLine({ cli, onInstall }: { cli?: CliStatus; onInstall: () => void })
   );
 }
 
+const SUBS: { id: Provider; label: string }[] = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "ChatGPT (Codex)" },
+  { id: "antigravity", label: "Google (Gemini)" },
+];
+
+/** Which subscriptions the user has: new teams run on Claude when it's one of them. */
+function Subscriptions({ open }: { open: boolean }) {
+  const setError = useApp((s) => s.setError);
+  const [mine, setMine] = useState<Provider[] | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    void api.prefs().then((p) => setMine(p.providers)).catch(() => setMine([]));
+  }, [open]);
+  if (!mine) return null;
+  const toggle = async (id: Provider) => {
+    const next = mine.includes(id) ? mine.filter((x) => x !== id) : [...mine, id];
+    if (!next.length) return; // keep at least one
+    setMine(next);
+    try {
+      await api.setPrefs(next, true);
+    } catch (e) {
+      setError(e);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-2 rounded-xl px-3.5 py-3" style={{ background: "var(--chip)" }}>
+      <span className="text-[12.5px] font-semibold">쓰는 구독</span>
+      <div className="flex flex-wrap gap-1.5">
+        {SUBS.map((s) => {
+          const on = mine.includes(s.id);
+          return (
+            <button
+              key={s.id}
+              onClick={() => void toggle(s.id)}
+              aria-pressed={on}
+              className="flex min-h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+              style={{ background: on ? "var(--tile)" : "transparent", border: `1px solid ${on ? "var(--amber)" : "var(--line)"}` }}
+            >
+              {on && <span aria-hidden="true">✓</span>}
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
+      <span className="text-[11.5px] leading-relaxed text-ink-2">
+        새로 만드는 팀은 Claude가 있으면 Claude로, 없으면 고른 구독으로 일해요. 로그인한 구독은 자동으로 추가돼요. 이미 있는 팀은 팀 설정에서 바꿔요.
+      </span>
+    </div>
+  );
+}
+
 export function AccountSheet() {
   const { accountSheet, accounts, closeAccounts, loadAccounts, setError } = useApp(useShallow((s) => ({ accountSheet: s.accountSheet, accounts: s.accounts, closeAccounts: s.closeAccounts, loadAccounts: s.loadAccounts, setError: s.setError })));
   const [loginId, setLoginId] = useState<string | null>(null);
@@ -390,6 +442,8 @@ export function AccountSheet() {
                 다른 기기에서 보는 중이에요. 계정 로그인·설치는 Mac에서 해주세요.
               </div>
             )}
+            <Subscriptions open={!!accountSheet} />
+
             {accountSheet.reason && (
               <div className="rounded-xl px-3.5 py-2.5 text-[13px]" style={{ background: "rgba(232,161,90,0.14)", border: "1px solid var(--amber)" }}>
                 {accountSheet.reason}

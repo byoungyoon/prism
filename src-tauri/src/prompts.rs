@@ -71,3 +71,13 @@ pub fn knowledge(shared: &str, team: &str) -> String {
     }
     out
 }
+
+/// Safe mode, for the 총괄: where it works, and how results leave (as a PR, when the user asks).
+pub fn workspace(home: &str, work: &str) -> String {
+    format!(
+        "\n\n[작업 위치] 너는 원래 폴더를 건드리지 않도록 만든 작업 공간에서, 팀 전용 브랜치 '{work}'로 일한다(원래 폴더의 '{home}'에서 시작). \
+팀원 결과는 이 브랜치에 합친다. 원래 폴더와 '{home}'은 직접 바꾸거나 체크아웃하지 않는다. \
+사용자가 PR이나 올리기를 요청하면 이 브랜치를 원격에 push하고, gh를 쓸 수 있으면 '{home}' 대상으로 PR을 만든 뒤 링크를 알려준다. \
+사용자에게 브랜치를 말할 때는 '{work}'라고 그대로 말한다."
+    )
+}

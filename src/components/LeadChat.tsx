@@ -5,10 +5,11 @@ import { api } from "../lib/api";
 import { isRemote } from "../lib/transport";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp } from "../store";
-import type { ChatMsg, PresetName, Project, TeamSnapshot } from "../lib/api";
+import type { BranchList, ChatMsg, PresetName, Project, TeamSnapshot } from "../lib/api";
 import { STATUS } from "../data/types";
-import { ArrowUp, ChevronDown, Gear, Power, Tower } from "./icons";
+import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
 import { modelLabel } from "../data/models";
+import { LiveWork } from "./LiveWork";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -209,6 +210,135 @@ function PresetMenu({ project }: { project: Project }) {
   );
 }
 
+/** The git branch the team works on, next to the project name — click to put the team on another
+ *  (or a new) branch. Safe mode: the team's own branch in its copy of the project; PRs go from it. */
+export function BranchTag({ team }: { team?: TeamSnapshot }) {
+  const [open, setOpen] = useState(false);
+  const [list, setList] = useState<BranchList | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [fresh, setFresh] = useState("");
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open || !team) return;
+    setMsg(null);
+    setList(null);
+    void api.teamBranches(team.projectId).then(setList).catch((e) => setMsg(e instanceof Error ? e.message : String(e)));
+    const outside = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("pointerdown", outside);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", outside);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [open, team]);
+
+  if (!team?.branch) return null;
+  const safe = !!team.home;
+  const name = team.branch;
+
+  const choose = async (branch: string, create: boolean) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.setTeamBranch(team.projectId, branch, create);
+      setFresh("");
+      setOpen(false);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    // not `relative`: the menu opens against the header around it, so it fits the panel
+    <span ref={ref} className="flex max-w-[65%] min-w-0 shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={
+          safe
+            ? `팀 전용 브랜치예요 ('${team.home}'에서 시작). 원래 폴더는 그대로고, PR은 총괄에게 "PR 올려줘"라고 하면 돼요. 눌러서 바꿔요`
+            : `원래 폴더의 '${team.branch}' 브랜치에서 바로 일해요. 눌러서 바꿔요`
+        }
+        className="flex min-w-0 items-center gap-1 rounded-md border-0 px-1.5 py-px font-mono text-[11px] font-normal text-ink-2 hover:text-[var(--text)]"
+        style={{ background: open ? "var(--tile)" : "var(--chip)", outline: open ? "1px solid var(--amber)" : undefined }}
+      >
+        <Branch size={11} className="shrink-0" />
+        <span className="truncate">{name}</span>
+        <ChevronDown size={10} className="shrink-0" />
+      </button>
+      {open && (
+        <span
+          role="menu"
+          className="absolute top-[calc(100%-4px)] right-3 left-3 z-40 flex max-w-[340px] flex-col gap-1 rounded-xl p-1.5 text-[12.5px] font-normal"
+          style={{ background: "color-mix(in srgb, var(--bg2) 97%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)", color: "var(--text)" }}
+        >
+          <span className="px-2 pt-1 pb-0.5 text-[11.5px] leading-snug text-ink-2">
+            {safe ? `팀이 이 브랜치에서 일해요. 원래 폴더는 그대로예요. 새 브랜치는 '${team.home}'에서 시작해요.` : "원래 폴더를 이 브랜치로 바꿔요."}
+          </span>
+          {!list && !msg && <span className="px-2 py-1 text-ink-2">불러오는 중…</span>}
+          <span className="flex max-h-48 flex-col overflow-y-auto">
+            {list?.list.map((b) => {
+              const on = b === list.current;
+              return (
+                <button
+                  key={b}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={on}
+                  disabled={busy}
+                  onClick={() => !on && void choose(b, false)}
+                  className="flex items-center gap-2 rounded-lg border-0 px-2 py-1.5 text-left font-mono text-[12px] hover:bg-[var(--chip)] disabled:opacity-60"
+                  style={{ background: on ? "var(--glass2)" : "transparent" }}
+                >
+                  <span className="w-3 shrink-0 text-center" style={{ color: "var(--amber)" }}>
+                    {on ? "●" : ""}
+                  </span>
+                  <span className="truncate">{b}</span>
+                </button>
+              );
+            })}
+          </span>
+          <span className="flex items-center gap-1.5 border-t px-1 pt-1.5" style={{ borderColor: "var(--line)" }}>
+            <input
+              value={fresh}
+              onChange={(e) => setFresh(e.target.value.replace(/\s/g, "-"))}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Enter" && fresh.trim()) void choose(fresh.trim(), true);
+              }}
+              placeholder={`새 브랜치 (${safe ? team.home : name}에서)`}
+              aria-label="새 브랜치 이름"
+              className="min-h-7 min-w-0 flex-auto rounded-lg px-2 font-mono text-[12px] outline-none"
+              style={{ background: "var(--tile)", border: "1px solid var(--line)" }}
+            />
+            <button
+              type="button"
+              onClick={() => fresh.trim() && void choose(fresh.trim(), true)}
+              disabled={!fresh.trim() || busy}
+              className="min-h-7 shrink-0 rounded-lg border-0 px-2.5 text-[12px] font-semibold disabled:opacity-50"
+              style={{ background: "var(--amber)", color: "#2B2520" }}
+            >
+              만들기
+            </button>
+          </span>
+          {msg && (
+            <span className="px-2 pb-1 text-[12px] leading-snug" style={{ color: "var(--block-ink)" }}>
+              {msg}
+            </span>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
 /** The team's own controls, at the right of its 총괄 header: preset, settings, clock-out. */
 export function TeamControls({ project, team }: { project: Project; team?: TeamSnapshot }) {
   const stopTeam = useApp((s) => s.stopTeam);
@@ -404,25 +534,28 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
           e.target.value = "";
         }}
       />
-      <div className="flex items-center gap-2 py-3 pr-2.5 pl-3.5" style={{ borderBottom: "1px solid var(--line)" }}>
+      <div className="relative flex items-center gap-2 py-3 pr-2.5 pl-3.5" style={{ borderBottom: "1px solid var(--line)" }}>
         {!multi && (
           <span className="glass-soft flex size-[34px] shrink-0 items-center justify-center rounded-xl">
             <Tower />
           </span>
         )}
         <div className="flex min-w-0 flex-auto flex-col">
-          <button
-            onClick={openTeam}
-            title={[multi && "이 팀 결과 보기", team?.branch && `작업 위치 ${team.branch}`].filter(Boolean).join(" · ") || undefined}
-            className={`flex max-w-full min-w-0 items-center gap-1.5 self-start rounded-md border-0 bg-transparent p-0 text-left text-sm font-semibold ${multi ? "hover:underline" : "cursor-default"}`}
-          >
-            <span className="truncate">{project?.name ?? "총괄"}</span>
-            {waiting > 0 && (
-              <span aria-label={`답해야 할 일 ${waiting}건`} title="답해야 할 일" className="shrink-0 rounded-full px-[6px] text-[11px] leading-[17px] font-semibold" style={{ background: "var(--block)", color: "#fff" }}>
-                {waiting}
-              </span>
-            )}
-          </button>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <button
+              onClick={openTeam}
+              title={multi ? "이 팀 결과 보기" : undefined}
+              className={`flex min-w-0 shrink items-center gap-1.5 rounded-md border-0 bg-transparent p-0 text-left text-sm font-semibold ${multi ? "hover:underline" : "cursor-default"}`}
+            >
+              <span className="truncate">{project?.name ?? "총괄"}</span>
+              {waiting > 0 && (
+                <span aria-label={`답해야 할 일 ${waiting}건`} title="답해야 할 일" className="shrink-0 rounded-full px-[6px] text-[11px] leading-[17px] font-semibold" style={{ background: "var(--block)", color: "#fff" }}>
+                  {waiting}
+                </span>
+              )}
+            </button>
+            <BranchTag team={team} />
+          </span>
           <span className="flex min-w-0 items-center gap-1.5 text-xs whitespace-nowrap text-ink-2">
             <span className={`${leadStatus.cls} size-[7px] shrink-0 rounded-full`} style={{ background: leadStatus.color }} />
             <span className="truncate">
@@ -483,13 +616,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
             <span aria-hidden="true">→</span>
           </button>
         )}
-        {lead?.status === "work" && (
-          <div className="flex gap-1 self-start px-2" aria-label="총괄이 생각하는 중">
-            {[0, 1, 2].map((i) => (
-              <span key={i} className="s-work size-1.5 rounded-full" style={{ background: "var(--text2)", animationDelay: `${i * 0.2}s` }} />
-            ))}
-          </div>
-        )}
+        {lead?.status === "work" && <LiveWork agent={lead} />}
       </div>
 
       <AnimatePresence>

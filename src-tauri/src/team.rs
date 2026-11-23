@@ -45,6 +45,12 @@ pub struct Agent {
     pub structured: bool,
     /// recent tool activity, newest last ("✏️ index.html", "$ npm test" …)
     pub activity: Vec<Activity>,
+    /// what it's thinking right now (the tail of its streamed reasoning), while a turn runs
+    #[serde(default)]
+    pub thought: Option<String>,
+    /// when it last showed any sign of life (thought, message, tool use) — tells "slow" from "stuck"
+    #[serde(default)]
+    pub last_active: u64,
     #[serde(skip)]
     ready: bool,
     #[serde(skip)]
@@ -125,6 +131,23 @@ pub struct Permission {
     /// who answered, for the record ("사용자", "팀장 A"…)
     #[serde(default)]
     pub decided_by: Option<String>,
+}
+
+/// A branch-name-safe form of the project name ("teamsystem-api", "쇼핑몰"); `fallback` if nothing's left.
+fn branch_slug(name: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        let bad = c.is_whitespace() || c.is_control() || "~^:?*[\\.@{}/".contains(c);
+        if bad {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    let out = out.trim_matches('-').to_lowercase();
+    if out.is_empty() { fallback.to_string() } else { out }
 }
 
 /// Never left to an AI boss: these always go to the user.
@@ -609,29 +632,44 @@ impl TeamManager {
         Ok(snap)
     }
 
-    /// Where the team works. Safe mode: its own copy of the project on its own branch, inside
-    /// `.prism/worktrees/` (made, or brought back, here); results reach the original folder only via
-    /// "결과 반영하기". Otherwise: the original folder itself.
+    /// Where the team works. Safe mode: its own copy of the project (`.prism/worktrees/`) on a team
+    /// branch with a readable name ("prism/쇼핑몰"), cut from the original folder's branch; the original
+    /// folder is never touched — results leave as a PR when the user asks the 총괄. Otherwise: the
+    /// original folder itself.
     fn place(team: &mut Team) -> Result<(), String> {
         let root = team.project.path.clone();
         let safe = team.project.team.safe && team.project.is_git;
         let was = team.cwd.clone();
         if safe {
             let path = PathBuf::from(&root).join(".prism").join("worktrees").join(format!("team-{}", team.run));
-            let branch = format!("prism/{}/team", team.run);
             if team.home.is_none() {
                 team.home = Some(sys::current_branch(&root).unwrap_or_else(|| "main".into()));
             }
-            if !path.exists() {
+            let branch = if path.exists() {
+                // whatever the team is on now (the user may have switched it)
+                sys::current_branch(&path.to_string_lossy()).unwrap_or_default()
+            } else {
                 let _ = sys::git(&root, &["worktree", "prune"]);
                 std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
                 let p = path.to_string_lossy().into_owned();
-                if sys::git(&root, &["rev-parse", "--verify", "--quiet", &branch]).is_ok() {
-                    sys::git(&root, &["worktree", "add", &p, &branch]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
-                } else {
-                    sys::git(&root, &["worktree", "add", "-b", &branch, &p, "HEAD"]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
+                let exists = |b: &str| sys::git(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok();
+                // a team coming back keeps its branch; a new one gets "prism/<project>"
+                let keep = team.branch.clone().filter(|b| b.starts_with("prism/") && exists(b));
+                match keep {
+                    Some(b) => {
+                        sys::git(&root, &["worktree", "add", &p, &b]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
+                        b
+                    }
+                    None => {
+                        let mut b = format!("prism/{}", branch_slug(&team.project.name, &team.run));
+                        if exists(&b) {
+                            b = format!("{b}-{}", team.run);
+                        }
+                        sys::git(&root, &["worktree", "add", "-b", &b, &p, "HEAD"]).map_err(|e| format!("작업 공간 준비 실패: {e}"))?;
+                        b
+                    }
                 }
-            }
+            };
             team.cwd = path.to_string_lossy().into_owned();
             team.branch = Some(branch);
         } else {
@@ -651,64 +689,64 @@ impl TeamManager {
         Ok(())
     }
 
-    fn reflect_refs(&self, pid: &str) -> Result<(String, String, String, String), String> {
-        let teams = self.teams.lock().unwrap();
-        let team = teams.get(pid).ok_or("팀이 없어요")?;
-        let home = team.home.clone().ok_or("이 팀은 원래 폴더에서 바로 일하고 있어요")?;
-        let branch = team.branch.clone().ok_or("작업 공간이 없어요")?;
-        Ok((team.project.path.clone(), home, branch, team.project.name.clone()))
+    /// Branches the team can work on: the original folder's own, plus the team's current one
+    /// (other Prism branches — other teams', members' — are left out).
+    pub fn branches(&self, pid: &str) -> Result<BranchList, String> {
+        let (root, current) = {
+            let teams = self.teams.lock().unwrap();
+            let team = teams.get(pid).ok_or("팀이 없어요")?;
+            (team.project.path.clone(), team.branch.clone().unwrap_or_default())
+        };
+        let out = sys::git(&root, &["branch", "--format=%(refname:short)"])?;
+        let list = out.lines().map(str::trim).filter(|b| !b.is_empty() && (!b.starts_with("prism/") || *b == current)).map(String::from).collect();
+        Ok(BranchList { current, list })
     }
 
-    /// What "결과 반영하기" would bring into the original folder.
-    pub fn reflect_info(&self, pid: &str) -> Result<ReflectInfo, String> {
-        let (root, home, branch, _) = self.reflect_refs(pid)?;
-        let commits = sys::git(&root, &["rev-list", "--count", &format!("{home}..{branch}")]).ok().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
-        let files = sys::git(&root, &["diff", "--numstat", &format!("{home}...{branch}")])
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| {
-                let mut it = l.splitn(3, '\t');
-                let (a, r, p) = (it.next()?, it.next()?, it.next()?);
-                Some(FileStat { path: p.into(), added: a.parse().unwrap_or(-1), removed: r.parse().unwrap_or(-1) })
-            })
-            .filter(|f| !f.path.starts_with(".prism/"))
-            .collect();
-        let current = sys::current_branch(&root).unwrap_or_default();
-        let dirty = !sys::changes(&root).is_empty();
-        Ok(ReflectInfo { home: home.clone(), branch, commits, files, dirty, current })
-    }
-
-    /// "결과 반영하기": merge the team's branch into the original folder's branch. Only on a clean
-    /// checkout of that branch; a conflict is rolled back and reported as "CONFLICT".
-    pub fn reflect(&self, pid: &str) -> Result<String, String> {
-        let (root, home, branch, name) = self.reflect_refs(pid)?;
-        let info = self.reflect_info(pid)?;
-        if info.current != home {
-            return Err(format!("원래 폴더가 지금 '{}'에 있어요. '{home}'로 바꾼 뒤 다시 해주세요.", info.current));
-        }
-        if info.dirty {
-            return Err("원래 폴더에 저장하지 않은 수정이 있어요. 정리한 뒤 다시 해주세요.".into());
-        }
-        if info.commits == 0 {
-            return Ok("반영할 새 결과가 없어요.".into());
-        }
-        let has_identity = sys::git(&root, &["config", "user.email"]).map(|e| !e.is_empty()).unwrap_or(false);
-        let mut args = vec![];
-        if !has_identity {
-            args.extend(["-c", "user.name=Prism", "-c", "user.email=prism@localhost"]);
-        }
-        let msg = format!("Prism: {name} 결과 반영");
-        args.extend(["merge", "--no-ff", "-m", &msg, &branch]);
-        if sys::git(&root, &args).is_err() {
-            let _ = sys::git(&root, &["merge", "--abort"]);
-            return Err("CONFLICT".into());
+    /// Put the team on another branch (`create`: a new one — in safe mode cut from the branch the
+    /// team started from, for the next PR). Safe mode switches the team's copy; otherwise the
+    /// original folder. Refused while anyone's working or while there are unsaved edits.
+    pub fn set_branch(&self, pid: &str, branch: &str, create: bool) -> Result<(), String> {
+        let branch = branch.trim();
+        if branch.is_empty() || branch.contains(char::is_whitespace) || branch.starts_with('-') {
+            return Err("쓸 수 없는 브랜치 이름이에요".into());
         }
         let mut teams = self.teams.lock().unwrap();
-        if let Some(team) = teams.get_mut(pid) {
-            team.log(format!("결과를 원래 폴더의 '{home}'에 반영했다 (변경 {}개).", info.commits), None);
-            self.emit(team);
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        if team.tasks.iter().any(|t| t.stage == "running" || t.stage == "queued") {
+            return Err("팀원이 일하는 중에는 바꿀 수 없어요. 일이 끝난 뒤 바꿔주세요.".into());
         }
-        Ok(format!("'{home}'에 반영했어요."))
+        let from = team.branch.clone().unwrap_or_default();
+        if branch == from && !create {
+            return Ok(());
+        }
+        // where to switch: the team's copy (safe mode) or the original folder
+        let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
+        if !sys::changes(&dir).is_empty() {
+            return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 바꿔주세요.".into());
+        }
+        let result = if create {
+            let base = team.home.clone().unwrap_or_else(|| from.clone());
+            sys::git(&dir, &["switch", "-c", branch, &base])
+        } else {
+            sys::git(&dir, &["switch", branch])
+        };
+        result.map_err(|e| {
+            if e.contains("already checked out") || e.contains("already used by worktree") || e.contains("is already used") {
+                format!("'{branch}'는 다른 곳(원래 폴더나 다른 팀)에서 쓰고 있어요. 새 브랜치를 만들어 쓰세요.")
+            } else if e.contains("already exists") {
+                format!("'{branch}' 브랜치가 이미 있어요. 목록에서 골라주세요.")
+            } else {
+                format!("브랜치를 바꾸지 못했어요: {e}")
+            }
+        })?;
+        team.branch = Some(branch.into());
+        team.log(format!("작업 브랜치를 '{from}'에서 '{branch}'(으)로 바꿨다."), None);
+        // the 총괄 should know which branch it's on now (a quiet turn: nothing for the chat)
+        if self.drivers.lock().unwrap().contains_key(&format!("{pid}/lead")) {
+            self.inject(team, "lead", format!("[Prism 알림] 작업 브랜치가 '{branch}'(으)로 바뀌었어요. 이제부터 이 브랜치에서 일하고, PR도 이 브랜치로 만드세요. 이 알림에는 — 한 글자로만 답하세요."));
+        }
+        self.emit(team);
+        Ok(())
     }
 
     pub fn stop(&self, pid: &str) {
@@ -815,6 +853,8 @@ impl TeamManager {
             status_since: now,
             last_note: None,
             activity: vec![],
+            thought: None,
+            last_active: now,
             ready: true,
             pending: vec![],
             children: 0,
@@ -840,6 +880,10 @@ impl TeamManager {
         // copy the team clocked in with)
         let team_notes = self.app.try_state::<Projects>().and_then(|p| p.get(&team.project.id)).map(|p| p.knowledge).unwrap_or_default();
         system += &prompts::knowledge(&crate::projects::shared_knowledge(&self.app), &team_notes);
+        // safe mode: the 총괄 works in a copy; it should describe that the way the user sees it
+        if let (Some(home), Some(work), "lead") = (team.home.as_deref(), team.branch.as_deref(), a.role.as_str()) {
+            system += &prompts::workspace(home, work);
+        }
         let pid = team.project.id.clone();
         // a Claude session that never got a message has nothing saved to resume: start it fresh
         let home = team.homes.get(&a.kind).cloned().flatten();
@@ -874,12 +918,21 @@ impl TeamManager {
             .into_iter()
             .chain(launch.env)
             .collect();
+        // Drivers report from anywhere — including inside `send`/`kill`, which we call while holding
+        // the team lock that on_event needs. So events go through a queue to this member's own
+        // thread, in order; handling them inline deadlocked the app on its own lock.
+        let (tx, rx) = std::sync::mpsc::channel::<crate::structured::Event>();
         let app = self.app.clone();
         let (pid2, id2) = (pid.clone(), aid.to_string());
-        let sink: crate::structured::Sink = Arc::new(move |ev| {
-            if let Some(m) = app.try_state::<Arc<TeamManager>>() {
-                m.on_event(&pid2, &id2, ev);
+        std::thread::spawn(move || {
+            for ev in rx {
+                if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                    m.on_event(&pid2, &id2, ev);
+                }
             }
+        });
+        let sink: crate::structured::Sink = Arc::new(move |ev| {
+            let _ = tx.send(ev);
         });
         let spawn = crate::structured::Spawn { program: launch.program, args: launch.args, cwd: a.cwd.clone(), env };
         let driver: Arc<dyn crate::structured::Driver> = match a.kind.as_str() {
@@ -1007,10 +1060,25 @@ impl TeamManager {
                     a.session_id = sid;
                 }
             }
-            Event::TurnStart => team.set_status(aid, "work"),
+            Event::TurnStart => {
+                team.set_status(aid, "work");
+                if let Some(a) = team.agent_mut(aid) {
+                    a.thought = None;
+                    a.last_active = now_ms();
+                }
+            }
+            Event::Thought(t) => {
+                if let Some(a) = team.agent_mut(aid) {
+                    // the end is what it's on now
+                    let tail: String = t.chars().rev().take(240).collect::<Vec<_>>().into_iter().rev().collect();
+                    a.thought = Some(tail);
+                    a.last_active = now_ms();
+                }
+            }
             Event::Text(t) => {
                 if let Some(a) = team.agent_mut(aid) {
                     a.last_note = Some(short(&t, 200));
+                    a.last_active = now_ms();
                 }
             }
             Event::Tool { name, input } => {
@@ -1020,6 +1088,7 @@ impl TeamManager {
                         a.status = "work".into();
                     }
                     a.activity.push(Activity { at: now_ms(), text });
+                    a.last_active = now_ms();
                     if a.activity.len() > 8 {
                         a.activity.remove(0);
                     }
@@ -1028,6 +1097,8 @@ impl TeamManager {
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
                 if let Some(a) = team.agent_mut(aid) {
+                    a.thought = None;
+                    a.last_active = now_ms();
                     if let Some(c) = cost {
                         a.cost_usd = c;
                     }
@@ -1414,6 +1485,7 @@ impl TeamManager {
                 if let Some(text) = describe_tool(&payload) {
                     if let Some(a) = team.agent_mut(aid) {
                         a.activity.push(Activity { at: now_ms(), text });
+                    a.last_active = now_ms();
                         if a.activity.len() > 8 {
                             a.activity.remove(0);
                         }
@@ -1943,28 +2015,20 @@ pub fn permission_answer(teams: Teams<'_>, project_id: String, msg_id: u64, answ
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ReflectInfo {
-    /// the original folder's branch results go into
-    pub home: String,
-    /// the team's branch
-    pub branch: String,
-    /// commits on the team branch not yet in `home`
-    pub commits: u32,
-    pub files: Vec<FileStat>,
-    /// the original folder has unsaved edits
-    pub dirty: bool,
-    /// the branch the original folder is on right now
+pub struct BranchList {
+    /// the branch the team works on now
     pub current: String,
+    pub list: Vec<String>,
 }
 
 #[tauri::command]
-pub async fn team_reflect_info(app: AppHandle, project_id: String) -> Result<ReflectInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().reflect_info(&project_id)).await.map_err(|e| e.to_string())?
+pub async fn team_branches(app: AppHandle, project_id: String) -> Result<BranchList, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().branches(&project_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub async fn team_reflect(app: AppHandle, project_id: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().reflect(&project_id)).await.map_err(|e| e.to_string())?
+pub async fn team_set_branch(app: AppHandle, project_id: String, branch: String, create: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().set_branch(&project_id, &branch, create)).await.map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

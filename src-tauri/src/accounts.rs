@@ -227,7 +227,17 @@ fn list(accts: &Accounts) -> Vec<Account> {
 
 #[tauri::command]
 pub async fn accounts_list(app: AppHandle) -> Vec<Account> {
-    tauri::async_runtime::spawn_blocking(move || list(&app.state::<Accounts>())).await.unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(move || {
+        let all = list(&app.state::<Accounts>());
+        // a subscription that's signed in counts as one the user uses: new teams default to it
+        // (Claude first) even if it wasn't picked at first run
+        for a in all.iter().filter(|a| a.active && a.status.logged_in) {
+            app.state::<crate::projects::Projects>().add_provider(&a.provider);
+        }
+        all
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]

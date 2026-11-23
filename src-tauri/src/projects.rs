@@ -149,10 +149,30 @@ impl Projects {
     }
 
     /// Team for a new project, shaped by the subscriptions the user has.
+    /// Remember a subscription as one the user uses (signed in, or picked).
+    pub fn add_provider(&self, provider: &str) {
+        let added = {
+            let mut p = self.prefs.lock().unwrap();
+            let new = !p.providers.iter().any(|x| x == provider);
+            if new {
+                p.providers.push(provider.into());
+            }
+            new
+        };
+        if added {
+            self.save_prefs();
+        }
+    }
+
+    /// New teams run on Claude when it's among the user's subscriptions; otherwise on the one
+    /// they have (Gemini-only or ChatGPT-only).
     fn default_team(&self) -> TeamConfig {
         let providers = self.prefs.lock().unwrap().providers.clone();
         let mut t = TeamConfig::default();
-        if providers.len() == 1 && providers[0] == "antigravity" {
+        if providers.iter().any(|p| p == "claude") {
+            return t;
+        }
+        if providers.iter().any(|p| p == "antigravity") && !providers.iter().any(|p| p == "codex") {
             // Google-only: the whole team runs on Antigravity (its default model)
             for r in [&mut t.lead, &mut t.managers, &mut t.workers] {
                 r.agent = "antigravity".into();
@@ -160,7 +180,7 @@ impl Projects {
                 r.effort = String::new();
             }
             t.preset = "custom".into();
-        } else if providers.len() == 1 && providers[0] == "codex" {
+        } else if providers.iter().any(|p| p == "codex") {
             // ChatGPT-only: the whole team runs on Codex
             let model = crate::launch::models_for("codex", None).into_iter().next().map(|m| m.id).unwrap_or_default();
             for r in [&mut t.lead, &mut t.managers, &mut t.workers] {
@@ -406,9 +426,14 @@ pub fn project_set_preset(projects: State<'_, Projects>, id: String, preset: Str
     let models = presets(&preset).ok_or("unknown preset")?;
     projects.update(&id, |p| {
         p.team.preset = preset;
+        // the preset's models are Claude's: a role on Gemini or Codex keeps its program's default
         for (role, (model, effort)) in [&mut p.team.lead, &mut p.team.managers, &mut p.team.workers].into_iter().zip(models) {
-            role.model = model.into();
-            role.effort = effort.into();
+            if role.agent == "claude" {
+                role.model = model.into();
+                role.effort = effort.into();
+            } else if crate::launch::is_claude_model(&role.model) {
+                role.model = String::new();
+            }
         }
     })
 }

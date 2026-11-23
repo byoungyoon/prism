@@ -212,6 +212,12 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
 
 // ── Antigravity (Google) ──────────────────────────────
 
+/// Claude's model names (opus, sonnet-4-5…): meaningless to Gemini or Codex, which then use their default.
+pub fn is_claude_model(m: &str) -> bool {
+    let m = m.to_lowercase();
+    ["opus", "sonnet", "haiku", "fable", "claude"].iter().any(|n| m.starts_with(n))
+}
+
 fn antigravity(c: &Ctx) -> Result<Launch, String> {
     // ACP over stdio. Antigravity only takes stdio MCP servers, so it gets Prism's own
     // executable in bridge mode, which forwards to the HTTP MCP endpoint.
@@ -233,7 +239,8 @@ fn antigravity(c: &Ctx) -> Result<Launch, String> {
             cwd: c.cwd.into(),
             system: c.system.into(),
             bridge: (exe, vec!["--mcp-bridge".into(), c.mcp_url()]),
-            model: c.model.into(),
+            // a Claude name left over from a preset would make Antigravity refuse the session's model
+            model: if is_claude_model(c.model) { String::new() } else { c.model.into() },
             resume: c.resume.clone(),
         }),
         fallback_models: vec![],

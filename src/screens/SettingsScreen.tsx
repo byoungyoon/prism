@@ -308,7 +308,7 @@ export function SettingsScreen() {
           <Card title="원래 폴더 지키기" aside={<Switch on={draft.safe} onChange={(safe) => setDraft({ ...draft, safe })} label="원래 폴더 지키기" />}>
             <span className="text-[12px] leading-relaxed text-ink-2">
               {draft.safe
-                ? "팀은 프로젝트를 복사한 작업 공간에서만 일해요. 원래 폴더는 \"결과 반영하기\"를 눌러야 바뀌어요. 기존 프로젝트를 가져왔다면 켜두세요."
+                ? "팀은 프로젝트를 복사한 작업 공간에서 팀 전용 브랜치로 일해요. 원래 폴더는 그대로고, 결과는 총괄에게 \"PR 올려줘\"라고 하면 PR로 보내요. 기존 프로젝트를 가져왔다면 켜두세요."
                 : "팀이 원래 폴더에서 바로 일하고, 결과도 바로 합쳐져요. 처음부터 Prism으로 만든 프로젝트처럼 부담 없는 경우에만 꺼두세요."}
             </span>
           </Card>
