@@ -10,6 +10,7 @@ import { STATUS } from "../data/types";
 import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
 import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
+import { ReportFold, isReport } from "./ReportFold";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -597,9 +598,11 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                 );
               return (
                 <motion.div key={m.id} {...bubbleIn} className="flex max-w-[92%] flex-col gap-2">
-                  <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">
-                    {m.text}
-                  </div>
+                  {isReport(m.text) ? (
+                    <ReportFold text={m.text} />
+                  ) : (
+                    <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{m.text}</div>
+                  )}
                   <Chips ids={m.taskIds} team={team} onPick={pickCard} />
                 </motion.div>
               );
