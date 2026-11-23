@@ -22,7 +22,7 @@ use crate::sys;
 
 /// Tailnet HTTPS port Prism publishes on (kept off 443 so the user's own serve config is safe).
 const TS_PORT: &str = "8443";
-const EVENTS: [&str; 4] = ["team://snapshot", "agent://entry", "usage://update", "cli://status"];
+const EVENTS: [&str; 5] = ["team://snapshot", "agent://entry", "usage://update", "cli://status", "batch-update"];
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -288,6 +288,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
     use crate::{launch, projects as p, team as t};
     let teams = || app.state::<Arc<t::TeamManager>>();
     let projects = || app.state::<p::Projects>();
+    let batches = || app.state::<Arc<crate::batch::Batches>>();
     match cmd {
         "projects_list" => ok(p::projects_list(projects())),
         "workspace_root" => ok(p::workspace_root(projects())),
@@ -326,6 +327,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "task_diff" => ok(t::task_diff(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "path")?)?),
         "task_file" => ok(t::task_file(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "path")?)?),
         "attach_bytes" => ok(t::attach_bytes(projects(), arg(&a, "projectId")?, arg(&a, "name")?, arg(&a, "data")?)?),
+        "batch_list" => ok(batches().list()),
+        "batch_create" => ok(batches().create(arg(&a, "projectIds")?, arg(&a, "text")?)?),
         _ => Err(format!("원격에서는 쓸 수 없는 기능이에요: {cmd}")),
     }
 }
