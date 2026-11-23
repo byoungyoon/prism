@@ -47,7 +47,7 @@ function UsageMeter() {
   const shown = (main?.windows ?? []).slice(0, 2);
 
   return (
-    <div className="relative">
+    <div className="relative max-[820px]:static">
       <button
         onClick={() => {
           setOpen((o) => !o);
@@ -55,7 +55,7 @@ function UsageMeter() {
         }}
         aria-expanded={open}
         aria-label="구독 남은 사용량"
-        className="glass flex min-h-9 items-center gap-3 rounded-full px-3.5"
+        className="glass flex min-h-9 max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-full px-3.5"
       >
         {shown.length ? (
           <>
@@ -82,7 +82,7 @@ function UsageMeter() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 340, damping: 30 }}
-            className="absolute top-11 right-0 z-50 flex w-[320px] flex-col gap-3 rounded-2xl p-4"
+            className="absolute top-11 right-0 z-50 flex w-[320px] max-w-[calc(100vw-24px)] flex-col max-[820px]:top-full max-[820px]:right-3 max-[820px]:mt-1 gap-3 rounded-2xl p-4"
             style={{ background: "color-mix(in srgb, var(--bg2) 96%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
           >
             <span className="text-[13px] font-semibold">구독 남은 사용량</span>
@@ -131,7 +131,7 @@ function PhoneAccess() {
     };
   }, [open]);
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative max-[820px]:static">
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -152,7 +152,7 @@ function PhoneAccess() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 380, damping: 32 }}
-            className="absolute top-[calc(100%+8px)] right-0 z-50 w-[400px] max-w-[calc(100vw-24px)] origin-top-right rounded-2xl p-5"
+            className="absolute top-[calc(100%+8px)] right-0 z-50 w-[400px] max-[820px]:right-3 max-w-[calc(100vw-24px)] origin-top-right rounded-2xl p-5"
             style={{ background: "color-mix(in srgb, var(--bg2) 97%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
           >
             <RemoteCard bare />
@@ -204,11 +204,11 @@ export function TopBar() {
     // left padding keeps clear of the macOS traffic lights
     <header
       data-tauri-drag-region
-      className={`relative flex min-h-[52px] flex-wrap items-center gap-2.5 py-1.5 pr-4 ${isRemote ? "pl-4" : "pl-[88px]"}`}
+      className={`relative flex min-h-[52px] flex-wrap items-center gap-2 py-1.5 pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.375rem,env(safe-area-inset-top))] ${isRemote ? "pl-[max(1rem,env(safe-area-inset-left))]" : "pl-[88px]"}`}
       style={{ borderBottom: "1px solid var(--line)" }}
     >
       {!onHome && (
-        <button onClick={toggleLeft} aria-label="총괄 대화창 접기/펴기" aria-pressed={left} className={iconBtn}>
+        <button onClick={toggleLeft} aria-label="총괄 대화창 접기/펴기" aria-pressed={left} className={`${iconBtn} max-[820px]:hidden`}>
           <PanelLeft />
         </button>
       )}
@@ -241,7 +241,7 @@ export function TopBar() {
         {dark ? <Sun /> : <Moon />}
       </button>
       {!onHome && (
-        <button onClick={toggleRight} aria-label="작업 보드 접기/펴기" aria-pressed={right} className={iconBtn}>
+        <button onClick={toggleRight} aria-label="작업 보드 접기/펴기" aria-pressed={right} className={`${iconBtn} max-[820px]:hidden`}>
           <PanelRight />
         </button>
       )}

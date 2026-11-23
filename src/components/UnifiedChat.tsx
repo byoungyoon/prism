@@ -1,7 +1,7 @@
 // One conversation with every 총괄 at work. Everything they say lands in a single timeline (each
 // line says which team), and orders go out from one box. Every order names its recipients with
 // "@팀이름" — there is no default and no send-to-all. Attachments are copied to each recipient.
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
@@ -14,6 +14,7 @@ import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
+import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } from "./BatchCard";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -39,12 +40,18 @@ function parse(text: string, teams: Project[]) {
   return { ids: [...ids], body: body.replace(/\s+/g, " ").trim() };
 }
 
-type Item = { key: string; at: number; pid: string; m: ChatMsg; to?: string[] };
+/** a chat message (my order, or a team's message); a 묶음 지시 is one card */
+type ChatItem = { key: string; at: number; pid: string; m: ChatMsg; to?: string[] };
+type Item = ChatItem | { key: string; at: number; card: BatchItem };
 
 export function UnifiedChat() {
   const shown = useShownTeams();
   const sendToLead = useApp((s) => s.sendToLead);
   const setError = useApp((s) => s.setError);
+  const startBatch = useApp((s) => s.startBatch);
+  const batches = useApp((s) => s.batches);
+  const projects = useApp((s) => s.projects);
+  const names = useMemo(() => Object.fromEntries(projects.map((p) => [p.id, p.name])), [projects]);
   const teams = shown.map((s) => s.project);
   const byId = useMemo(() => Object.fromEntries(shown.map((s) => [s.project.id, s])), [shown]);
 
@@ -58,15 +65,22 @@ export function UnifiedChat() {
   const fileInput = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // one timeline: every team's conversation, my orders shown once even when sent to several teams
+  // one timeline: every team's conversation, my orders shown once even when sent to several teams.
+  // A 묶음 지시 (order to 2+ teams) is one card at its send time; its teams' replies sit inside the card.
   const items = useMemo(() => {
-    const out: Item[] = [];
+    const { items: cards, absorbed } = groupBatches(
+      batches,
+      shown.map(({ project, team }) => ({ projectId: project.id, chat: team.chat })),
+    );
+    const out: Item[] = cards.map((card) => ({ key: `batch-${card.batch.id}`, at: card.batch.sentAt, card }));
     for (const { project, team } of shown) {
       for (const m of team.chat) {
-        if (m.kind === "system" || m.kind === "permission") continue;
+        if (m.kind === "system" || m.kind === "permission" || absorbed.has(absorbKey(project.id, m))) continue;
         if (m.kind === "me") {
           const text = m.text.split(ATTACH_MARK)[0];
-          const twin = out.find((x) => x.m.kind === "me" && x.m.text.split(ATTACH_MARK)[0] === text && Math.abs(x.at - m.at) < 5000);
+          const twin = out.find(
+            (x): x is ChatItem => "m" in x && x.m.kind === "me" && x.m.text.split(ATTACH_MARK)[0] === text && Math.abs(x.at - m.at) < 5000,
+          );
           if (twin) {
             twin.to!.push(project.id);
             continue;
@@ -76,13 +90,23 @@ export function UnifiedChat() {
       }
     }
     return out.sort((a, b) => a.at - b.at);
-  }, [shown]);
+  }, [shown, batches]);
+  const hasReport = items.some((it) => ("card" in it ? batchHasReport(it.card) : it.m.kind === "report"));
 
-  const shownItems = items.filter((it) => view === "all" || (view === "report") === (it.m.kind === "report"));
+  const shownItems = items.filter((it) => {
+    if (view === "all") return true;
+    if ("card" in it) return view === "chat" || batchHasReport(it.card);
+    return (view === "report") === (it.m.kind === "report");
+  });
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [items.length]);
+
+  // changing the filter lands on the newest message, whatever was in view before
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [view]);
 
   const live = (t?: TeamSnapshot) => !!t?.agents.some((a) => a.role === "lead" && a.status !== "off");
   const { ids: mentioned, body } = parse(draft, teams);
@@ -175,6 +199,8 @@ export function UnifiedChat() {
     setDraft("");
     setFiles([]);
     setMenu(null);
+    // 2+ teams: make the batch first (its card and summary), then send to each team as before
+    if (targets.length >= 2) await startBatch(targets, text);
     for (const pid of targets) {
       try {
         const paths = pending.filter((f) => f.path).map((f) => f.path!);
@@ -244,7 +270,7 @@ export function UnifiedChat() {
       </div>
 
       {/* one timeline */}
-      {items.some((it) => it.m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
+      {hasReport && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {items.length === 0 && (
           <p className="m-auto max-w-[240px] text-center text-[13px] leading-relaxed text-ink-2">
@@ -255,6 +281,12 @@ export function UnifiedChat() {
         )}
         <AnimatePresence initial={false}>
           {shownItems.map((it) => {
+            if ("card" in it)
+              return (
+                <motion.div key={it.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={spring} className="flex w-full max-w-[94%] flex-col self-start">
+                  <BatchCard {...it.card} names={names} />
+                </motion.div>
+              );
             const team = byId[it.pid];
             if (!team) return null;
             if (it.m.kind === "me")

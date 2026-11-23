@@ -1,4 +1,5 @@
 mod accounts;
+mod batch;
 mod clis;
 mod launch;
 mod projects;
@@ -56,6 +57,9 @@ pub fn run() {
                 saver.flush();
             });
             app.manage(teams.clone());
+            // batches are watched after the teams are back, so restored teams are judged as they are
+            app.manage(Arc::new(batch::Batches::load(app.handle())));
+            batch::start_watch(app.handle().clone());
             tauri::async_runtime::spawn(server::serve(listener, teams));
 
             clis::start_auto_update(app.handle().clone());
@@ -130,6 +134,8 @@ pub fn run() {
             team::agent_message,
             team::agent_set_model,
             team::agent_kill,
+            batch::batch_create,
+            batch::batch_list,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

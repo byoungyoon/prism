@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { isRemote } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
-import { api, LOGIN_REQUIRED, type Account, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
+import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 
 export type View =
   | { name: "home" }
@@ -38,6 +38,8 @@ interface AppState {
   projectId: string | null;
   /** latest snapshot per project id */
   teams: Record<string, TeamSnapshot>;
+  /** 묶음 지시 (one order to several teams), newest last */
+  batches: Batch[];
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -66,6 +68,8 @@ interface AppState {
   saveTeam(team: TeamConfig): Promise<void>;
   /** `projectId` targets another team (multi view); defaults to the current one */
   sendToLead(text: string, projectId?: string): Promise<void>;
+  /** one order to several teams: makes the batch first, the caller then sends to each team */
+  startBatch(projectIds: string[], text: string): Promise<void>;
   answerEscalation(msgId: number, answer: string, projectId?: string): Promise<void>;
   answerPermission(msgId: number, answer: "allow" | "always" | "deny", projectId?: string): Promise<void>;
   messageAgent(agentId: string, text: string): Promise<void>;
@@ -94,6 +98,10 @@ export const useApp = create<AppState>((set, get) => {
     };
   const replaceProject = (p: Project) => set((s) => ({ projects: s.projects.map((x) => (x.id === p.id ? p : x)) }));
 
+  // set once the saved batches are loaded: a batch that finished before this start is not announced
+  let batchesListed = false;
+  const upsertBatch = (b: Batch) => set((s) => ({ batches: [...s.batches.filter((x) => x.id !== b.id), b] }));
+
   return {
     dark: prefersDark(),
     left: true,
@@ -109,6 +117,7 @@ export const useApp = create<AppState>((set, get) => {
     root: "",
     projectId: null,
     teams: {},
+    batches: [],
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -123,10 +132,25 @@ export const useApp = create<AppState>((set, get) => {
         announceAsks(snap, get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀");
         set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
       });
+      await api.onBatch((b) => {
+        const prev = get().batches.find((x) => x.id === b.id);
+        const wasDone = !!(prev?.finishedAt && prev.summary);
+        const nowDone = !!(b.finishedAt && b.summary);
+        // a batch that just finished: tell the user (only when we know it, or it's new since the list loaded)
+        if (nowDone && !wasDone && (prev || batchesListed)) void notifyUser("종합 결과가 나왔어요", b.text.slice(0, 60));
+        upsertBatch(b);
+      });
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       await get().loadProjects();
       void get().loadAccounts();
+      void api
+        .batchList()
+        .then((list) => {
+          batchesListed = true;
+          set((s) => ({ batches: [...list, ...s.batches.filter((b) => !list.some((x) => x.id === b.id))] }));
+        })
+        .catch(() => {});
       // every team's current state up front, so teams at work show without waiting for their next update
       const projects = get().projects;
       const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
@@ -207,6 +231,14 @@ export const useApp = create<AppState>((set, get) => {
     setPreset: guard(async (preset: PresetName, id?: string) => replaceProject(await api.setPreset(id ?? pid(), preset))),
     saveTeam: guard(async (team: TeamConfig) => replaceProject(await api.setTeam(pid(), team))),
     sendToLead: guard(async (text: string, id?: string) => api.sendToLead(id ?? pid(), text)),
+    startBatch: async (projectIds, text) => {
+      try {
+        upsertBatch(await api.batchCreate(projectIds, text));
+      } catch (e) {
+        // the teams still get the order (sent one by one, without the summary card)
+        set({ error: msg(e) });
+      }
+    },
     answerEscalation: guard(async (msgId: number, answer: string, id?: string) => api.answerEscalation(id ?? pid(), msgId, answer)),
     answerPermission: guard(async (msgId: number, answer: "allow" | "always" | "deny", id?: string) => api.answerPermission(id ?? pid(), msgId, answer)),
     messageAgent: guard(async (agentId: string, text: string) => api.messageAgent(pid(), agentId, text)),

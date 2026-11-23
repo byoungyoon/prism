@@ -77,6 +77,8 @@ export interface Agent {
   thought?: string | null;
   /** when it last showed any sign of life — tells "slow" from "stuck" */
   lastActive?: number;
+  /** why it looks stuck (long silence, or its process ended unexpectedly): offer "멈추고 다시" */
+  stuck?: string | null;
 }
 
 export interface Task {
@@ -250,6 +252,16 @@ export interface RemoteStatus {
   note: string | null;
 }
 
+/** One order sent to several teams at once ("묶음 지시"). `summary` appears once every team has finished. */
+export interface Batch {
+  id: string;
+  text: string;
+  sentAt: number;
+  teams: { projectId: string; state: "run" | "done" | "failed" }[];
+  summary?: string;
+  finishedAt?: number;
+}
+
 export const api = {
   remoteStatus: () => call<RemoteStatus>("remote_status"),
   setRemote: (on: boolean) => call<RemoteStatus>("remote_set", { on }),
@@ -305,6 +317,10 @@ export const api = {
   stopTeam: (projectId: string) => call<void>("team_stop", { projectId }),
   getTeam: (projectId: string) => call<TeamSnapshot | null>("team_get", { projectId }),
   sendToLead: (projectId: string, text: string) => call<void>("lead_send", { projectId, text }),
+  /** one order to several teams: the batch keeps track of them and makes a summary when all are done */
+  batchCreate: (projectIds: string[], text: string) => call<Batch>("batch_create", { projectIds, text }),
+  batchList: () => call<Batch[]>("batch_list"),
+  onBatch: (fn: (b: Batch) => void): Promise<UnlistenFn> => on<Batch>("batch-update", fn),
   /** more work for whoever did `taskId`, with their context intact */
   followUp: (projectId: string, taskId: string, text: string) => call<void>("task_follow_up", { projectId, taskId, text }),
   teamBranches: (projectId: string) => call<BranchList>("team_branches", { projectId }),

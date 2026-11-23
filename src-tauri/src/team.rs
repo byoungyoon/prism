@@ -51,6 +51,10 @@ pub struct Agent {
     /// when it last showed any sign of life (thought, message, tool use) — tells "slow" from "stuck"
     #[serde(default)]
     pub last_active: u64,
+    /// why it looks stuck (no sign of life for a long time, or its process ended unexpectedly) —
+    /// the UI offers "멈추고 다시" while this is set
+    #[serde(default)]
+    pub stuck: Option<String>,
     #[serde(skip)]
     ready: bool,
     #[serde(skip)]
@@ -506,6 +510,16 @@ pub struct TeamManager {
     /// "project/agent" whose next turn was started by a worker's report → that card's id. Its reply
     /// goes to the chat as a 'report' entry, not a plain 'lead' line (see `say_reply`)
     report_turns: Mutex<HashMap<String, String>>,
+    /// launch number per "project/agent": events from an older process of the same member (one that
+    /// was stopped and replaced) are dropped, so its late exit can't knock out the new one
+    launches: Mutex<HashMap<String, u64>>,
+    watchdog: std::sync::Once,
+}
+
+/// A failed turn's reason as the person reads it.
+fn stopped_because(reason: &str) -> String {
+    let r = reason.trim();
+    if r.starts_with("문제가 생겨 멈췄어요") { r.to_string() } else { format!("문제가 생겨 멈췄어요: {r}") }
 }
 
 /// The 총괄's reply: a 'report' entry when the turn was started by a worker's report (tagged with
@@ -523,6 +537,8 @@ fn say_reply(team: &mut Team, report: Option<String>, text: String) {
 /// How long snapshots of one team are gathered before one goes to the UI. A busy team changes many
 /// times a second (every streamed message, every tool call); the UI only needs the latest.
 const EMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+/// A turn with no sign of life for this long is reported as "응답이 없어요".
+const STALL_AFTER_MS: u64 = 5 * 60 * 1000;
 /// The UI gets the recent conversation and log; the full history stays on disk.
 const SNAPSHOT_CHAT: usize = 200;
 const SNAPSHOT_EVENTS: usize = 150;
@@ -653,7 +669,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), launches: Mutex::default(), watchdog: std::sync::Once::new() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -832,6 +848,22 @@ impl TeamManager {
     }
 
     // ── lifecycle ─────────────────────────────────────
+
+    /// What batches (묶음 지시) need to judge whether a team has finished; None if the team is gone.
+    pub fn batch_facts(&self, pid: &str) -> Option<crate::batch::Facts> {
+        let teams = self.teams.lock().unwrap();
+        let t = teams.get(pid)?;
+        Some(crate::batch::Facts {
+            name: t.project.name.clone(),
+            lead_status: t.agent("lead").map(|a| a.status.clone()).unwrap_or_else(|| "off".into()),
+            lead_stuck: t.agent("lead").is_some_and(|a| a.stuck.is_some()),
+            tasks: t.tasks.iter().map(|k| (k.created_at, k.stage.clone())).collect(),
+            replies: {
+                let all: Vec<(u64, String)> = t.chat.iter().filter(|m| m.kind == "lead" || m.kind == "report").map(|m| (m.at, m.text.clone())).collect();
+                all[all.len().saturating_sub(20)..].to_vec()
+            },
+        })
+    }
 
     pub fn snapshot(&self, pid: &str) -> Option<TeamSnapshot> {
         self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())
@@ -1116,6 +1148,7 @@ impl TeamManager {
             activity: vec![],
             thought: None,
             last_active: now,
+            stuck: None,
             ready: true,
             pending: vec![],
             children: 0,
@@ -1185,9 +1218,20 @@ impl TeamManager {
         let (tx, rx) = std::sync::mpsc::channel::<crate::structured::Event>();
         let app = self.app.clone();
         let (pid2, id2) = (pid.clone(), aid.to_string());
+        let key = format!("{pid}/{aid}");
+        let launch_no = {
+            let mut l = self.launches.lock().unwrap();
+            let n = l.entry(key.clone()).or_default();
+            *n += 1;
+            *n
+        };
+        self.start_watchdog();
         std::thread::spawn(move || {
             for ev in rx {
                 if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                    if m.launches.lock().unwrap().get(&key) != Some(&launch_no) {
+                        continue; // a replaced process: not this member any more
+                    }
                     m.on_event(&pid2, &id2, ev);
                 }
             }
@@ -1232,6 +1276,7 @@ impl TeamManager {
             m.session_id = session_id;
             m.structured = true;
             m.ready = true;
+            m.stuck = None;
             // a member coming back (resumed, or restarted fresh because its old session was gone)
             // is at work again; brand-new members already got their status in spawn_agent
             if resume.is_some() || m.status == "off" {
@@ -1258,22 +1303,25 @@ impl TeamManager {
     }
 
     /// Sends a line to an agent's Claude Code input, queuing it until the session is up.
-    fn inject(&self, team: &mut Team, aid: &str, text: String) {
+    /// False when nobody could take it (no running session).
+    fn inject(&self, team: &mut Team, aid: &str, text: String) -> bool {
         let pid = team.project.id.clone();
         let driver = self.drivers.lock().unwrap().get(&format!("{pid}/{aid}")).cloned();
         if let Some(d) = driver {
             if d.send(&text).is_ok() {
                 team.set_status(aid, "work");
                 self.push_entry(&pid, aid, "in", text);
+                return true;
             }
-            return;
+            return false;
         }
-        let Some(a) = team.agent_mut(aid) else { return };
+        let Some(a) = team.agent_mut(aid) else { return false };
         match (a.ready, a.pty_id) {
             (true, Some(pty)) => self.pty.type_line(pty, text),
             (_, Some(_)) => a.pending.push(text),
-            _ => {}
+            _ => return false,
         }
+        true
     }
 
     // ── structured agents ─────────────────────────────
@@ -1315,6 +1363,10 @@ impl TeamManager {
         }
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
+        // any sign of life clears "응답이 없어요"
+        if let Some(a) = team.agent_mut(aid) {
+            a.stuck = None;
+        }
         match ev {
             Event::Started(sid) => {
                 if let Some(a) = team.agent_mut(aid) {
@@ -1359,23 +1411,38 @@ impl TeamManager {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
                 let permission_turn = self.permission_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
+                // stopped on purpose (paused, clocked out, finished): a turn cut off by that isn't a problem to report
+                let stopped = team.agent(aid).is_some_and(|a| a.status == "off" || a.status == "done");
+                if stopped && error {
+                    if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
+                        drop(teams);
+                        self.push_entry(pid, aid, "error", short(&text, 300));
+                    }
+                    return;
+                }
                 if let Some(a) = team.agent_mut(aid) {
                     a.thought = None;
                     a.last_active = now_ms();
                     if let Some(c) = cost {
                         a.cost_usd = c;
                     }
-                    if a.status != "done" && a.status != "block" {
+                    if a.status != "done" && a.status != "block" && a.status != "off" {
                         a.status = "wait".into();
                         a.status_since = now_ms();
                     }
                 }
-                if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
+                let result = result.filter(|r| !r.trim().is_empty());
+                // a failed turn always says so, in plain words (even when the agent gave no reason)
+                let result = if error { Some(stopped_because(result.as_deref().unwrap_or("알 수 없는 오류"))) } else { result };
+                if let Some(text) = result {
                     // a turn spent only on a teammate's permission request ends with "—": nothing to tell the user
                     // (the model sometimes answers with another lone mark, so that turn drops any punctuation-only reply)
                     let bare = text.trim().chars().count() <= 2 && !text.chars().any(char::is_alphanumeric);
-                    if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") && !(permission_turn && bare) {
+                    if role == "lead" && (error || (!matches!(text.trim(), "—" | "-" | "–") && !(permission_turn && bare))) {
                         say_reply(team, report, text.trim().to_string());
+                    } else if error {
+                        let name = team.name_of(aid);
+                        team.log(format!("{name}: {}", short(&text, 120)), Some("block"));
                     }
                     drop(teams);
                     self.push_entry(pid, aid, if error { "error" } else { "done" }, short(&text, 300));
@@ -1406,7 +1473,12 @@ impl TeamManager {
                     Some(0) | None => format!("{name}의 세션이 종료됐다."),
                     Some(c) => format!("{name}의 세션이 종료됐다 (코드 {c}). claude CLI가 설치돼 있는지 확인하세요."),
                 };
+                a.stuck = Some(format!("{name}이(가) 예상치 못하게 꺼졌어요"));
+                let lead = a.role == "lead";
                 team.log(note, Some("block"));
+                if lead {
+                    team.say("lead", format!("문제가 생겨 멈췄어요: {name} 프로그램이 꺼졌어요. 아래 '멈추고 다시'를 누르면 하던 대화를 이어서 다시 시작해요."), None);
+                }
             }
         }
         self.process_queue(team);
@@ -1539,8 +1611,13 @@ impl TeamManager {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
         team.say("me", text.clone(), None);
-        team.set_status("lead", "work");
-        self.inject(team, "lead", text);
+        // only "working" when someone actually took it — a lost session must not spin forever
+        if !self.inject(team, "lead", text) {
+            if let Some(a) = team.agent_mut("lead") {
+                a.stuck = Some("총괄이 응답할 수 없는 상태예요".into());
+            }
+            team.say("lead", "문제가 생겨 멈췄어요: 총괄이 지금 메시지를 받을 수 없는 상태예요. 아래 '멈추고 다시'를 눌러 다시 시작해 주세요.".into(), None);
+        }
         self.emit(team);
         Ok(())
     }
@@ -1590,10 +1667,58 @@ impl TeamManager {
         Ok(())
     }
 
+    /// Stop a member's process. It leaves the driver map right away, so a relaunch can follow
+    /// immediately (its late exit is ignored — see `launches`).
     fn kill_driver(&self, pid: &str, aid: &str) {
-        let d = self.drivers.lock().unwrap().get(&format!("{pid}/{aid}")).cloned();
+        let d = self.drivers.lock().unwrap().remove(&format!("{pid}/{aid}"));
         if let Some(d) = d {
+            d.cancel(); // let it wrap up the turn if it can (ACP session/cancel…)
             d.kill();
+        }
+    }
+
+    fn start_watchdog(&self) {
+        self.watchdog.call_once(|| {
+            let app = self.app.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                    m.check_stalls();
+                }
+            });
+        });
+    }
+
+    /// Members mid-turn with no sign of life for a long time: tell the person (once per silence)
+    /// so they can stop and restart it instead of watching "작업 중" forever.
+    fn check_stalls(&self) {
+        let now = now_ms();
+        let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+        let mut teams = self.teams.lock().unwrap();
+        for team in teams.values_mut() {
+            let pid = team.project.id.clone();
+            let stalled: Vec<(String, String, bool)> = team
+                .agents
+                .iter()
+                .filter(|a| a.status == "work" && a.stuck.is_none() && running.contains(&format!("{pid}/{}", a.id)))
+                .filter(|a| now.saturating_sub(a.last_active.max(a.status_since)) > STALL_AFTER_MS)
+                .map(|a| (a.id.clone(), a.name.clone(), a.role == "lead"))
+                .collect();
+            if stalled.is_empty() {
+                continue;
+            }
+            for (aid, name, lead) in stalled {
+                let mins = STALL_AFTER_MS / 60_000;
+                if let Some(a) = team.agent_mut(&aid) {
+                    a.stuck = Some(format!("{mins}분째 응답이 없어요"));
+                }
+                if lead {
+                    team.say("lead", format!("응답이 없어요: {mins}분째 아무 소식이 없어요. 오래 걸리는 작업일 수도 있지만, 멈춘 것 같으면 아래 '멈추고 다시'를 눌러 주세요."), None);
+                } else {
+                    team.log(format!("{name}이(가) {mins}분째 응답이 없다."), Some("block"));
+                }
+            }
+            self.emit(team);
         }
     }
 
