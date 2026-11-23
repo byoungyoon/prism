@@ -8,7 +8,7 @@ import { useApp } from "../store";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
-export function RemoteCard() {
+export function RemoteCard({ bare = false }: { bare?: boolean } = {}) {
   const setError = useApp((s) => s.setError);
   const [st, setSt] = useState<RemoteStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -39,12 +39,12 @@ export function RemoteCard() {
   const on = !!st?.enabled;
 
   return (
-    <section className="glass flex flex-col gap-4 rounded-2xl p-5">
+    <section className={`flex flex-col gap-4 ${bare ? "" : "glass rounded-2xl p-5"}`}>
       <div className="flex items-start gap-3">
         <div className="flex flex-auto flex-col gap-1">
           <h3 className="m-0 text-[13.5px] font-semibold">다른 기기에서 접속</h3>
           <span className="text-[12px] leading-relaxed text-ink-2">
-            휴대폰이나 다른 컴퓨터에서 이 팀을 그대로 이어서 볼 수 있어요. AI는 계속 이 Mac에서 일하고, 내 기기끼리만 연결돼요(Tailscale).
+            휴대폰이나 다른 컴퓨터에서 출근한 모든 팀을 이 관제탑 그대로 볼 수 있어요. AI는 계속 이 Mac에서 일하고, 내 기기끼리만 연결돼요(Tailscale).
           </span>
         </div>
         <button

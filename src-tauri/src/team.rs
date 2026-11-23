@@ -209,7 +209,16 @@ pub struct TeamManager {
     usage: Mutex<HashMap<String, Usage>>,
     /// teams changed since the last save
     dirty: Mutex<std::collections::HashSet<String>>,
+    /// latest snapshot per team waiting to go to the UI (see `emit`)
+    outbox: Mutex<HashMap<String, TeamSnapshot>>,
 }
+
+/// How long snapshots of one team are gathered before one goes to the UI. A busy team changes many
+/// times a second (every streamed message, every tool call); the UI only needs the latest.
+const EMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+/// The UI gets the recent conversation and log; the full history stays on disk.
+const SNAPSHOT_CHAT: usize = 200;
+const SNAPSHOT_EVENTS: usize = 150;
 
 fn window_label(id: &str) -> String {
     let base = if id.starts_with("five_hour") { "5시간" } else if id.starts_with("seven_day") { "주간" } else { id };
@@ -309,8 +318,17 @@ impl Team {
             team: self.project.team.clone(),
             agents: self.agents.clone(),
             tasks: self.tasks.clone(),
-            chat: self.chat.clone(),
-            events: self.events.clone(),
+            // recent messages, plus any older question still waiting for an answer
+            chat: {
+                let cut = self.chat.len().saturating_sub(SNAPSHOT_CHAT);
+                self.chat
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, m)| *i >= cut || m.escalation.as_ref().is_some_and(|e| e.answer.is_none()) || m.permission.as_ref().is_some_and(|p| p.answer.is_none()))
+                    .map(|(_, m)| m.clone())
+                    .collect()
+            },
+            events: self.events.iter().take(SNAPSHOT_EVENTS).cloned().collect(),
             cost_usd: self.cost(),
         }
     }
@@ -319,12 +337,27 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default() }
     }
 
+    /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
+    /// short timer, later ones just replace the queued snapshot, and only the newest is sent.
     fn emit(&self, team: &Team) {
-        let _ = self.app.emit("team://snapshot", team.snapshot());
-        self.dirty.lock().unwrap().insert(team.project.id.clone());
+        let pid = team.project.id.clone();
+        self.dirty.lock().unwrap().insert(pid.clone());
+        let first = self.outbox.lock().unwrap().insert(pid.clone(), team.snapshot()).is_none();
+        if !first {
+            return;
+        }
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(EMIT_EVERY);
+            let Some(m) = app.try_state::<Arc<TeamManager>>() else { return };
+            let snap = m.outbox.lock().unwrap().remove(&pid);
+            if let Some(snap) = snap {
+                let _ = app.emit("team://snapshot", snap);
+            }
+        });
     }
 
     // ── persistence ───────────────────────────────────
@@ -664,6 +697,9 @@ impl TeamManager {
             _ => prompts::worker(),
         };
         let pid = team.project.id.clone();
+        // a Claude session that never got a message has nothing saved to resume: start it fresh
+        let home = team.homes.get(&a.kind).cloned().flatten();
+        let resume = resume.filter(|sid| a.kind != "claude" || crate::launch::claude_session_exists(home.as_deref(), sid));
         let session_id = resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // a fresh session gets its task card; a resumed one already has it
         let prompt = if resume.is_none() {
@@ -687,7 +723,7 @@ impl TeamManager {
             resume: resume.clone(),
             cwd: &a.cwd,
             attach_dir: Some(attachments_dir(&team.project.path).to_string_lossy().into_owned()),
-            home: team.homes.get(&a.kind).cloned().flatten(),
+            home,
         })?;
 
         let env: Vec<(String, String)> = [("PRISM_AGENT".to_string(), aid.to_string()), ("PRISM_PROJECT".to_string(), pid.clone())]
@@ -730,6 +766,7 @@ impl TeamManager {
             driver.send(first)?;
         }
         self.drivers.lock().unwrap().insert(format!("{pid}/{aid}"), driver);
+        let briefed = launch.first_message.is_some();
         if let Some(first) = launch.first_message {
             self.push_entry(&pid, aid, "in", first);
         }
@@ -737,9 +774,12 @@ impl TeamManager {
             m.session_id = session_id;
             m.structured = true;
             m.ready = true;
-            if resume.is_some() {
-                m.status = "wait".into();
+            // a member coming back (resumed, or restarted fresh because its old session was gone)
+            // is at work again; brand-new members already got their status in spawn_agent
+            if resume.is_some() || m.status == "off" {
+                m.status = if resume.is_none() && briefed { "work" } else { "wait" }.into();
                 m.status_since = now_ms();
+                m.last_note = None;
             }
         }
         Ok(())
@@ -1000,7 +1040,7 @@ impl TeamManager {
         team.set_status(aid, "block");
         team.log(format!("{name}이(가) 허락을 기다린다: {tool} {}", short(&detail, 50)), Some("block"));
         self.perm_waiters.lock().unwrap().insert(id, tx);
-        self.notify(&format!("{name} 허락 요청"), &format!("{tool}: {}", short(&detail, 80)));
+        self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
         self.emit(team);
         PermWait::Wait(id, rx)
     }
@@ -1301,7 +1341,7 @@ impl TeamManager {
                 team.set_status(aid, "block");
                 team.say("escalation", question.clone(), Some(Escalation { agent_id: aid.into(), task_id: me.task_id.clone(), path, options, answer: None }));
                 team.log(format!("{}이(가) 막혔다: {}", me.name, short(&question, 50)), Some("block"));
-                self.notify(&format!("막힘 · {names}"), &question);
+                self.notify(&format!("[{}] 막힘 · {names}", team.project.name), &question);
                 "사용자에게 질문했어요. 답은 '[Prism 답변]'으로 옵니다. 지금은 멈추고 기다리세요.".into()
             }
             _ => return Err(format!("알 수 없는 도구: {tool}")),

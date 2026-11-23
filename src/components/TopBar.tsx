@@ -1,32 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api } from "../lib/api";
-import { useApp, useCurrent } from "../store";
-import type { PresetName } from "../lib/api";
+import { useApp } from "../store";
 import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
-import { Bell, Branch, ChevronDown, Moon, PanelLeft, PanelRight, Sun } from "./icons";
+import { Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
+import { RemoteCard } from "./RemoteCard";
+import { useShallow } from "zustand/react/shallow";
 
-const PRESETS: { id: PresetName; label: string }[] = [
-  { id: "save", label: "절약" },
-  { id: "bal", label: "균형" },
-  { id: "power", label: "파워" },
-];
 
 const iconBtn = "flex size-9 items-center justify-center rounded-[10px] border-0 bg-transparent hover:bg-[var(--chip)]";
-
-const Gear = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-    <circle cx="12" cy="12" r="3" />
-  </svg>
-);
-const Power = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M12 2v10" />
-    <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
-  </svg>
-);
 
 function remainingColor(left: number) {
   return left > 40 ? "var(--work)" : left > 15 ? "var(--amber)" : "var(--block)";
@@ -131,16 +114,88 @@ function UsageMeter() {
   );
 }
 
+/** Open the whole 관제탑 on a phone: one QR for the app (every team), not per team. */
+function PhoneAccess() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("pointerdown", outside);
+    window.addEventListener("keydown", esc);
+    return () => {
+      window.removeEventListener("pointerdown", outside);
+      window.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title="휴대폰이나 다른 기기에서 이 관제탑 보기"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        style={open ? { background: "var(--amber)", color: "#2B2520" } : { border: "1px solid var(--line)" }}
+      >
+        <Phone size={15} />
+        폰으로 보기
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="dialog"
+            aria-label="다른 기기에서 접속"
+            initial={{ opacity: 0, y: -6, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 380, damping: 32 }}
+            className="absolute top-[calc(100%+8px)] right-0 z-50 w-[400px] max-w-[calc(100vw-24px)] origin-top-right rounded-2xl p-5"
+            style={{ background: "color-mix(in srgb, var(--bg2) 97%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
+          >
+            <RemoteCard bare />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** Dev builds only: load / clear sample teams to look at the 관제탑 without running AI. */
+function DemoToggle() {
+  const demo = useApp((s) => s.demo);
+  const toggleDemo = useApp((s) => s.toggleDemo);
+  return (
+    <button
+      onClick={() => void toggleDemo()}
+      title="개발용: 가짜 팀 3개로 화면 보기 (저장되지 않아요)"
+      className="flex min-h-8 items-center gap-1 rounded-full px-2.5 text-[12px] font-medium"
+      style={demo ? { background: "var(--navy)", color: "var(--me-fg)" } : { border: "1px dashed var(--line)", color: "var(--text2)" }}
+    >
+      {demo ? "데모 끄기" : "데모 데이터"}
+    </button>
+  );
+}
+
+/** Clock in another team: its 총괄 joins the stack on the left. */
+function AddTeam() {
+  const go = useApp((s) => s.go);
+  return (
+    <button onClick={() => go({ name: "home" })} title="다른 팀도 출근시키기" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)]">
+      <Plus size={15} />
+      팀 추가
+    </button>
+  );
+}
+
 export function TopBar() {
-  const { dark, left, right, view, toggleDark, toggleLeft, toggleRight, setPreset, go, stopTeam, accounts, openAccounts } = useApp();
+  const { dark, left, right, view, toggleDark, toggleLeft, toggleRight, accounts, openAccounts } = useApp(useShallow((s) => ({ dark: s.dark, left: s.left, right: s.right, view: s.view, toggleDark: s.toggleDark, toggleLeft: s.toggleLeft, toggleRight: s.toggleRight, accounts: s.accounts, openAccounts: s.openAccounts })));
   const account = accounts.find((a) => a.active);
-  const { project, team } = useCurrent();
-  const [confirmStop, setConfirmStop] = useState(false);
+  const hasProject = useApp((s) => !!s.projectId);
   const onHome = view.name === "home";
-  const running = !!team?.agents.some((a) => a.status !== "off");
-  const openEscalations = team?.chat.filter((m) => (m.escalation && !m.escalation.answer) || (m.permission && !m.permission.answer)).length ?? 0;
 
-
+  // team things (preset, settings, clock-out, alerts) live in each 총괄's header now
   return (
     // left padding keeps clear of the macOS traffic lights
     <header
@@ -153,79 +208,12 @@ export function TopBar() {
           <PanelLeft />
         </button>
       )}
-      {project && !onHome ? (
-        <>
-          <button onClick={() => go({ name: "home" })} className="rounded-lg px-1 text-base font-semibold hover:bg-[var(--chip)]" title="프로젝트 목록으로">
-            {project.name}
-          </button>
-          {team?.branch && (
-            <button
-              onClick={() => go({ name: "home" })}
-              title={team.cwd}
-              className="glass flex min-h-[34px] items-center gap-2 rounded-full px-3 font-mono text-[12.5px]"
-            >
-              <Branch size={15} />
-              {team.branch}
-              <ChevronDown size={13} />
-            </button>
-          )}
-        </>
-      ) : null}
+      {hasProject && !onHome && <AddTeam />}
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
-      {project && !onHome && (
-        <>
-          <div role="group" aria-label="추천 설정" className="glass flex gap-0.5 rounded-full p-[3px]">
-            {PRESETS.map((p) => {
-              const on = p.id === project.team.preset;
-              return (
-                <button
-                  key={p.id}
-                  aria-pressed={on}
-                  onClick={() => setPreset(p.id)}
-                  title="이후에 출근하는 AI부터 적용돼요"
-                  className="flex min-h-[30px] items-center rounded-full border-0 px-3 text-[13px] font-medium transition-colors duration-200"
-                  style={{ background: on ? "var(--amber)" : "transparent", color: on ? "#2B2520" : "var(--text)" }}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
-          </div>
-
-          
-          <button
-            onClick={() => !left && toggleLeft()}
-            aria-label={openEscalations ? `도움이 필요한 일 ${openEscalations}건` : "알림 없음"}
-            className={`${iconBtn} relative`}
-          >
-            <Bell />
-            {openEscalations > 0 && (
-              <span
-                className="absolute top-[5px] right-[5px] size-[9px] rounded-full"
-                style={{ background: "var(--block)", border: "2px solid var(--bg2)" }}
-              />
-            )}
-          </button>
-          <button onClick={() => go({ name: "settings" })} aria-label="팀 설정" className={iconBtn}>
-            <Gear />
-          </button>
-          {running && (
-            <button
-              onClick={() => (confirmStop ? (setConfirmStop(false), void stopTeam()) : setConfirmStop(true))}
-              onBlur={() => setConfirmStop(false)}
-              aria-label="팀 퇴근 (모든 AI 작업 종료)"
-              className={confirmStop ? "flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-semibold" : iconBtn}
-              style={confirmStop ? { background: "var(--block)", color: "#fff" } : undefined}
-            >
-              <Power />
-              {confirmStop && "퇴근할까요?"}
-            </button>
-          )}
-        </>
-      )}
-
+      {import.meta.env.DEV && <DemoToggle />}
+      {!isRemote && <PhoneAccess />}
       <UsageMeter />
       <button
         onClick={() => openAccounts()}

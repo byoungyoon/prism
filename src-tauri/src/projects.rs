@@ -147,7 +147,7 @@ impl Projects {
             t.preset = "custom".into();
         } else if providers.len() == 1 && providers[0] == "codex" {
             // ChatGPT-only: the whole team runs on Codex
-            let model = crate::launch::models_list("codex".into(), None).into_iter().next().map(|m| m.id).unwrap_or_default();
+            let model = crate::launch::models_for("codex", None).into_iter().next().map(|m| m.id).unwrap_or_default();
             for r in [&mut t.lead, &mut t.managers, &mut t.workers] {
                 r.agent = "codex".into();
                 r.model = model.clone();

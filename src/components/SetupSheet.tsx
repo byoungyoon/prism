@@ -1,6 +1,6 @@
 // First-run setup: checks Git / Claude Code / Codex (and Node.js on Windows) and installs whatever
 // is missing, one after another, with the official installers running in a visible terminal.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, pty, type CliStatus } from "../lib/api";
 import { useApp } from "../store";
@@ -17,6 +17,11 @@ const WHY: Record<string, string> = {
 
 export function Installer({ tool, onCheck }: { tool: CliStatus; onCheck: () => void }) {
   const [ptyId, setPtyId] = useState<number | null>(null);
+  // Callers pass a fresh `onCheck` every render, and every status poll re-renders them. Keep it in
+  // a ref so the effect below runs once per tool — otherwise each poll killed the running installer
+  // and started it over (an endless download loop, very visible with winget on Windows).
+  const checkRef = useRef(onCheck);
+  checkRef.current = onCheck;
   useEffect(() => {
     let alive = true;
     let started: number | null = null;
@@ -30,14 +35,14 @@ export function Installer({ tool, onCheck }: { tool: CliStatus; onCheck: () => v
         })
         .catch((e) => useApp.getState().setError(e));
     }, 150); // one install, even when React (dev) runs this effect twice
-    const t = setInterval(onCheck, 3000);
+    const t = setInterval(() => checkRef.current(), 3000);
     return () => {
       alive = false;
       clearTimeout(timer);
       clearInterval(t);
       if (started != null) void pty.kill(started);
     };
-  }, [tool.name, onCheck]);
+  }, [tool.name]);
   return (
     <motion.div key={tool.name} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex flex-col gap-2">
       {tool.name === "git" && navigator.userAgent.includes("Mac") && (

@@ -1,6 +1,6 @@
 // View helpers: map backend state (src/lib/api.ts) onto the design's visual vocabulary.
 import { modelLabel } from "./models";
-import type { Agent, AgentStatus, Role, Task, TeamSnapshot } from "../lib/api";
+import type { Agent, AgentStatus, Role, Task } from "../lib/api";
 
 export type { Role } from "../lib/api";
 export type Column = "대기" | "배정" | "진행중" | "검토" | "완료";
@@ -15,7 +15,6 @@ export const STATUS: Record<AgentStatus, { label: string; cls: string; color: st
 };
 
 export const ROLE_NAME: Record<Role, string> = { lead: "총괄", mgr: "팀장", worker: "작업자" };
-export const LAYER_NAME: Record<Role, string> = { lead: "총괄", mgr: "팀장 층", worker: "작업자 층" };
 export { ALL_MODEL_IDS as MODELS } from "./models";
 
 export const clock = (ms: number) =>
@@ -58,46 +57,3 @@ export function cardView(t: Task, agents: Agent[]): CardView {
   }
 }
 
-export interface LayerView {
-  role: Role;
-  name: string;
-  agents: Agent[];
-  /** queued cards floating above the plane */
-  floats: { id: string; x: number; y: number }[];
-}
-
-const FLOAT_SLOTS = [
-  { x: 268, y: 26 },
-  { x: 286, y: 66 },
-  { x: 262, y: 278 },
-];
-
-/** Bottom → top. Empty manager/worker layers are left out. */
-export function layers(team: TeamSnapshot | undefined): LayerView[] {
-  if (!team) return [];
-  const visible = team.agents.filter((a) => a.status !== "off" || a.role === "lead");
-  const queuedBy = (role: Role) =>
-    team.tasks
-      .filter((t) => t.stage === "queued" && team.agents.find((a) => a.id === t.requestedBy)?.role === role)
-      .slice(0, 3)
-      .map((t, i) => ({ id: t.id, ...FLOAT_SLOTS[i] }));
-  const out: LayerView[] = [];
-  for (const role of ["worker", "mgr", "lead"] as Role[]) {
-    const agents = visible.filter((a) => a.role === role);
-    if (agents.length || role === "lead") out.push({ role, name: LAYER_NAME[role], agents, floats: queuedBy(role) });
-  }
-  return out;
-}
-
-/** Escalation ring classes along each open escalation's path (asker → … → lead). */
-export function rings(team: TeamSnapshot | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const m of team?.chat ?? []) {
-    if (m.escalation && !m.escalation.answer) {
-      m.escalation.path.forEach((id, i) => {
-        out[id] ??= ["ring", "ring d1", "ring d2"][Math.min(i, 2)];
-      });
-    }
-  }
-  return out;
-}

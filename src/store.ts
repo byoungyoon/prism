@@ -1,10 +1,11 @@
+import { useMemo } from "react";
 import { create } from "zustand";
+import { isRemote } from "./lib/transport";
 import { api, LOGIN_REQUIRED, type Account, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 
 export type View =
   | { name: "home" }
   | { name: "main" }
-  | { name: "focus"; layer: "lead" | "mgr" | "worker" }
   | { name: "agent"; id: string }
   | { name: "settings" };
 
@@ -16,8 +17,6 @@ interface AppState {
   dark: boolean;
   left: boolean;
   right: boolean;
-  /** center of the control tower: report feed or layer stack */
-  center: "feed" | "stack";
   view: View;
   selectedNode: string;
   selectedCard: string | null;
@@ -37,11 +36,13 @@ interface AppState {
   projectId: string | null;
   /** latest snapshot per project id */
   teams: Record<string, TeamSnapshot>;
+  /** dev builds: sample teams shown in place (see src/dev/demo.ts) */
+  demo: boolean;
+  toggleDemo(): Promise<void>;
 
   toggleDark(): void;
   toggleLeft(): void;
   toggleRight(): void;
-  setCenter(c: "feed" | "stack"): void;
   go(view: View): void;
   selectNode(id: string): void;
   selectCard(id: string | null): void;
@@ -55,13 +56,19 @@ interface AppState {
   createProject(name: string): Promise<Project | undefined>;
   setRoot(path: string): Promise<void>;
   openProject(id: string): Promise<void>;
+  /** jump to another working team's 관제탑 */
+  switchTeam(id: string): void;
+  /** open a screen (agent detail, focus view) of a given team */
+  openIn(id: string, view: View): void;
   startTeam(projectId: string, cwd?: string): Promise<void>;
-  stopTeam(): Promise<void>;
-  setPreset(preset: PresetName): Promise<void>;
+  /** `projectId` targets a given team; defaults to the current one */
+  stopTeam(projectId?: string): Promise<void>;
+  setPreset(preset: PresetName, projectId?: string): Promise<void>;
   saveTeam(team: TeamConfig): Promise<void>;
-  sendToLead(text: string): Promise<void>;
-  answerEscalation(msgId: number, answer: string): Promise<void>;
-  answerPermission(msgId: number, answer: "allow" | "always" | "deny"): Promise<void>;
+  /** `projectId` targets another team (multi view); defaults to the current one */
+  sendToLead(text: string, projectId?: string): Promise<void>;
+  answerEscalation(msgId: number, answer: string, projectId?: string): Promise<void>;
+  answerPermission(msgId: number, answer: "allow" | "always" | "deny", projectId?: string): Promise<void>;
   messageAgent(agentId: string, text: string): Promise<void>;
   setAgentModel(agentId: string, model: string): Promise<void>;
   killAgent(agentId: string): Promise<void>;
@@ -92,7 +99,6 @@ export const useApp = create<AppState>((set, get) => {
     dark: prefersDark(),
     left: true,
     right: true,
-    center: "feed",
     view: { name: "home" },
     selectedNode: "lead",
     selectedCard: null,
@@ -104,11 +110,35 @@ export const useApp = create<AppState>((set, get) => {
     root: "",
     projectId: null,
     teams: {},
+    demo: false,
+    toggleDemo: async () => {
+      const { makeDemo, DEMO_PREFIX } = await import("./dev/demo");
+      const isDemo = (id: string) => id.startsWith(DEMO_PREFIX);
+      if (!get().demo) {
+        const { projects, teams } = makeDemo();
+        set((s) => ({
+          demo: true,
+          projects: [...projects, ...s.projects.filter((p) => !isDemo(p.id))],
+          teams: { ...s.teams, ...teams },
+          projectId: projects[0].id,
+          view: { name: "main" },
+          selectedCard: null,
+        }));
+      } else {
+        set((s) => ({
+          demo: false,
+          projects: s.projects.filter((p) => !isDemo(p.id)),
+          teams: Object.fromEntries(Object.entries(s.teams).filter(([id]) => !isDemo(id))),
+          projectId: null,
+          view: { name: "home" },
+          selectedCard: null,
+        }));
+      }
+    },
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
     toggleRight: () => set((s) => ({ right: !s.right })),
-    setCenter: (center) => set({ center }),
     go: (view) => set({ view }),
     selectNode: (selectedNode) => set({ selectedNode }),
     selectCard: (selectedCard) => set({ selectedCard }),
@@ -120,6 +150,16 @@ export const useApp = create<AppState>((set, get) => {
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       await get().loadProjects();
       void get().loadAccounts();
+      // every team's current state up front, so teams at work show without waiting for their next update
+      const projects = get().projects;
+      const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
+      set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+      // opened on a phone (remote): go straight to the 관제탑 when teams are at work
+      if (isRemote && get().view.name === "home") {
+        const { teams } = get();
+        const first = projects.find((p) => isLive(teams[p.id]));
+        if (first) set({ projectId: first.id, view: { name: "main" } });
+      }
     },
 
     loadAccounts: guard(async () => set({ accounts: await api.accounts() })),
@@ -160,6 +200,9 @@ export const useApp = create<AppState>((set, get) => {
       }));
     }),
 
+    openIn: (id, view) => set({ projectId: id, view }),
+    switchTeam: (id) => set({ projectId: id, view: { name: "main" }, selectedNode: "lead", selectedCard: null }),
+
     startTeam: async (projectId: string, cwd?: string) => {
       try {
         const snap = await api.startTeam(projectId, cwd);
@@ -175,16 +218,20 @@ export const useApp = create<AppState>((set, get) => {
       }
     },
 
-    stopTeam: guard(async () => {
-      await api.stopTeam(pid());
-      set({ view: { name: "home" } });
+    stopTeam: guard(async (id?: string) => {
+      const target = id ?? pid();
+      await api.stopTeam(target);
+      // other teams keep working: stay in the 관제탑 on one of them
+      const next = get().projects.find((p) => p.id !== target && isLive(get().teams[p.id]));
+      if (next) set({ projectId: next.id, view: { name: "main" }, selectedCard: null });
+      else set({ view: { name: "home" } });
     }),
 
-    setPreset: guard(async (preset: PresetName) => replaceProject(await api.setPreset(pid(), preset))),
+    setPreset: guard(async (preset: PresetName, id?: string) => replaceProject(await api.setPreset(id ?? pid(), preset))),
     saveTeam: guard(async (team: TeamConfig) => replaceProject(await api.setTeam(pid(), team))),
-    sendToLead: guard(async (text: string) => api.sendToLead(pid(), text)),
-    answerEscalation: guard(async (msgId: number, answer: string) => api.answerEscalation(pid(), msgId, answer)),
-    answerPermission: guard(async (msgId: number, answer: "allow" | "always" | "deny") => api.answerPermission(pid(), msgId, answer)),
+    sendToLead: guard(async (text: string, id?: string) => api.sendToLead(id ?? pid(), text)),
+    answerEscalation: guard(async (msgId: number, answer: string, id?: string) => api.answerEscalation(id ?? pid(), msgId, answer)),
+    answerPermission: guard(async (msgId: number, answer: "allow" | "always" | "deny", id?: string) => api.answerPermission(id ?? pid(), msgId, answer)),
     messageAgent: guard(async (agentId: string, text: string) => api.messageAgent(pid(), agentId, text)),
     setAgentModel: guard(async (agentId: string, model: string) => api.setAgentModel(pid(), agentId, model)),
     killAgent: guard(async (agentId: string) => api.killAgent(pid(), agentId)),
@@ -192,6 +239,20 @@ export const useApp = create<AppState>((set, get) => {
     resumeAgent: guard(async (agentId: string) => api.resumeAgent(pid(), agentId)),
   };
 });
+
+export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status !== "off");
+
+
+/** Teams the 관제탑 shows together: every team at work, plus the open one. */
+export const useShownTeams = () => {
+  const projects = useApp((s) => s.projects);
+  const teams = useApp((s) => s.teams);
+  const current = useApp((s) => s.projectId);
+  return useMemo(
+    () => projects.flatMap((project) => (teams[project.id] && (isLive(teams[project.id]) || project.id === current) ? [{ project, team: teams[project.id] }] : [])),
+    [projects, teams, current],
+  );
+};
 
 /** Current project + its live team snapshot. */
 export const useCurrent = () => {

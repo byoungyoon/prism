@@ -70,6 +70,8 @@ export function HomeScreen() {
   const teams = useApp((s) => s.teams);
   const go = useApp((s) => s.go);
   const [selId, setSelId] = useState<string | null>(null);
+  /** teams picked to clock in together (the check on each card) */
+  const [picked, setPicked] = useState<string[]>([]);
   const root = useApp((s) => s.root);
   const [naming, setNaming] = useState(false);
   const [newName, setNewName] = useState("");
@@ -149,9 +151,25 @@ export function HomeScreen() {
   const snap = cur ? teams[cur.id] : undefined;
   const live = !!snap && snap.agents.some((a) => a.status !== "off");
 
+  const isLiveId = (id: string) => !!teams[id]?.agents.some((a) => a.status !== "off");
+  const crew = picked.filter((id) => !isLiveId(id));
+
   const depart = async () => {
     if (!cur || busy) return;
     const st = useApp.getState();
+    if (crew.length > 1) {
+      // several teams at once: each 총괄 joins the 관제탑 on the left
+      setBusy(true);
+      for (let i = 0; i < 3; i++) {
+        setArriving(i);
+        await new Promise((r) => setTimeout(r, 140));
+      }
+      for (const id of crew) await st.startTeam(id);
+      setPicked([]);
+      setBusy(false);
+      setArriving(-1);
+      return;
+    }
     if (live) {
       await st.openProject(cur.id);
       st.go({ name: "main" });
@@ -195,8 +213,8 @@ export function HomeScreen() {
   return (
     <div className="relative flex min-h-0 flex-auto flex-col overflow-y-auto overflow-x-hidden" style={{ color: "var(--text)" }}>
       <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute rounded-full" style={{ width: 560, height: 560, right: "8%", top: "10%", background: "var(--blob1)", filter: "blur(100px)" }} />
-        <div className="absolute rounded-full" style={{ width: 420, height: 420, left: -120, bottom: -160, background: "var(--blob2)", filter: "blur(90px)" }} />
+        <div className="absolute rounded-full" style={{ width: 560, height: 560, right: "8%", top: "10%", background: "radial-gradient(closest-side, var(--blob1), transparent)" }} />
+        <div className="absolute rounded-full" style={{ width: 420, height: 420, left: -120, bottom: -160, background: "radial-gradient(closest-side, var(--blob2), transparent)" }} />
       </div>
 
       <div
@@ -248,7 +266,7 @@ export function HomeScreen() {
                         type="button"
                         aria-pressed={on}
                         onClick={() => setSelId(p.id)}
-                        className="glass flex w-full items-center gap-3.5 rounded-xl py-3.5 pr-4 pl-4 text-left"
+                        className="glass flex w-full items-center gap-3.5 rounded-xl py-3.5 pr-14 pl-4 text-left"
                         style={{ outline: on ? "1.5px solid var(--navy)" : "none", outlineOffset: -1 }}
                       >
                         <span className="flex size-10 shrink-0 items-center justify-center rounded-xl font-semibold" style={{ background: "var(--tile)" }}>
@@ -268,10 +286,31 @@ export function HomeScreen() {
                         </span>
                         <span className="shrink-0 text-xs text-ink-2">{ago(p.lastOpened)}</span>
                       </button>
+                      {!isLiveId(p.id) && (
+                        <button
+                          type="button"
+                          aria-pressed={picked.includes(p.id)}
+                          aria-label={`${p.name} 함께 출근시키기`}
+                          title="여러 팀을 골라 한 번에 출근시킬 수 있어요"
+                          onClick={() => {
+                            setSelId(p.id);
+                            setPicked((x) => (x.includes(p.id) ? x.filter((y) => y !== p.id) : [...x, p.id]));
+                          }}
+                          className="absolute top-1/2 right-3.5 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-[13px] font-bold transition-colors"
+                          style={
+                            picked.includes(p.id)
+                              ? { background: "var(--amber)", color: "#2b2520", border: "1.5px solid var(--amber)" }
+                              : { background: "transparent", color: "transparent", border: "1.5px solid color-mix(in srgb, var(--text) 30%, transparent)" }
+                          }
+                        >
+                          ✓
+                        </button>
+                      )}
                     </motion.div>
                   );
                 })}
               </AnimatePresence>
+              {projects.length > 1 && <span className="px-1 text-[12px] text-ink-2">오른쪽 동그라미를 눌러 여러 팀을 골라두면 한 번에 출근시킬 수 있어요.</span>}
               {newProject}
             </div>
           )}
@@ -331,6 +370,11 @@ export function HomeScreen() {
 
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex min-w-[200px] flex-[1_1_200px] flex-col gap-1.5 text-[13px] leading-[1.55] text-ink-2">
+                {crew.length > 1 && (
+                  <span className="font-semibold" style={{ color: "var(--text)" }}>
+                    {crew.map((id) => projects.find((x) => x.id === id)?.name).join(", ")} 함께 출근
+                  </span>
+                )}
                 <span>
                   {PRESET_NOTE[t.preset]}
                   <br />
@@ -348,7 +392,7 @@ export function HomeScreen() {
                 style={{ background: "var(--amber)", color: "#2b2520", boxShadow: "0 14px 30px rgba(232,161,90,0.45), inset 0 1px 0 rgba(255,255,255,0.5)" }}
               >
                 <Play />
-                {live ? "관제탑으로" : "팀 출근"}
+                {crew.length > 1 ? `${crew.length}팀 출근` : live ? "관제탑으로" : "팀 출근"}
               </button>
             </div>
           </section>

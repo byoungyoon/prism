@@ -7,6 +7,7 @@ import { useApp } from "../store";
 import { Installer } from "./SetupSheet";
 import { LoginTerminal } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
+import { useShallow } from "zustand/react/shallow";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 type Step = "pick" | "install" | "login" | "start";
@@ -37,7 +38,7 @@ function needed(providers: Provider[], all: CliStatus[]) {
 }
 
 export function Onboarding() {
-  const { accounts, projects, loadAccounts, createProject, startTeam, sendToLead } = useApp();
+  const { accounts, projects, loadAccounts, createProject, startTeam, sendToLead } = useApp(useShallow((s) => ({ accounts: s.accounts, projects: s.projects, loadAccounts: s.loadAccounts, createProject: s.createProject, startTeam: s.startTeam, sendToLead: s.sendToLead })));
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("pick");
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -145,8 +146,8 @@ export function Onboarding() {
           style={{ background: "linear-gradient(160deg, var(--bg1), var(--bg2))" }}
         >
           <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-            <div className="absolute rounded-full" style={{ width: 560, height: 560, right: "6%", top: "-8%", background: "var(--blob1)", filter: "blur(100px)" }} />
-            <div className="absolute rounded-full" style={{ width: 460, height: 460, left: "-6%", bottom: "-12%", background: "var(--blob2)", filter: "blur(90px)" }} />
+            <div className="absolute rounded-full" style={{ width: 560, height: 560, right: "6%", top: "-8%", background: "radial-gradient(closest-side, var(--blob1), transparent)" }} />
+            <div className="absolute rounded-full" style={{ width: 460, height: 460, left: "-6%", bottom: "-12%", background: "radial-gradient(closest-side, var(--blob2), transparent)" }} />
           </div>
 
           <motion.section

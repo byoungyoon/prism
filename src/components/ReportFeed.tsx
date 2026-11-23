@@ -3,25 +3,20 @@
 // are gathered into a single card on top so the user answers them in one place.
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp, useCurrent } from "../store";
-import { api, type Agent, type ChatMsg, type FileStat, type Task, type TeamSnapshot } from "../lib/api";
-import { STATUS, elapsed } from "../data/types";
+import { useApp, useShownTeams } from "../store";
+import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
+import { TeamTag } from "./TeamTag";
+import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
-const STAGE: Record<Task["stage"], { label: string; color: string; bg: string }> = {
-  queued: { label: "대기", color: "var(--wait-ink)", bg: "var(--chip)" },
-  running: { label: "진행 중", color: "var(--work-ink)", bg: "rgba(127,176,138,0.16)" },
-  review: { label: "검토 대기", color: "var(--wait-ink)", bg: "rgba(226,184,102,0.18)" },
-  done: { label: "완료", color: "var(--text2)", bg: "var(--chip)" },
-  failed: { label: "실패", color: "var(--block-ink)", bg: "var(--block-bg)" },
-};
 
 // ── permissions, gathered ─────────────────────────────
 
-function PermissionsCard({ items, team }: { items: ChatMsg[]; team: TeamSnapshot }) {
-  const answer = useApp((s) => s.answerPermission);
+function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; team: TeamSnapshot; project: Project; multi: boolean }) {
+  const answerPermission = useApp((s) => s.answerPermission);
+  const answer = (id: number, a: "allow" | "always" | "deny") => answerPermission(id, a, project.id);
   const name = (id: string) => team.agents.find((a) => a.id === id)?.name ?? id;
   return (
     <motion.section
@@ -31,10 +26,11 @@ function PermissionsCard({ items, team }: { items: ChatMsg[]; team: TeamSnapshot
       exit={{ opacity: 0, scale: 0.98 }}
       transition={spring}
       className="glass flex flex-col gap-3 rounded-2xl p-4"
-      style={{ border: "1.5px solid var(--amber)" }}
+      style={{ border: "1.5px solid var(--amber)", boxShadow: "var(--shadow-sm), var(--hi)" }}
     >
       <div className="flex items-center gap-2">
         <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
+        {multi && <TeamTag project={project} className="text-[12px]" />}
         <h3 className="m-0 flex-auto text-[14px] font-semibold">허락이 필요해요 · {items.length}건</h3>
         {items.length > 1 && (
           <button
@@ -96,8 +92,7 @@ function DiffView({ text }: { text: string }) {
   );
 }
 
-function Results({ task }: { task: Task }) {
-  const pid = useApp((s) => s.projectId)!;
+function Results({ task, pid }: { task: Task; pid: string }) {
   const [files, setFiles] = useState<FileStat[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -187,90 +182,120 @@ function Results({ task }: { task: Task }) {
   );
 }
 
-// ── one task ──────────────────────────────────────────
+// ── one piece of work ─────────────────────────────
 
-function Activity({ agents }: { agents: Agent[] }) {
-  const lines = agents
-    .flatMap((a) => a.activity.map((x) => ({ ...x, who: a.name })))
-    .sort((a, b) => a.at - b.at)
-    .slice(-5);
-  if (!lines.length) return <span className="text-[12.5px] text-ink-2">시작하는 중…</span>;
+const WORD: Record<Task["stage"], string> = { queued: "대기", running: "진행 중", review: "검토", done: "완료", failed: "실패" };
+
+/** State in plain words; only problems get color. */
+function stateOf(task: Task, team: TeamSnapshot) {
+  const a = team.agents.find((x) => x.id === task.assignee);
+  if (task.stage === "failed") return { word: "실패", problem: true };
+  if (task.stage === "running" && a?.status === "block") return { word: "막힘", problem: true };
+  return { word: WORD[task.stage], problem: false };
+}
+
+/** The card a task was split from: its requester's own card (a 팀장 handing work to 작업자). */
+const parentOf = (task: Task, team: TeamSnapshot) => {
+  const by = team.agents.find((a) => a.id === task.requestedBy);
+  return by && by.role !== "lead" ? by.taskId : null;
+};
+
+/** The newest thing anyone on this work did, as one line. */
+function latest(agents: Agent[]) {
+  return agents.flatMap((a) => a.activity.map((x) => ({ ...x, who: a.name }))).sort((a, b) => b.at - a.at)[0];
+}
+
+function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen: (id: string) => void }) {
+  const a = team.agents.find((x) => x.id === task.assignee);
+  const st = stateOf(task, team);
   return (
-    <ul className="m-0 flex list-none flex-col gap-1 p-0">
-      <AnimatePresence initial={false}>
-        {lines.map((l, i) => (
-          <motion.li
-            key={`${l.at}-${l.who}`}
-            layout
-            initial={{ opacity: 0, x: -6 }}
-            animate={{ opacity: i === lines.length - 1 ? 1 : 0.55, x: 0 }}
-            transition={spring}
-            className="flex gap-2 text-[12.5px] leading-snug"
-          >
-            <span className="min-w-12 shrink-0 font-mono text-[11px] whitespace-nowrap text-ink-2">{l.who}</span>
-            <span className="min-w-0 truncate font-mono text-[12px]">{l.text}</span>
-          </motion.li>
-        ))}
-      </AnimatePresence>
-    </ul>
+    <button
+      onClick={() => a && onOpen(a.id)}
+      disabled={!a}
+      className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)] disabled:hover:bg-transparent"
+    >
+      <span className="w-9 shrink-0 font-mono text-[11.5px] font-semibold">{task.id}</span>
+      <span className="min-w-0 flex-auto truncate">{task.title}</span>
+      <span className="shrink-0 text-[11.5px] text-ink-2">{a?.name ?? "배정 전"}</span>
+      <span className="w-12 shrink-0 text-right text-[11.5px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
+        {st.word}
+      </span>
+    </button>
   );
 }
 
-function TaskCard({ task, team }: { task: Task; team: TeamSnapshot }) {
-  const go = useApp((s) => s.go);
-  const st = STAGE[task.stage];
+function TaskCard({ task, subs, team, project }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project }) {
+  const openIn = useApp((s) => s.openIn);
+  const open = (id: string) => openIn(project.id, { name: "agent", id });
+  const st = stateOf(task, team);
   const assignee = team.agents.find((a) => a.id === task.assignee);
-  // the assignee plus anyone working under it
+  // everyone on this piece of work: its owner and whoever works under them
   const crew = team.agents.filter((a) => a.id === task.assignee || (assignee && a.parentId === assignee.id));
+  const last = latest(crew);
   const leadNote = [...team.chat].reverse().find((m) => m.kind === "lead" && m.taskIds.includes(task.id) && m.at >= task.updatedAt - 1000);
   const finished = task.stage === "review" || task.stage === "done" || task.stage === "failed";
+  const doneSubs = subs.filter((t) => t.stage === "done").length;
 
   return (
-    <motion.article layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring} className="glass flex flex-col gap-3 rounded-2xl p-4">
-      <header className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-[12px] font-semibold">{task.id}</span>
-        <h3 className="m-0 min-w-0 flex-auto truncate text-[14.5px] font-semibold">{task.title}</h3>
-        <span className="rounded-full px-2.5 py-0.5 text-[11.5px] font-medium" style={{ color: st.color, background: st.bg }}>
-          {st.label}
+    <motion.article
+      layout
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring}
+      className="glass flex flex-col gap-2.5 rounded-2xl px-4 py-3.5"
+      style={{ boxShadow: `${st.problem ? "inset 3px 0 0 var(--block), " : ""}var(--shadow-sm), var(--hi)` }}
+    >
+      <header className="flex items-baseline gap-2">
+        <span className="shrink-0 font-mono text-[12px] font-semibold text-ink-2">{task.id}</span>
+        <h3 className="m-0 min-w-0 flex-auto truncate text-[15px] font-semibold">{task.title}</h3>
+        <span className="shrink-0 text-[12px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
+          {st.word}
         </span>
+        <span className="shrink-0 text-[11.5px] text-ink-2">· {elapsed(task.updatedAt)} 전</span>
       </header>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        {crew.map((a) => {
-          const s = STATUS[a.status];
-          return (
-            <button key={a.id} onClick={() => go({ name: "agent", id: a.id })} className="flex min-h-7 items-center gap-1.5 rounded-full px-2.5 text-[12px]" style={{ background: "var(--chip)" }} title="자세히 보기">
-              <span className={`${s.cls} size-1.5 rounded-full`} style={{ background: s.color }} />
-              {a.name}
-              <span className="font-mono text-[10.5px] text-ink-2">{modelLabel(a.model)}</span>
-            </button>
-          );
-        })}
-        <span className="ml-auto text-[11.5px] text-ink-2">{elapsed(task.createdAt)} 전 시작</span>
+      <div className="flex min-w-0 items-center gap-2 text-[12px] text-ink-2">
+        {assignee ? (
+          <button onClick={() => open(assignee.id)} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 hover:text-[var(--text)] hover:underline" title="작업 화면 보기">
+            {assignee.name} · <span className="font-mono text-[11px]">{modelLabel(assignee.model)}</span>
+          </button>
+        ) : (
+          <span>맡을 사람을 기다려요</span>
+        )}
+        {!finished && last && (
+          <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11.5px]">
+            <span aria-hidden="true">›</span>
+            <span className="shrink-0">{last.who}</span>
+            <span className="truncate text-[var(--text)]">{last.text}</span>
+          </span>
+        )}
+        {!finished && !last && task.stage === "running" && <span>· 시작하는 중</span>}
       </div>
 
-      {!finished && (
-        <div className="rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
-          {task.stage === "queued" ? <span className="text-[12.5px] text-ink-2">순서를 기다리는 중이에요 · {task.goal}</span> : <Activity agents={crew} />}
+      {finished && (task.summary || leadNote) && (
+        <div className="flex flex-col gap-1.5 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
+          {leadNote ? (
+            <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{leadNote.text}</p>
+          ) : (
+            <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{task.summary}</p>
+          )}
+          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? "작업자"}: {task.summary}</p>}
         </div>
       )}
+      {finished && task.stage !== "failed" && <Results task={task} pid={project.id} />}
 
-      {finished && (
-        <>
-          {task.summary && (
-            <p className="m-0 text-[13px] leading-relaxed whitespace-pre-wrap select-text">
-              <span className="mr-1.5 text-[11.5px] font-semibold text-ink-2">{assignee?.name ?? "작업자"} 보고</span>
-              {task.summary}
-            </p>
-          )}
-          {leadNote && (
-            <div className="rounded-xl px-3 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap select-text" style={{ background: "var(--glass2)" }}>
-              <span className="mb-1 block text-[11.5px] font-semibold text-ink-2">총괄 보고</span>
-              {leadNote.text}
-            </div>
-          )}
-          <Results task={task} />
-        </>
+      {subs.length > 0 && (
+        <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
+          <span className="flex items-center gap-2 px-2 pt-1 text-[11.5px] text-ink-2">
+            하위 작업 {doneSubs}/{subs.length} 완료
+            <span className="h-1 max-w-[120px] flex-auto overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
+              <span className="block h-full rounded-full" style={{ width: `${(doneSubs / subs.length) * 100}%`, background: "var(--text2)" }} />
+            </span>
+          </span>
+          {subs.map((t) => (
+            <SubRow key={t.id} task={t} team={team} onOpen={open} />
+          ))}
+        </div>
       )}
     </motion.article>
   );
@@ -278,27 +303,65 @@ function TaskCard({ task, team }: { task: Task; team: TeamSnapshot }) {
 
 // ── feed ──────────────────────────────────────────────
 
+/** problems first, then work in progress, then results to check, then what's waiting, then done */
+const ORDER: Record<string, number> = { problem: 0, running: 1, review: 2, queued: 3, failed: 0, done: 4 };
+const rank = (t: Task, team: TeamSnapshot) => (stateOf(t, team).problem ? 0 : ORDER[t.stage]);
+
+function TeamSection({ project, team, multi }: { project: Project; team: TeamSnapshot; multi: boolean }) {
+  const [allDone, setAllDone] = useState(false);
+  const top = team.tasks.filter((t) => !parentOf(t, team) || !team.tasks.some((x) => x.id === parentOf(t, team)));
+  const subsOf = (t: Task) => team.tasks.filter((x) => parentOf(x, team) === t.id);
+  const sorted = [...top].sort((a, b) => rank(a, team) - rank(b, team) || b.updatedAt - a.updatedAt);
+  const active = sorted.filter((t) => t.stage !== "done");
+  const done = sorted.filter((t) => t.stage === "done");
+  const shownDone = allDone ? done : done.slice(0, 3);
+  if (!top.length) return null;
+  return (
+    <section aria-label={`${project.name} 보고`} className="flex flex-col gap-2.5">
+      {multi && (
+        <h2 className="m-0 flex items-baseline gap-2 px-1 pt-1 text-[14px] font-semibold">
+          {project.name}
+          <span className="text-[12px] font-normal text-ink-2">
+            진행 {active.length} · 완료 {done.length}
+          </span>
+        </h2>
+      )}
+      {[...active, ...shownDone].map((t) => (
+        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} />
+      ))}
+      {done.length > 3 && (
+        <button onClick={() => setAllDone((v) => !v)} className="self-start border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
+          {allDone ? "완료된 일 접기" : `완료된 일 ${done.length - 3}개 더 보기`}
+        </button>
+      )}
+    </section>
+  );
+}
+
 export function ReportFeed() {
-  const { team } = useCurrent();
-  if (!team) return null;
-  const perms = team.chat.filter((m) => m.permission && !m.permission.answer);
-  const tasks = [...team.tasks].sort((a, b) => {
-    // running first, then most recently touched
-    const live = (t: Task) => (t.stage === "running" || t.stage === "queued" ? 1 : 0);
-    return live(b) - live(a) || b.updatedAt - a.updatedAt;
-  });
+  const shown = useShownTeams();
+  if (!shown.length) return null;
+  const multi = shown.length > 1;
+  const permGroups = shown
+    .map(({ project, team }) => ({ project, team, items: team.chat.filter((m) => m.permission && !m.permission.answer) }))
+    .filter((g) => g.items.length);
+  const any = shown.some(({ team }) => team.tasks.length);
 
   return (
-    <section aria-label="보고 피드" className="flex min-h-0 min-w-0 flex-auto flex-col gap-3 overflow-y-auto px-1 pt-1 pb-4">
-      <AnimatePresence initial={false}>{perms.length > 0 && <PermissionsCard key="perms" items={perms} team={team} />}</AnimatePresence>
-      {tasks.length === 0 && perms.length === 0 && (
+    <section aria-label="보고 피드" className="flex min-h-0 min-w-0 flex-auto flex-col gap-4 overflow-y-auto px-1 pt-1 pb-4">
+      <AnimatePresence initial={false}>
+        {permGroups.map((g) => (
+          <PermissionsCard key={`perms-${g.project.id}`} items={g.items} team={g.team} project={g.project} multi={multi} />
+        ))}
+      </AnimatePresence>
+      {!any && permGroups.length === 0 && (
         <div className="m-auto flex max-w-[300px] flex-col items-center gap-2 text-center">
           <span className="text-[15px] font-semibold">아직 보고가 없어요</span>
           <span className="text-[13px] leading-relaxed text-ink-2">왼쪽에서 총괄에게 일을 시키면, 작업마다 진행 상황과 결과물이 여기 카드로 쌓여요.</span>
         </div>
       )}
-      {tasks.map((t) => (
-        <TaskCard key={t.id} task={t} team={team} />
+      {shown.map(({ project, team }) => (
+        <TeamSection key={project.id} project={project} team={team} multi={multi} />
       ))}
     </section>
   );

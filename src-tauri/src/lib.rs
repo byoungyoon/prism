@@ -59,6 +59,7 @@ pub fn run() {
             tauri::async_runtime::spawn(server::serve(listener, teams));
 
             clis::start_auto_update(app.handle().clone());
+            launch::warm_models();
 
             // subscription usage: now, then every 5 minutes (Orca's cadence)
             let h = app.handle().clone();

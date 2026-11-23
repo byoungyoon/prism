@@ -11,6 +11,8 @@
   --glass2: rgba(255, 255, 255, 0.62);
   --glass-border: rgba(255, 255, 255, 0.7);
   --shadow: 0 20px 40px rgba(120, 90, 50, 0.15);
+  /* for panels packed side by side (stacked 총괄 chats): big shadows pile up and tint the gaps */
+  --shadow-sm: 0 3px 10px rgba(120, 90, 50, 0.08);
   --hi: inset 0 1px 0 rgba(255, 255, 255, 0.6);
   --text: #2b2520;
   --text2: #6b6055;
@@ -47,6 +49,7 @@
   --glass2: rgba(255, 248, 238, 0.1);
   --glass-border: rgba(255, 240, 220, 0.14);
   --shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  --shadow-sm: 0 3px 10px rgba(0, 0, 0, 0.25);
   --hi: inset 0 1px 0 rgba(255, 240, 220, 0.08);
   --text: #f3ece2;
   --text2: #a89c8e;
@@ -96,8 +99,9 @@
 
 @utility glass {
   background: var(--glass);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-  backdrop-filter: blur(20px) saturate(140%);
+  /* kept light: every panel blurs what's behind it, and that is redrawn whenever the UI updates */
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--shadow), var(--hi);
 }
@@ -122,6 +126,8 @@ body {
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
   cursor: default;
+  /* WebKit (the macOS app's webview) only honors the prefixed form */
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -129,7 +135,9 @@ button {
   cursor: pointer;
 }
 
-input {
+input,
+textarea {
+  -webkit-user-select: text;
   user-select: text;
 }
 
@@ -161,142 +169,10 @@ input {
   }
 }
 
-/* escalation ring: worker → manager → lead, staggered by d1/d2 */
-.ring {
-  position: absolute;
-  inset: -5px;
-  border-radius: 15px;
-  border: 2px solid var(--block);
-  opacity: 0;
-  animation: ringUp 2.4s ease-out infinite;
-  pointer-events: none;
-}
-.d1 {
-  animation-delay: 0.3s;
-}
-.d2 {
-  animation-delay: 0.6s;
-}
-@keyframes ringUp {
-  0% {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  8% {
-    opacity: 1;
-  }
-  40% {
-    opacity: 0;
-    transform: scale(1.12);
-  }
-  100% {
-    opacity: 0;
-  }
-}
-
-/* ── layer stack ───────────────────────────────── */
-.gap-c {
-  --gap: 84px;
-}
-.gap-o {
-  --gap: 140px;
-}
-.tz {
-  transition:
-    transform 460ms cubic-bezier(0.22, 1.25, 0.36, 1),
-    background-color 200ms,
-    box-shadow 200ms;
-}
-
-/* task packets travelling between planes */
-.pk {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
-  border-radius: 50%;
-  pointer-events: none;
-  opacity: 0;
-}
-.pk-down,
-.pk-down2 {
-  background: var(--amber);
-  box-shadow:
-    0 0 0 3px rgba(232, 161, 90, 0.25),
-    0 0 18px 5px rgba(232, 161, 90, 0.55);
-}
-.pk-down {
-  animation: pkDown 2.8s ease-in-out infinite;
-}
-.pk-down2 {
-  animation: pkDown2 2.8s ease-in-out 1.4s infinite;
-}
-.pk-up {
-  background: var(--navy);
-  box-shadow: 0 0 16px 4px rgba(143, 163, 214, 0.6);
-  animation: pkUp 3.4s ease-in-out 0.7s infinite;
-}
-@keyframes pkDown {
-  0% {
-    transform: translate3d(170px, 190px, calc(var(--gap) * 2 + 24px));
-    opacity: 0;
-  }
-  15%,
-  80% {
-    opacity: 1;
-  }
-  100% {
-    transform: translate3d(118px, 196px, calc(var(--gap) + 24px));
-    opacity: 0;
-  }
-}
-@keyframes pkDown2 {
-  0% {
-    transform: translate3d(222px, 196px, calc(var(--gap) + 24px));
-    opacity: 0;
-  }
-  15%,
-  80% {
-    opacity: 1;
-  }
-  100% {
-    transform: translate3d(214px, 236px, 24px);
-    opacity: 0;
-  }
-}
-@keyframes pkUp {
-  0% {
-    transform: translate3d(130px, 156px, 24px);
-    opacity: 0;
-  }
-  15%,
-  80% {
-    opacity: 1;
-  }
-  100% {
-    transform: translate3d(118px, 196px, calc(var(--gap) + 24px));
-    opacity: 0;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
-  .pk-down,
-  .pk-down2,
-  .pk-up {
-    display: none;
-  }
-  .ring {
-    animation: none;
-  }
   .s-block {
     animation: breathe 2s ease-in-out infinite;
-  }
-  .tz {
-    transition:
-      background-color 200ms,
-      box-shadow 200ms;
   }
 }
 

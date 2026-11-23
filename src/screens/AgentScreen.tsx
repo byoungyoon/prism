@@ -5,6 +5,7 @@ import { useApp, useCurrent } from "../store";
 import { ROLE_NAME, STATUS, elapsed, usd } from "../data/types";
 import { TerminalView } from "../components/TerminalView";
 import { Transcript } from "../components/Transcript";
+import { ChevronLeft } from "../components/icons";
 
 const Svg = ({ children }: { children: ReactNode }) => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -80,17 +81,10 @@ export function AgentScreen({ id }: { id: string }) {
   return (
     <div className="flex min-h-0 flex-auto flex-col" style={{ color: "var(--text)" }}>
       <header className="flex flex-wrap items-center gap-3 px-3 pb-1" style={{ minHeight: 46 }}>
-        <nav aria-label="현재 위치" className="flex items-center gap-2 text-[14px]">
-          <button onClick={() => go({ name: "main" })} className="min-h-[34px] px-1.5 text-ink-2">
-            스택
-          </button>
-          <span aria-hidden="true" className="text-ink-2">›</span>
-          <button onClick={() => go({ name: "focus", layer: agent.role })} className="min-h-[34px] px-1.5 text-ink-2">
-            {agent.role === "lead" ? "총괄" : agent.role === "mgr" ? "팀장 층" : "작업자 층"}
-          </button>
-          <span aria-hidden="true" className="text-ink-2">›</span>
-          <span aria-current="page" className="font-semibold">{agent.name}</span>
-        </nav>
+        <button onClick={() => go({ name: "main" })} aria-label="뒤로" title="관제탑으로 돌아가기" className="flex size-[34px] items-center justify-center rounded-[10px] border-0 bg-transparent text-ink-2 hover:bg-[var(--chip)]">
+          <ChevronLeft size={18} />
+        </button>
+        <span className="text-[15px] font-semibold">{agent.name}</span>
         <span
           className="flex items-center gap-1.5 rounded-full px-2.5 py-[3px] text-[12.5px] font-medium"
           style={{ background: agent.status === "block" ? "var(--block-bg)" : "var(--chip)", color: s.ink }}

@@ -94,6 +94,26 @@ pub fn trust(kind: &str, dir: &str, home: Option<&str>) {
 
 // ── Claude Code ───────────────────────────────────────
 
+/// Whether Claude Code saved a conversation for `session_id`. It only writes the transcript
+/// (`<config>/projects/<cwd>/<id>.jsonl`) once the session gets its first message, so a lead that
+/// clocked in but was never spoken to has nothing to `--resume` — and resuming it exits with
+/// "No conversation found". `home` is the account's CLAUDE_CONFIG_DIR (None → ~/.claude).
+pub fn claude_session_exists(home: Option<&str>, session_id: &str) -> bool {
+    let base = match home {
+        Some(h) => std::path::PathBuf::from(h),
+        None => match std::env::var_os("CLAUDE_CONFIG_DIR") {
+            Some(d) => d.into(),
+            None => match std::env::home_dir() {
+                Some(h) => h.join(".claude"),
+                None => return true, // can't tell: let --resume try
+            },
+        },
+    };
+    let Ok(dirs) = std::fs::read_dir(base.join("projects")) else { return false };
+    let file = format!("{session_id}.jsonl");
+    dirs.flatten().any(|d| d.path().join(&file).is_file())
+}
+
 fn claude(c: &Ctx) -> Result<Launch, String> {
     let mcp_path = c.file("mcp.json");
     let settings_path = c.file("settings.json");
@@ -186,7 +206,7 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
         }
     }
     let env = c.home.clone().map(|h| vec![("CODEX_HOME".to_string(), h)]).unwrap_or_default();
-        let fallback_models = models_list("codex".into(), c.home.clone()).into_iter().map(|m| m.id).filter(|m| m != c.model).collect();
+        let fallback_models = models_for("codex", c.home.clone()).into_iter().map(|m| m.id).filter(|m| m != c.model).collect();
     Ok(Launch { program: "codex".into(), args: first, env, first_message: c.prompt.clone(), resume_args: resume, acp: None, fallback_models })
 }
 
@@ -225,7 +245,7 @@ fn codex_trust(_dir: &str, _home: Option<&str>) {}
 
 // ── model lists ───────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
@@ -234,10 +254,47 @@ pub struct ModelInfo {
     pub efforts: Vec<String>,
 }
 
-/// Models for Codex (from the CLI's own cache); Claude's list lives in the UI.
+/// Models for Codex (from the CLI's own cache) and Antigravity (`agy models`); Claude's list
+/// lives in the UI. Async so it never runs on the UI thread — `agy models` takes ~2s, and the
+/// settings screen asks once per role.
 #[tauri::command]
-pub fn models_list(provider: String, home: Option<String>) -> Vec<ModelInfo> {
-    match provider.as_str() {
+pub async fn models_list(provider: String, home: Option<String>) -> Vec<ModelInfo> {
+    tauri::async_runtime::spawn_blocking(move || models_for(&provider, home)).await.unwrap_or_default()
+}
+
+/// Fetch slow model lists in the background at startup, so the settings screen opens instantly.
+pub fn warm_models() {
+    std::thread::spawn(|| {
+        if sys::which("agy").is_some() {
+            agy_models();
+        }
+    });
+}
+
+/// `agy models`, remembered for a while: one run serves every role (callers queue on the lock).
+fn agy_models() -> Vec<ModelInfo> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<ModelInfo>)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    if let Some((at, list)) = cache.as_ref() {
+        if at.elapsed() < std::time::Duration::from_secs(600) && !list.is_empty() {
+            return list.clone();
+        }
+    }
+    // `agy models` prints "<id>\t<label>"
+    let Ok(out) = sys::command("agy").arg("models").env("AGY_CLI_DISABLE_AUTO_UPDATE", "true").output() else { return vec![] };
+    let list: Vec<ModelInfo> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (id, label) = l.split_once('\t')?;
+            Some(ModelInfo { id: id.trim().into(), label: label.trim().into(), note: String::new(), efforts: vec![] })
+        })
+        .collect();
+    *cache = Some((std::time::Instant::now(), list.clone()));
+    list
+}
+
+pub fn models_for(provider: &str, home: Option<String>) -> Vec<ModelInfo> {
+    match provider {
         "codex" => {
             let file = codex_account_home(home.as_deref()).join("models_cache.json");
             let Ok(text) = std::fs::read_to_string(file) else { return vec![] };
@@ -263,17 +320,7 @@ pub fn models_list(provider: String, home: Option<String>) -> Vec<ModelInfo> {
                 })
                 .unwrap_or_default()
         }
-        "antigravity" => {
-            // `agy models` prints "<id>\t<label>"
-            let Ok(out) = sys::command("agy").arg("models").env("AGY_CLI_DISABLE_AUTO_UPDATE", "true").output() else { return vec![] };
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter_map(|l| {
-                    let (id, label) = l.split_once('\t')?;
-                    Some(ModelInfo { id: id.trim().into(), label: label.trim().into(), note: String::new(), efforts: vec![] })
-                })
-                .collect()
-        }
+        "antigravity" => agy_models(),
         _ => vec![],
     }
 }

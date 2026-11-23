@@ -301,7 +301,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "git_diff" => ok(p::git_diff(arg(&a, "cwd")?, arg(&a, "path")?)),
         "accounts_list" => ok(crate::accounts::accounts_list(app.clone()).await),
         "cli_status" => ok(crate::clis::cli_status(app.clone()).await),
-        "models_list" => ok(launch::models_list(arg(&a, "provider")?, arg(&a, "home")?)),
+        "models_list" => ok(launch::models_list(arg(&a, "provider")?, arg(&a, "home")?).await),
         "team_start" => ok(t::team_start(app.clone(), arg(&a, "projectId")?, arg(&a, "cwd")?).await?),
         "team_stop" => ok(t::team_stop(teams(), arg(&a, "projectId")?)),
         "team_get" => ok(t::team_get(teams(), arg(&a, "projectId")?)),

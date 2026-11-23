@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, pty, type Account, type CliStatus, type Provider } from "../lib/api";
 import { TerminalView } from "./TerminalView";
 import { isRemote } from "../lib/transport";
+import { useShallow } from "zustand/react/shallow";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
@@ -38,7 +39,7 @@ function planLabel(a: Account) {
 }
 
 function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
-  const { loadAccounts, setError } = useApp();
+  const { loadAccounts, setError } = useApp(useShallow((s) => ({ loadAccounts: s.loadAccounts, setError: s.setError })));
   const [confirm, setConfirm] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -306,7 +307,7 @@ function CliLine({ cli, onInstall }: { cli?: CliStatus; onInstall: () => void })
 }
 
 export function AccountSheet() {
-  const { accountSheet, accounts, closeAccounts, loadAccounts, setError } = useApp();
+  const { accountSheet, accounts, closeAccounts, loadAccounts, setError } = useApp(useShallow((s) => ({ accountSheet: s.accountSheet, accounts: s.accounts, closeAccounts: s.closeAccounts, loadAccounts: s.loadAccounts, setError: s.setError })));
   const [loginId, setLoginId] = useState<string | null>(null);
   const [installing, setInstalling] = useState<Provider | null>(null);
   const [clis, setClis] = useState<CliStatus[]>([]);
