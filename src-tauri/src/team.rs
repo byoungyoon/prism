@@ -266,6 +266,21 @@ pub struct TeamManager {
     dirty: Mutex<std::collections::HashSet<String>>,
     /// latest snapshot per team waiting to go to the UI (see `emit`)
     outbox: Mutex<HashMap<String, TeamSnapshot>>,
+    /// "project/agent" whose next turn was started by a worker's report → that card's id. Its reply
+    /// goes to the chat as a 'report' entry, not a plain 'lead' line (see `say_reply`)
+    report_turns: Mutex<HashMap<String, String>>,
+}
+
+/// The 총괄's reply: a 'report' entry when the turn was started by a worker's report (tagged with
+/// that card), otherwise a plain 'lead' line.
+fn say_reply(team: &mut Team, report: Option<String>, text: String) {
+    let kind = if report.is_some() { "report" } else { "lead" };
+    let id = team.say(kind, text, None);
+    if let (Some(tid), Some(m)) = (report, team.chat.iter_mut().find(|m| m.id == id)) {
+        if !m.task_ids.contains(&tid) {
+            m.task_ids.insert(0, tid);
+        }
+    }
 }
 
 /// How long snapshots of one team are gathered before one goes to the UI. A busy team changes many
@@ -393,7 +408,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -1096,6 +1111,7 @@ impl TeamManager {
             }
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
+                let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 if let Some(a) = team.agent_mut(aid) {
                     a.thought = None;
                     a.last_active = now_ms();
@@ -1110,7 +1126,7 @@ impl TeamManager {
                 if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
                     // a turn spent only on a teammate's permission request ends with "—": nothing to tell the user
                     if role == "lead" && !matches!(text.trim(), "—" | "-" | "–") {
-                        team.say("lead", text.trim().to_string(), None);
+                        say_reply(team, report, text.trim().to_string());
                     }
                     drop(teams);
                     self.push_entry(pid, aid, if error { "error" } else { "done" }, short(&text, 300));
@@ -1500,6 +1516,7 @@ impl TeamManager {
                 }
             }
             "Stop" => {
+                let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 let text = payload
                     .get("last_assistant_message")
                     .and_then(Value::as_str)
@@ -1514,7 +1531,7 @@ impl TeamManager {
                         a.last_note = Some(short(&text, 200));
                     }
                     if agent.role == "lead" {
-                        team.say("lead", text.trim().to_string(), None);
+                        say_reply(team, report, text.trim().to_string());
                     }
                 }
             }
@@ -1759,6 +1776,7 @@ impl TeamManager {
                     } else {
                         msg += &format!(" — 확인 후 complete_task(\"{tid}\")를 호출하세요.");
                     }
+                    self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
                     team.set_status(&parent, "work");
                     self.inject(team, &parent, msg);
                 }

@@ -313,7 +313,7 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
   // everyone on this piece of work: its owner and whoever works under them
   const crew = team.agents.filter((a) => a.id === task.assignee || (assignee && a.parentId === assignee.id));
   const last = latest(crew);
-  const leadNote = [...team.chat].reverse().find((m) => m.kind === "lead" && m.taskIds.includes(task.id) && m.at >= task.updatedAt - 1000);
+  const leadNote = [...team.chat].reverse().find((m) => (m.kind === "lead" || m.kind === "report") && m.taskIds.includes(task.id) && m.at >= task.updatedAt - 1000);
   const finished = task.stage === "review" || task.stage === "done" || task.stage === "failed";
   const doneSubs = subs.filter((t) => t.stage === "done").length;
   // follow-ups go to the newest card in this line of work, so one in progress isn't overtaken
