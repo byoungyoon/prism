@@ -1,7 +1,7 @@
 // Report cards: a worker's '[Prism 보고]' message (as it reaches the 팀장/총괄), and the 총괄's own
 // reply to a report in chat. Both fold to one line — id badge, done/failed, first line of the
 // summary — and open on tap. Also the chat's "대화만 / 보고만 / 전체" filter.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDown } from "./icons";
 
 export const REPORT_PREFIX = "[Prism 보고]";
@@ -30,7 +30,7 @@ export function FailPill() {
 }
 
 /** A report card: tinted background and colored border, so it never reads like a chat bubble. */
-export function FoldCard({ id, who, failed, line, text }: { id?: string; who?: string; failed: boolean; line: string; text: string }) {
+export function FoldCard({ id, who, failed, line, text, pill }: { id?: string; who?: string; failed: boolean; line: string; text: string; pill?: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -53,7 +53,7 @@ export function FoldCard({ id, who, failed, line, text }: { id?: string; who?: s
           </span>
         )}
         {who && <span className="shrink-0 text-[11.5px] text-ink-2">{who}</span>}
-        {failed ? <FailPill /> : <span className="shrink-0 text-[11.5px] font-semibold text-[var(--work-ink)]">✓ 완료</span>}
+        {pill ?? (failed ? <FailPill /> : <span className="shrink-0 text-[11.5px] font-semibold text-[var(--work-ink)]">✓ 완료</span>)}
         {!open && <span className="min-w-0 flex-auto truncate text-ink-2">{line}</span>}
         <ChevronDown size={14} className="ml-auto shrink-0 text-ink-2" style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }} />
       </button>
