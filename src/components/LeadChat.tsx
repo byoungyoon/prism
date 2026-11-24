@@ -12,6 +12,7 @@ import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
+import { Markdown } from "./Markdown";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -644,7 +645,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                       text={m.text}
                     />
                   ) : (
-                    <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{m.text}</div>
+                    <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={m.text} /></div>
                   )}
                   <Chips ids={m.taskIds} team={team} onPick={pickCard} />
                 </motion.div>

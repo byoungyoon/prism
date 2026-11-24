@@ -15,6 +15,7 @@ import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
 import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } from "./BatchCard";
+import { Markdown } from "./Markdown";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -322,7 +323,7 @@ export function UnifiedChat() {
                     text={it.m.text}
                   />
                 ) : (
-                  <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal whitespace-pre-wrap select-text">{it.m.text}</div>
+                  <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={it.m.text} /></div>
                 )}
               </motion.div>
             );
