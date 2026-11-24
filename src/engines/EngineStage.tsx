@@ -8,6 +8,7 @@ import { useApp } from "../store";
 import { useEngineEdit, type EditTarget } from "./editing";
 import { engineAvailable } from "./registry";
 import { fromBase64, toBase64 } from "./bytes";
+import { EditorCritters } from "./EditorCritters";
 
 const TICK_MS = 2000;
 const READY_MS = 15000;
@@ -45,6 +46,8 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [flash, setFlash] = useState(false);
+  // counts the team's changes loaded into the editor (the critters hop on each one)
+  const [changes, setChanges] = useState(0);
   const [askClose, setAskClose] = useState(false);
   const [busy, setBusy] = useState(false);
   // whether this build ships the editor for the file; undefined while checking
@@ -180,6 +183,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
         if (!alive) return;
         setDirty(false);
         setFlash(true);
+        setChanges((n) => n + 1);
         clearTimeout(flashTimer);
         flashTimer = setTimeout(() => alive && setFlash(false), FLASH_MS);
       } catch {
@@ -324,6 +328,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
         ) : (
           <>
             {installed === true && <iframe ref={frame} src={engine.url} title={`${name} 편집`} className="block size-full border-0" />}
+            {installed === true && <EditorCritters target={target} frame={frame} ready={phase === "ready"} changed={changes} />}
             {(installed === undefined || phase === "loading") && (
               <div className="absolute inset-0 z-10 flex items-center justify-center text-[13px] text-ink-2" style={{ background: "var(--bg1)" }}>
                 편집기를 준비하는 중…

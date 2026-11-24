@@ -51,6 +51,20 @@ export interface WorktreeInfo {
   isMain: boolean;
 }
 
+/** a call to an outside editor's MCP tool, with its small arguments (ids, slide numbers…);
+ * an object argument comes as `{ keys: [...] }` (which properties it touches) */
+export interface EngineCall {
+  engine: "figcraft" | "deckcraft";
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export interface Activity {
+  at: number;
+  text: string;
+  engine?: EngineCall;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -72,7 +86,7 @@ export interface Agent {
   /** runs without a terminal: show its conversation (agentTranscript) instead */
   structured: boolean;
   /** recent tool activity, newest last */
-  activity: { at: number; text: string }[];
+  activity: Activity[];
   /** what it's thinking right now (tail of its streamed reasoning), while a turn runs */
   thought?: string | null;
   /** when it last showed any sign of life — tells "slow" from "stuck" */
