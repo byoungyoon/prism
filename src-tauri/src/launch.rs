@@ -73,6 +73,30 @@ impl Ctx<'_> {
     }
 }
 
+/// The figcraft CLI if it is installed: `$PRISM_FIGCRAFT_CLI` when that file exists, else
+/// `~/.prism/engines/figcraft/figcraft-cli`. None = no figcraft server for agents.
+pub fn figcraft_cli() -> Option<PathBuf> {
+    figcraft_cli_at(std::env::var_os("PRISM_FIGCRAFT_CLI").map(PathBuf::from), &home_dir())
+}
+
+fn figcraft_cli_at(env: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
+    env.into_iter().chain(std::iter::once(home.join(".prism/engines/figcraft/figcraft-cli"))).find(|p| p.is_file())
+}
+
+/// figcraft's MCP server, reading and writing only inside the agent's folder.
+fn figcraft_args(cwd: &str) -> Vec<String> {
+    ["mcp", "--automation-read-root", cwd, "--automation-write-root", cwd].iter().map(|s| s.to_string()).collect()
+}
+
+/// The `mcpServers` object for Claude's --mcp-config: Prism's own server, plus figcraft when installed.
+fn claude_mcp_servers(c: &Ctx, figcraft: Option<&Path>) -> serde_json::Value {
+    let mut servers = json!({ "prism": { "type": "http", "url": c.mcp_url() } });
+    if let Some(cli) = figcraft {
+        servers["figcraft"] = json!({ "command": cli.to_string_lossy(), "args": figcraft_args(c.cwd) });
+    }
+    servers
+}
+
 pub fn build(c: &Ctx) -> Result<Launch, String> {
     std::fs::create_dir_all(c.dir).map_err(|e| e.to_string())?;
     match c.kind {
@@ -120,7 +144,8 @@ fn claude(c: &Ctx) -> Result<Launch, String> {
     // structured mode: events come over stdout, approvals through our MCP `approve` tool,
     // so no hooks or status line are needed
     let settings = json!({});
-    std::fs::write(&mcp_path, json!({ "mcpServers": { "prism": { "type": "http", "url": c.mcp_url() } } }).to_string()).map_err(|e| e.to_string())?;
+    let figcraft = figcraft_cli();
+    std::fs::write(&mcp_path, json!({ "mcpServers": claude_mcp_servers(c, figcraft.as_deref()) }).to_string()).map_err(|e| e.to_string())?;
     std::fs::write(&settings_path, settings.to_string()).map_err(|e| e.to_string())?;
 
     // --allowedTools and --mcp-config are variadic: put them first, one argv entry per rule,
@@ -159,6 +184,15 @@ fn home_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Codex `-c` overrides that add figcraft's MCP server (same command and folder as for Claude).
+fn codex_figcraft_config(cli: &Path, cwd: &str) -> Vec<String> {
+    let args = serde_json::to_string(&figcraft_args(cwd)).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
+    vec![
+        "-c".into(), format!("mcp_servers.figcraft.command={}", serde_json::to_string(&cli.to_string_lossy()).unwrap_or_default()),
+        "-c".into(), format!("mcp_servers.figcraft.args={args}"),
+    ]
+}
+
 /// The account's CODEX_HOME (default ~/.codex).
 pub fn codex_account_home(home: Option<&str>) -> PathBuf {
     home.map(PathBuf::from)
@@ -180,6 +214,9 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
         "-c".into(), format!("developer_instructions={}", toml_str(c.system)),
         "-c".into(), format!("projects.{}.trust_level=\"trusted\"", toml_str(c.cwd)),
     ];
+    if let Some(cli) = figcraft_cli() {
+        shared.extend(codex_figcraft_config(&cli, c.cwd));
+    }
     if !c.model.is_empty() {
         shared.extend(["-m".into(), c.model.into()]);
     }
@@ -342,5 +379,70 @@ pub fn models_for(provider: &str, home: Option<String>) -> Vec<ModelInfo> {
         }
         "antigravity" => agy_models(),
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod figcraft_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("prism-t21-launch-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ctx<'a>(dir: &'a Path, cwd: &'a str) -> Ctx<'a> {
+        Ctx {
+            kind: "claude", agent_id: "a1", project_id: "p1", base: "http://127.0.0.1:1", token: "t", dir,
+            model: "", effort: "", permission_mode: "default", system: "", prompt: None, session_id: "s",
+            resume: None, cwd, attach_dir: None, home: None,
+        }
+    }
+
+    #[test]
+    fn env_path_wins_only_when_it_exists_else_default_location() {
+        let home = tmp("home");
+        let default = home.join(".prism/engines/figcraft/figcraft-cli");
+        assert_eq!(figcraft_cli_at(None, &home), None, "nothing installed");
+        std::fs::create_dir_all(default.parent().unwrap()).unwrap();
+        std::fs::write(&default, "").unwrap();
+        assert_eq!(figcraft_cli_at(None, &home), Some(default.clone()));
+        // env path missing → still the default
+        assert_eq!(figcraft_cli_at(Some(home.join("nope")), &home), Some(default.clone()));
+        // env path present → it wins
+        let custom = home.join("custom-cli");
+        std::fs::write(&custom, "").unwrap();
+        assert_eq!(figcraft_cli_at(Some(custom.clone()), &home), Some(custom));
+    }
+
+    #[test]
+    fn claude_config_without_figcraft_is_unchanged() {
+        let dir = tmp("nofc");
+        let c = ctx(&dir, "/work/wt");
+        let v = claude_mcp_servers(&c, None);
+        assert_eq!(v.to_string(), json!({ "prism": { "type": "http", "url": c.mcp_url() } }).to_string());
+    }
+
+    #[test]
+    fn claude_config_with_figcraft_limits_it_to_the_agent_folder() {
+        let dir = tmp("fc");
+        let c = ctx(&dir, "/work/wt");
+        let v = claude_mcp_servers(&c, Some(Path::new("/opt/figcraft-cli")));
+        assert_eq!(v["figcraft"]["command"], "/opt/figcraft-cli");
+        assert_eq!(
+            v["figcraft"]["args"],
+            json!(["mcp", "--automation-read-root", "/work/wt", "--automation-write-root", "/work/wt"])
+        );
+        assert!(v["prism"].is_object());
+    }
+
+    #[test]
+    fn codex_overrides_name_the_same_server() {
+        let out = codex_figcraft_config(Path::new("/opt/figcraft-cli"), "/work/wt");
+        assert_eq!(out[0], "-c");
+        assert_eq!(out[1], "mcp_servers.figcraft.command=\"/opt/figcraft-cli\"");
+        assert_eq!(out[3], "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
     }
 }

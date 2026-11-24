@@ -342,6 +342,14 @@ export const api = {
   taskFiles: (projectId: string, taskId: string) => call<FileStat[]>("task_files", { projectId, taskId }),
   taskDiff: (projectId: string, taskId: string, path: string) => call<string>("task_diff", { projectId, taskId, path }),
   taskFile: (projectId: string, taskId: string, path: string) => call<string>("task_file", { projectId, taskId, path }),
+  /** raw bytes (base64) + stamp; the work copy's version if it exists, else the branch's */
+  taskFileBytes: (projectId: string, taskId: string, path: string) =>
+    call<{ b64: string; stamp: string }>("task_file_bytes", { projectId, taskId, path }),
+  /** "mtimeNs:size" | "git:<sha>" | "missing" */
+  taskFileStamp: (projectId: string, taskId: string, path: string) => call<string>("task_file_stamp", { projectId, taskId, path }),
+  /** writes into the task's work copy; returns the new stamp */
+  taskFileSave: (projectId: string, taskId: string, path: string, b64: string) =>
+    call<string>("task_file_save", { projectId, taskId, path, b64 }),
   messageAgent: (projectId: string, agentId: string, text: string) =>
     call<void>("agent_message", { projectId, agentId, text }),
   setAgentModel: (projectId: string, agentId: string, model: string) =>
