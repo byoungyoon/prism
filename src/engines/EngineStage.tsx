@@ -9,6 +9,7 @@ import { useEngineEdit, type EditTarget } from "./editing";
 import { engineAvailable } from "./registry";
 import { fromBase64, toBase64 } from "./bytes";
 import { EditorCritters } from "./EditorCritters";
+import { stageDirector } from "./drawShow";
 
 const TICK_MS = 2000;
 const READY_MS = 15000;
@@ -38,6 +39,11 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
     const t = s.teams[pid];
     return !!t && t.tasks.some((x) => x.stage === "running" && (x.id === taskId || x.followOf === taskId));
   });
+  // the card (or a follow-up on it) hasn't finished: what the person saves lands in the teammate's copy
+  const unfinished = useApp((s) => {
+    const t = s.teams[pid];
+    return !!t && t.tasks.some((x) => (x.stage === "running" || x.stage === "review") && (x.id === taskId || x.followOf === taskId));
+  });
 
   const frame = useRef<HTMLIFrameElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -52,6 +58,8 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
   const [busy, setBusy] = useState(false);
   // whether this build ships the editor for the file; undefined while checking
   const [installed, setInstalled] = useState<boolean | undefined>(undefined);
+  // the file doesn't exist in the teammate's folder yet
+  const [waiting, setWaiting] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -81,6 +89,16 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       if (!w) throw new Error("편집 화면이 닫혔어요");
       await engine.load(w, fromBase64(b64), name);
       shown = stamp;
+    };
+
+    // a file that doesn't exist yet (the teammate creates it on its first save) opens once it does
+    const waitForFile = async () => {
+      while (alive) {
+        if ((await api.taskFileStamp(pid, taskId, path)) !== "missing") return true;
+        setWaiting(true);
+        await sleep(TICK_MS);
+      }
+      return false;
     };
 
     const waitForEngine = async () => {
@@ -160,6 +178,8 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       const startGen = gen;
       try {
         const stamp = await api.taskFileStamp(pid, taskId, path);
+        // gone (or not made yet): keep what the editor shows
+        if (stamp === "missing") return;
         const edited = engine.isDirty ? await engine.isDirty(w) : false;
         // a save or reload happened meanwhile: its result is newer than what this check read
         if (!alive || gen !== startGen || busyNow) return;
@@ -174,13 +194,16 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
           return;
         }
         // the team changed it and the person has nothing unsaved: take the new copy in
+        // (the critters' drawing show covers the old picture first, then draws the change in)
         busyNow = true;
         try {
+          await stageDirector.before(w);
           await pull();
         } finally {
           busyNow = false;
         }
         if (!alive) return;
+        void stageDirector.after(w);
         setDirty(false);
         setFlash(true);
         setChanges((n) => n + 1);
@@ -199,6 +222,8 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
     (async () => {
       try {
         if (!(await waitForEngine())) return;
+        if (!(await waitForFile())) return;
+        setWaiting(false);
         await pull();
         if (!alive) return;
         setPhase("ready");
@@ -269,6 +294,12 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
         </span>
       </div>
 
+      {dirty && unfinished && (
+        <p role="status" className="m-0 px-1 text-[12.5px]" style={{ color: "var(--amber)" }}>
+          팀원이 작업 중인 파일이에요. 저장하면 팀원 작업본에 들어가요
+        </p>
+      )}
+
       {flash && (
         <p role="status" className="m-0 px-1 text-[12.5px]" style={{ color: "var(--work-ink)" }}>
           방금 AI가 고쳤어요. 새 내용을 불러왔어요.
@@ -331,7 +362,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
             {installed === true && <EditorCritters target={target} frame={frame} ready={phase === "ready"} changed={changes} />}
             {(installed === undefined || phase === "loading") && (
               <div className="absolute inset-0 z-10 flex items-center justify-center text-[13px] text-ink-2" style={{ background: "var(--bg1)" }}>
-                편집기를 준비하는 중…
+                {waiting ? "팀원이 아직 이 파일을 만들지 않았어요. 만들면 여기에 바로 열려요" : "편집기를 준비하는 중…"}
               </div>
             )}
           </>

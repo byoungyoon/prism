@@ -18,18 +18,27 @@ export interface CritterOverride {
   y?: number;
   state?: CritterState;
   say?: string;
+  /** walking speed for this critter, px/s (default: the layer's) */
+  speed?: number;
+  /** follow x/y exactly, frame by frame (a pen being drawn), instead of walking there */
+  draw?: boolean;
 }
 
 interface CritterStore {
   /** key: `${layer}:${id}`, layer "*" = every layer */
   over: Record<string, CritterOverride>;
   patch(id: string, p: Partial<Record<keyof CritterOverride, unknown>>, layer?: string): void;
+  /** how many editing screens show critters right now: the bottom 작업장 띠 steps aside meanwhile */
+  stages: number;
+  stageOpen(on: boolean): void;
 }
 
 const keyOf = (id: string, layer?: string) => `${layer ?? "*"}:${id}`;
 
 export const useCritterStore = create<CritterStore>((set) => ({
   over: {},
+  stages: 0,
+  stageOpen: (on) => set((s) => ({ stages: Math.max(0, s.stages + (on ? 1 : -1)) })),
   patch: (id, p, layer) =>
     set((s) => {
       const k = keyOf(id, layer);
@@ -48,14 +57,16 @@ export const useCritterStore = create<CritterStore>((set) => ({
 const patch = (id: string, p: Partial<Record<keyof CritterOverride, unknown>>, layer?: string) => useCritterStore.getState().patch(id, p, layer);
 
 export const critters = {
-  /** walk to (x, y): the spot its feet land on, in the layer's pixels */
-  send: (id: string, x: number, y: number, layer?: string) => patch(id, { x, y }, layer),
+  /** walk to (x, y): the spot its feet land on, in the layer's pixels; `speed` in px/s */
+  send: (id: string, x: number, y: number, layer?: string, speed?: number) => patch(id, speed ? { x, y, speed, draw: null } : { x, y, draw: null }, layer),
+  /** put it at (x, y) right now, facing the way it moved (call every frame to trace a path) */
+  trace: (id: string, x: number, y: number, layer?: string) => patch(id, { x, y, draw: true }, layer),
   /** show a state; null goes back to the one worked out from the agent */
   setState: (id: string, state: CritterState | null, layer?: string) => patch(id, { state }, layer),
   /** a one-line bubble; null goes back to its own line, "" hides it */
   say: (id: string, text: string | null, layer?: string) => patch(id, { say: text }, layer),
   /** drop every override for this critter */
-  release: (id: string, layer?: string) => patch(id, { x: null, y: null, state: null, say: null }, layer),
+  release: (id: string, layer?: string) => patch(id, { x: null, y: null, state: null, say: null, speed: null, draw: null }, layer),
 };
 
 /** The override for a critter on a given layer: that layer's own, on top of the every-layer one. */
@@ -73,7 +84,7 @@ if (typeof window !== "undefined") {
     if (!d?.id) return;
     if (d.release) return critters.release(d.id, d.layer);
     const p: Partial<Record<keyof CritterOverride, unknown>> = {};
-    for (const f of ["x", "y", "state", "say"] as const) if (f in d) p[f] = d[f];
+    for (const f of ["x", "y", "state", "say", "speed"] as const) if (f in d) p[f] = d[f];
     patch(d.id, p, d.layer);
   });
 }

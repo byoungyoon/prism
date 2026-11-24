@@ -356,6 +356,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "task_file_bytes" => ok(t::task_file_bytes(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "path")?)?),
         "task_file_stamp" => ok(t::task_file_stamp(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "path")?)?),
         "task_file_save" => ok(t::task_file_save(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "path")?, arg(&a, "b64")?)?),
+        "task_engine_files" => ok(t::task_engine_files(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "exts")?)?),
         "attach_bytes" => ok(t::attach_bytes(projects(), arg(&a, "projectId")?, arg(&a, "name")?, arg(&a, "data")?)?),
         "batch_list" => ok(batches().list()),
         "batch_create" => ok(batches().create(arg(&a, "projectIds")?, arg(&a, "text")?)?),

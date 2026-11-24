@@ -73,6 +73,14 @@ pub fn knowledge(shared: &str, team: &str) -> String {
     out
 }
 
+/// 총괄 and 팀장: where the workers' folders are, so they can open the files the team made (read only).
+pub fn team_files(worktrees: &str, run: &str) -> String {
+    format!(
+        "\n\n[팀원 작업 파일] 팀원이 만든 figcraft·pptx 등 파일은 '{worktrees}/{run}-{{작업ID 소문자}}/' 아래에 있다 (예: '{worktrees}/{run}-t-1/'). \
+여기서 열어 볼 수 있지만 읽기 전용이다. 고치거나 저장하는 것은 네 폴더에서만 한다."
+    )
+}
+
 /// Safe mode, for the 총괄: where it works, and how results leave (as a PR, when the user asks).
 pub fn workspace(home: &str, work: &str) -> String {
     format!(

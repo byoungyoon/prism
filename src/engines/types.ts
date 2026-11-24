@@ -9,6 +9,8 @@ export interface EngineDef {
   label: string;
   /** a glyph on the file card */
   icon: string;
+  /** what a teammate is doing in it, for the card: "팀원 · 그리는 중" */
+  verb: string;
   /** file extensions it opens, lowercase with the dot: [".figcraft"] */
   exts: string[];
   /** static path opened in the iframe, control channel on: "/engines/figcraft/index.html?control" */
