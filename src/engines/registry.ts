@@ -1,8 +1,9 @@
 // Every outside editor Prism knows. A new one (pptx, …) is one more entry in ENGINES.
+import { deckcraft } from "./deckcraft";
 import { figcraft } from "./figcraft";
 import type { EngineDef } from "./types";
 
-export const ENGINES: EngineDef[] = [figcraft];
+export const ENGINES: EngineDef[] = [figcraft, deckcraft];
 
 export function engineById(id: string): EngineDef | undefined {
   return ENGINES.find((e) => e.id === id);

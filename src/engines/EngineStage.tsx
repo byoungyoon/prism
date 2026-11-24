@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../store";
 import { useEngineEdit, type EditTarget } from "./editing";
+import { fromBase64, toBase64 } from "./bytes";
 
 const TICK_MS = 2000;
 const READY_MS = 15000;
@@ -13,12 +14,6 @@ const FLASH_MS = 3000;
 const NOT_READY = "편집 엔진을 불러오지 못했어요. 엔진이 설치되어 있지 않거나 아직 준비 중일 수 있어요.";
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
-const fromB64 = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-function toB64(bytes: Uint8Array) {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -67,7 +62,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       const { b64, stamp } = await api.taskFileBytes(pid, taskId, path);
       const w = win();
       if (!w) throw new Error("편집 화면이 닫혔어요");
-      await engine.load(w, fromB64(b64), name);
+      await engine.load(w, fromBase64(b64), name);
       shown = stamp;
     };
 
@@ -96,7 +91,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       setBusy(true);
       try {
         const bytes = await engine.save(w);
-        shown = await api.taskFileSave(pid, taskId, path, toB64(bytes));
+        shown = await api.taskFileSave(pid, taskId, path, toBase64(bytes));
         if (alive) {
           setDirty(false);
           setConflict(false);
