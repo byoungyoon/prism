@@ -214,7 +214,9 @@ export const useApp = create<AppState>((set, get) => {
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
           set({ lastTeams: known, autoResume: prefs.autoResume });
-          if (prefs.autoResume && !autoResumed) {
+          // restarted for an update: everyone comes back, whatever the setting says
+          const updated = prefs.restart === "update";
+          if ((prefs.autoResume || updated) && !autoResumed) {
             autoResumed = true;
             const todo = known.filter((id) => !isLive(get().teams[id]));
             if (todo.length) {
@@ -223,6 +225,7 @@ export const useApp = create<AppState>((set, get) => {
               if (failed.length) set({ error: failed.map((f) => `${f.name}: ${f.reason}`).join(" / ") });
             }
           }
+          if (prefs.restart) void api.clearRestart().catch(() => {});
         }
       }
       // opened on a phone (remote): go straight to the 관제탑 when teams are at work
@@ -365,6 +368,8 @@ export const useApp = create<AppState>((set, get) => {
 });
 
 export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status !== "off");
+/** someone on the team is in the middle of a turn */
+export const isBusy = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status === "work");
 
 
 /** Waiting for the user: an open question, or a permission request no boss is deciding. */
