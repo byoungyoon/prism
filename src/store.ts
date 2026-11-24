@@ -48,6 +48,8 @@ interface AppState {
   startFailures: { id: string; name: string; reason: string }[];
   /** a group clock-in is running */
   clockingIn: boolean;
+  /** show the teammate characters (board, live work, 작업장 띠); kept on this device */
+  critters: boolean;
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -78,6 +80,7 @@ interface AppState {
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
   dismissFailures(): void;
+  setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
   stopTeam(projectId?: string): Promise<void>;
   setPreset(preset: PresetName, projectId?: string): Promise<void>;
@@ -105,6 +108,15 @@ const plainReason = (m: string) => {
   if (m.includes("no such project")) return "프로젝트를 찾을 수 없어요";
   if (m.includes("git 준비 실패")) return "폴더를 준비하지 못했어요";
   return m;
+};
+
+const CRITTERS_KEY = "prism.critters";
+const savedCritters = () => {
+  try {
+    return localStorage.getItem(CRITTERS_KEY) !== "off";
+  } catch {
+    return true;
+  }
 };
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -152,6 +164,7 @@ export const useApp = create<AppState>((set, get) => {
     autoResume: true,
     startFailures: [],
     clockingIn: false,
+    critters: savedCritters(),
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -312,6 +325,14 @@ export const useApp = create<AppState>((set, get) => {
       }
     },
     dismissFailures: () => set({ startFailures: [] }),
+    setCritters: (on) => {
+      set({ critters: on });
+      try {
+        localStorage.setItem(CRITTERS_KEY, on ? "on" : "off");
+      } catch {
+        // private mode: the choice lasts for this session only
+      }
+    },
 
     stopTeam: guard(async (id?: string) => {
       const target = id ?? pid();

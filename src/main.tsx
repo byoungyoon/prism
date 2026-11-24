@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { WorkshopStrip } from "./components/critters";
 import "./styles.css";
 
 // set the theme class before first paint (App keeps it in sync afterwards)
@@ -11,6 +12,7 @@ document.documentElement.classList.add(
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />
+    <WorkshopStrip />
   </React.StrictMode>,
 );
 

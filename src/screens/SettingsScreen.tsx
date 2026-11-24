@@ -182,6 +182,8 @@ export function SettingsScreen() {
   const { go, saveTeam } = useApp(useShallow((s) => ({ go: s.go, saveTeam: s.saveTeam })));
   const autoResume = useApp((s) => s.autoResume);
   const setAutoResume = useApp((s) => s.setAutoResume);
+  const critters = useApp((s) => s.critters);
+  const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
   const [draft, setDraft] = useState<TeamConfig | undefined>(saved);
 
@@ -325,6 +327,12 @@ export function SettingsScreen() {
         <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">
             앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
+          </span>
+        </Card>
+
+        <Card title="캐릭터 보기" aside={<Switch on={critters} onChange={setCritters} label="팀원 캐릭터 보기" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            팀원들을 동글동글한 캐릭터로 보여줘요. 작업 보드와 진행 표시에 나오고, 화면 아래 작업장에서 일하는 팀원들이 오가요. 이 기기에만 적용되고, 기기에서 &lsquo;동작 줄이기&rsquo;를 켜두면 움직임은 멈춰요.
           </span>
         </Card>
 
