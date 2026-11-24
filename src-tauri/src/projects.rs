@@ -88,7 +88,7 @@ pub struct Projects {
     prefs: Mutex<Settings>,
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
@@ -99,6 +99,18 @@ pub struct Settings {
     /// first-run guide finished
     #[serde(default)]
     pub onboarded: bool,
+    /// teams that were clocked in when the app last closed (project ids)
+    #[serde(default)]
+    pub last_teams: Vec<String>,
+    /// clock the teams of last time back in when the app starts
+    #[serde(default = "yes")]
+    pub auto_resume: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true }
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -137,6 +149,18 @@ impl Projects {
             }
         }
         Self { list: Mutex::new(list), file: Mutex::new(file), root: Mutex::new(root), settings, prefs: Mutex::new(prefs) }
+    }
+
+    /// Remember which teams are clocked in (for "지난번 팀 다시 출근").
+    pub fn set_last_teams(&self, ids: Vec<String>) {
+        {
+            let mut p = self.prefs.lock().unwrap();
+            if p.last_teams == ids {
+                return;
+            }
+            p.last_teams = ids;
+        }
+        self.save_prefs();
     }
 
     fn save_prefs(&self) {
@@ -380,6 +404,13 @@ pub fn prefs_set(projects: State<'_, Projects>, providers: Vec<String>, onboarde
         p.providers = providers.into_iter().filter(|x| crate::accounts::PROVIDERS.contains(&x.as_str())).collect();
         p.onboarded = onboarded;
     }
+    projects.save_prefs();
+    projects.prefs.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn prefs_set_auto_resume(projects: State<'_, Projects>, on: bool) -> Settings {
+    projects.prefs.lock().unwrap().auto_resume = on;
     projects.save_prefs();
     projects.prefs.lock().unwrap().clone()
 }

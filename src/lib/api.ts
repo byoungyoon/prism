@@ -240,6 +240,10 @@ export interface CliStatus {
 export interface Prefs {
   providers: Provider[];
   onboarded: boolean;
+  /** teams clocked in when the app last closed (project ids) */
+  lastTeams: string[];
+  /** clock them back in when the app starts */
+  autoResume: boolean;
 }
 
 export interface RemoteStatus {
@@ -267,6 +271,7 @@ export const api = {
   setRemote: (on: boolean) => call<RemoteStatus>("remote_set", { on }),
   remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
   prefs: () => call<Prefs>("prefs_get"),
+  setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
 
   // agent CLIs

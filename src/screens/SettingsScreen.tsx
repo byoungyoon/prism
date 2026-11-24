@@ -180,6 +180,8 @@ function Switch({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 export function SettingsScreen() {
   const { project, team } = useCurrent();
   const { go, saveTeam } = useApp(useShallow((s) => ({ go: s.go, saveTeam: s.saveTeam })));
+  const autoResume = useApp((s) => s.autoResume);
+  const setAutoResume = useApp((s) => s.setAutoResume);
   const saved = project?.team;
   const [draft, setDraft] = useState<TeamConfig | undefined>(saved);
 
@@ -319,6 +321,12 @@ export function SettingsScreen() {
             </span>
           </Card>
         </div>
+
+        <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
+          </span>
+        </Card>
 
         <Card title="허락 방식">
           <div role="radiogroup" aria-label="허락 방식" className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>

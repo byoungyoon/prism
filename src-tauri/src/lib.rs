@@ -14,7 +14,12 @@ mod usage;
 
 use std::sync::Arc;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::Manager;
+
+/// Set once the app starts closing, so the shutdown (everyone clocking out) isn't recorded as "last teams".
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -52,9 +57,17 @@ pub fn run() {
             teams.load_saved(&app.state::<projects::Projects>());
             // save team state every couple of seconds
             let saver = teams.clone();
+            let remember = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 saver.flush();
+                // remember who is clocked in (never an empty list from here: at startup nobody is in yet)
+                if !QUITTING.load(Ordering::SeqCst) {
+                    let live = saver.live_ids();
+                    if !live.is_empty() {
+                        remember.state::<projects::Projects>().set_last_teams(live);
+                    }
+                }
             });
             app.manage(teams.clone());
             // batches are watched after the teams are back, so restored teams are judged as they are
@@ -101,6 +114,7 @@ pub fn run() {
             projects::project_touch,
             projects::prefs_get,
             projects::prefs_set,
+            projects::prefs_set_auto_resume,
             projects::project_set_team,
             projects::project_set_preset,
             projects::project_set_knowledge,
@@ -143,6 +157,11 @@ pub fn run() {
             // don't leave agents running after the window closes
             if let tauri::RunEvent::Exit = event {
                 if let Some(teams) = app.try_state::<Arc<team::TeamManager>>() {
+                    QUITTING.store(true, Ordering::SeqCst);
+                    // who was in when the app closed (an empty list too: the user had clocked everyone out)
+                    if let Some(projects) = app.try_state::<projects::Projects>() {
+                        projects.set_last_teams(teams.live_ids());
+                    }
                     teams.stop_all();
                     teams.flush();
                 }

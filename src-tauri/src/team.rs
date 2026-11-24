@@ -1066,6 +1066,20 @@ impl TeamManager {
         !self.drivers.lock().unwrap().is_empty() || self.teams.lock().unwrap().values().any(|t| t.agents.iter().any(|a| a.pty_id.is_some()))
     }
 
+    /// Teams with someone clocked in right now (sorted, so it compares stably).
+    pub fn live_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .teams
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off"))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     pub fn stop_all(&self) {
         let ids: Vec<String> = self.teams.lock().unwrap().keys().cloned().collect();
         for id in ids {
