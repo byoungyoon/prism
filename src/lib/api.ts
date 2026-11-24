@@ -360,9 +360,6 @@ export const api = {
     call<void>("permission_answer", { projectId, msgId, answer }),
   taskFiles: (projectId: string, taskId: string) => call<FileStat[]>("task_files", { projectId, taskId }),
   taskDiff: (projectId: string, taskId: string, path: string) => call<string>("task_diff", { projectId, taskId, path }),
-  /** files with these extensions in the teammate's workspace, including ones not merged or committed yet */
-  taskEngineFiles: (projectId: string, taskId: string, exts: string[]) =>
-    call<{ path: string; size: number }[]>("task_engine_files", { projectId, taskId, exts }),
   taskFile: (projectId: string, taskId: string, path: string) => call<string>("task_file", { projectId, taskId, path }),
   /** raw bytes (base64) + stamp; the work copy's version if it exists, else the branch's */
   taskFileBytes: (projectId: string, taskId: string, path: string) =>
