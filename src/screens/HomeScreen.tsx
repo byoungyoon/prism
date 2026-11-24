@@ -77,6 +77,9 @@ export function HomeScreen() {
   const [newName, setNewName] = useState("");
   const [arriving, setArriving] = useState(-1); // 0 worker, 1 manager, 2 lead
   const [busy, setBusy] = useState(false);
+  const lastTeams = useApp((s) => s.lastTeams);
+  const clockingIn = useApp((s) => s.clockingIn);
+  const failures = useApp((s) => s.startFailures);
 
   const cur: Project | undefined = projects.find((p) => p.id === selId) ?? projects[0];
   const create = async () => {
@@ -188,6 +191,8 @@ export function HomeScreen() {
 
   const isLiveId = (id: string) => !!teams[id]?.agents.some((a) => a.status !== "off");
   const crew = picked.filter((id) => !isLiveId(id));
+  const lastToStart = lastTeams.filter((id) => !isLiveId(id) && projects.some((p) => p.id === id));
+  const offCount = projects.filter((p) => !isLiveId(p.id)).length;
 
   const depart = async () => {
     if (!cur || busy) return;
@@ -295,6 +300,40 @@ export function HomeScreen() {
             </motion.div>
           ) : (
             <div className="flex flex-col gap-2.5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={clockingIn || lastToStart.length === 0}
+                  onClick={() => void useApp.getState().clockInLast()}
+                  title={lastToStart.length ? "앱을 끄기 직전에 출근해 있던 팀을 한 번에 출근시켜요" : "다시 출근시킬 지난번 팀이 없어요"}
+                  className="glass min-h-10 rounded-full border-0 px-4 text-[13px] font-medium disabled:opacity-50"
+                >
+                  지난번 팀 다시 출근{lastToStart.length ? ` (${lastToStart.length})` : ""}
+                </button>
+                <button
+                  type="button"
+                  disabled={clockingIn || offCount === 0}
+                  onClick={() => void useApp.getState().clockInAll()}
+                  title={offCount ? "아직 출근하지 않은 팀을 모두 출근시켜요" : "모든 팀이 이미 출근해 있어요"}
+                  className="min-h-10 rounded-full border-0 px-4 text-[13px] font-semibold disabled:opacity-50"
+                  style={{ background: "var(--amber)", color: "#2b2520" }}
+                >
+                  {clockingIn ? "출근시키는 중…" : "모두 출근"}
+                </button>
+              </div>
+              {failures.length > 0 && (
+                <div role="alert" className="glass-soft flex flex-col gap-1 rounded-xl px-3.5 py-2.5 text-[12.5px]" style={{ border: "1px solid var(--block)" }}>
+                  <span className="font-semibold">출근하지 못한 팀이 있어요</span>
+                  {failures.map((f) => (
+                    <span key={f.id}>
+                      {f.name}: {f.reason}
+                    </span>
+                  ))}
+                  <button type="button" onClick={() => useApp.getState().dismissFailures()} className="w-fit border-0 bg-transparent p-0 text-xs text-ink-2 underline underline-offset-2">
+                    닫기
+                  </button>
+                </div>
+              )}
               <AnimatePresence initial={false}>
                 {projects.map((p) => {
                   const on = p.id === cur?.id;

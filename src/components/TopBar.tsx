@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api } from "../lib/api";
-import { useApp } from "../store";
+import { isLive, useApp } from "../store";
 import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
 import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
@@ -193,6 +193,18 @@ function AddTeam() {
   );
 }
 
+/** Clock in every team that isn't in yet (shown while some team is at work). */
+function ClockInAll() {
+  const show = useApp((s) => s.projects.some((p) => !isLive(s.teams[p.id])) && s.projects.some((p) => isLive(s.teams[p.id])));
+  const busy = useApp((s) => s.clockingIn);
+  if (!show) return null;
+  return (
+    <button disabled={busy} onClick={() => void useApp.getState().clockInAll()} title="아직 출근하지 않은 팀을 모두 출근시켜요" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)] disabled:opacity-60">
+      {busy ? "출근시키는 중…" : "모두 출근"}
+    </button>
+  );
+}
+
 export function TopBar() {
   const { dark, left, right, view, toggleDark, toggleLeft, toggleRight, accounts, openAccounts } = useApp(useShallow((s) => ({ dark: s.dark, left: s.left, right: s.right, view: s.view, toggleDark: s.toggleDark, toggleLeft: s.toggleLeft, toggleRight: s.toggleRight, accounts: s.accounts, openAccounts: s.openAccounts })));
   const account = accounts.find((a) => a.active);
@@ -213,6 +225,7 @@ export function TopBar() {
         </button>
       )}
       {hasProject && !onHome && <AddTeam />}
+      {!onHome && <ClockInAll />}
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
