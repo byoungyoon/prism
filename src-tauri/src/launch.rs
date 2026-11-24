@@ -73,26 +73,42 @@ impl Ctx<'_> {
     }
 }
 
-/// The figcraft CLI if it is installed: `$PRISM_FIGCRAFT_CLI` when that file exists, else
-/// `~/.prism/engines/figcraft/figcraft-cli`. None = no figcraft server for agents.
+/// An engine's CLI if it is installed: `$PRISM_<ENGINE>_CLI` when that file exists, else
+/// `~/.prism/engines/<engine>/<engine>-cli`. None = no MCP server for agents.
+fn engine_cli_at(engine: &str, env: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
+    let default = home.join(format!(".prism/engines/{engine}/{engine}-cli"));
+    env.into_iter().chain(std::iter::once(default)).find(|p| p.is_file())
+}
+
+/// figcraft's CLI (`PRISM_FIGCRAFT_CLI` overrides the default location).
 pub fn figcraft_cli() -> Option<PathBuf> {
-    figcraft_cli_at(std::env::var_os("PRISM_FIGCRAFT_CLI").map(PathBuf::from), &home_dir())
+    engine_cli_at("figcraft", std::env::var_os("PRISM_FIGCRAFT_CLI").map(PathBuf::from), &home_dir())
 }
 
-fn figcraft_cli_at(env: Option<PathBuf>, home: &Path) -> Option<PathBuf> {
-    env.into_iter().chain(std::iter::once(home.join(".prism/engines/figcraft/figcraft-cli"))).find(|p| p.is_file())
+/// deckcraft's CLI (`PRISM_DECKCRAFT_CLI` overrides the default location).
+pub fn deckcraft_cli() -> Option<PathBuf> {
+    engine_cli_at("deckcraft", std::env::var_os("PRISM_DECKCRAFT_CLI").map(PathBuf::from), &home_dir())
 }
 
-/// figcraft's MCP server, reading and writing only inside the agent's folder.
-fn figcraft_args(cwd: &str) -> Vec<String> {
+/// Every installed engine CLI that agents get an MCP server for: (server name, CLI path).
+fn installed_engines() -> Vec<(&'static str, PathBuf)> {
+    [("figcraft", figcraft_cli()), ("deckcraft", deckcraft_cli())]
+        .into_iter()
+        .filter_map(|(name, cli)| cli.map(|p| (name, p)))
+        .collect()
+}
+
+/// An engine's MCP server (`<cli> mcp`), reading and writing only inside the agent's folder.
+/// Same for every engine: the flags are the engines' shared `--automation-*` confinement.
+fn engine_mcp_args(cwd: &str) -> Vec<String> {
     ["mcp", "--automation-read-root", cwd, "--automation-write-root", cwd].iter().map(|s| s.to_string()).collect()
 }
 
-/// The `mcpServers` object for Claude's --mcp-config: Prism's own server, plus figcraft when installed.
-fn claude_mcp_servers(c: &Ctx, figcraft: Option<&Path>) -> serde_json::Value {
+/// The `mcpServers` object for Claude's --mcp-config: Prism's own server, plus each installed engine.
+fn claude_mcp_servers(c: &Ctx, engines: &[(&str, PathBuf)]) -> serde_json::Value {
     let mut servers = json!({ "prism": { "type": "http", "url": c.mcp_url() } });
-    if let Some(cli) = figcraft {
-        servers["figcraft"] = json!({ "command": cli.to_string_lossy(), "args": figcraft_args(c.cwd) });
+    for (name, cli) in engines {
+        servers[*name] = json!({ "command": cli.to_string_lossy(), "args": engine_mcp_args(c.cwd) });
     }
     servers
 }
@@ -144,8 +160,7 @@ fn claude(c: &Ctx) -> Result<Launch, String> {
     // structured mode: events come over stdout, approvals through our MCP `approve` tool,
     // so no hooks or status line are needed
     let settings = json!({});
-    let figcraft = figcraft_cli();
-    std::fs::write(&mcp_path, json!({ "mcpServers": claude_mcp_servers(c, figcraft.as_deref()) }).to_string()).map_err(|e| e.to_string())?;
+    std::fs::write(&mcp_path, json!({ "mcpServers": claude_mcp_servers(c, &installed_engines()) }).to_string()).map_err(|e| e.to_string())?;
     std::fs::write(&settings_path, settings.to_string()).map_err(|e| e.to_string())?;
 
     // --allowedTools and --mcp-config are variadic: put them first, one argv entry per rule,
@@ -184,12 +199,12 @@ fn home_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Codex `-c` overrides that add figcraft's MCP server (same command and folder as for Claude).
-fn codex_figcraft_config(cli: &Path, cwd: &str) -> Vec<String> {
-    let args = serde_json::to_string(&figcraft_args(cwd)).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
+/// Codex `-c` overrides that add an engine's MCP server (same command and folder as for Claude).
+fn codex_engine_config(name: &str, cli: &Path, cwd: &str) -> Vec<String> {
+    let args = serde_json::to_string(&engine_mcp_args(cwd)).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
     vec![
-        "-c".into(), format!("mcp_servers.figcraft.command={}", serde_json::to_string(&cli.to_string_lossy()).unwrap_or_default()),
-        "-c".into(), format!("mcp_servers.figcraft.args={args}"),
+        "-c".into(), format!("mcp_servers.{name}.command={}", serde_json::to_string(&cli.to_string_lossy()).unwrap_or_default()),
+        "-c".into(), format!("mcp_servers.{name}.args={args}"),
     ]
 }
 
@@ -214,8 +229,8 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
         "-c".into(), format!("developer_instructions={}", toml_str(c.system)),
         "-c".into(), format!("projects.{}.trust_level=\"trusted\"", toml_str(c.cwd)),
     ];
-    if let Some(cli) = figcraft_cli() {
-        shared.extend(codex_figcraft_config(&cli, c.cwd));
+    for (name, cli) in installed_engines() {
+        shared.extend(codex_engine_config(name, &cli, c.cwd));
     }
     if !c.model.is_empty() {
         shared.extend(["-m".into(), c.model.into()]);
@@ -405,23 +420,23 @@ mod figcraft_tests {
     fn env_path_wins_only_when_it_exists_else_default_location() {
         let home = tmp("home");
         let default = home.join(".prism/engines/figcraft/figcraft-cli");
-        assert_eq!(figcraft_cli_at(None, &home), None, "nothing installed");
+        assert_eq!(engine_cli_at("figcraft", None, &home), None, "nothing installed");
         std::fs::create_dir_all(default.parent().unwrap()).unwrap();
         std::fs::write(&default, "").unwrap();
-        assert_eq!(figcraft_cli_at(None, &home), Some(default.clone()));
+        assert_eq!(engine_cli_at("figcraft", None, &home), Some(default.clone()));
         // env path missing → still the default
-        assert_eq!(figcraft_cli_at(Some(home.join("nope")), &home), Some(default.clone()));
+        assert_eq!(engine_cli_at("figcraft", Some(home.join("nope")), &home), Some(default.clone()));
         // env path present → it wins
         let custom = home.join("custom-cli");
         std::fs::write(&custom, "").unwrap();
-        assert_eq!(figcraft_cli_at(Some(custom.clone()), &home), Some(custom));
+        assert_eq!(engine_cli_at("figcraft", Some(custom.clone()), &home), Some(custom));
     }
 
     #[test]
     fn claude_config_without_figcraft_is_unchanged() {
         let dir = tmp("nofc");
         let c = ctx(&dir, "/work/wt");
-        let v = claude_mcp_servers(&c, None);
+        let v = claude_mcp_servers(&c, &[]);
         assert_eq!(v.to_string(), json!({ "prism": { "type": "http", "url": c.mcp_url() } }).to_string());
     }
 
@@ -429,7 +444,7 @@ mod figcraft_tests {
     fn claude_config_with_figcraft_limits_it_to_the_agent_folder() {
         let dir = tmp("fc");
         let c = ctx(&dir, "/work/wt");
-        let v = claude_mcp_servers(&c, Some(Path::new("/opt/figcraft-cli")));
+        let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
         assert_eq!(v["figcraft"]["command"], "/opt/figcraft-cli");
         assert_eq!(
             v["figcraft"]["args"],
@@ -440,9 +455,86 @@ mod figcraft_tests {
 
     #[test]
     fn codex_overrides_name_the_same_server() {
-        let out = codex_figcraft_config(Path::new("/opt/figcraft-cli"), "/work/wt");
+        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), "/work/wt");
         assert_eq!(out[0], "-c");
         assert_eq!(out[1], "mcp_servers.figcraft.command=\"/opt/figcraft-cli\"");
         assert_eq!(out[3], "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
+    }
+}
+
+#[cfg(test)]
+mod deckcraft_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("prism-t28-launch-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ctx<'a>(dir: &'a Path, cwd: &'a str) -> Ctx<'a> {
+        Ctx {
+            kind: "claude", agent_id: "a1", project_id: "p1", base: "http://127.0.0.1:1", token: "t", dir,
+            model: "", effort: "", permission_mode: "default", system: "", prompt: None, session_id: "s",
+            resume: None, cwd, attach_dir: None, home: None,
+        }
+    }
+
+    #[test]
+    fn env_path_wins_only_when_it_exists_else_default_location() {
+        let home = tmp("home");
+        let default = home.join(".prism/engines/deckcraft/deckcraft-cli");
+        assert_eq!(engine_cli_at("deckcraft", None, &home), None, "nothing installed");
+        std::fs::create_dir_all(default.parent().unwrap()).unwrap();
+        std::fs::write(&default, "").unwrap();
+        assert_eq!(engine_cli_at("deckcraft", None, &home), Some(default.clone()));
+        // env path missing → still the default
+        assert_eq!(engine_cli_at("deckcraft", Some(home.join("nope")), &home), Some(default.clone()));
+        // env path present → it wins
+        let custom = home.join("custom-cli");
+        std::fs::write(&custom, "").unwrap();
+        assert_eq!(engine_cli_at("deckcraft", Some(custom.clone()), &home), Some(custom));
+        // a folder at the default location is not a CLI
+        let home2 = tmp("home2");
+        std::fs::create_dir_all(home2.join(".prism/engines/deckcraft/deckcraft-cli")).unwrap();
+        assert_eq!(engine_cli_at("deckcraft", None, &home2), None);
+    }
+
+    #[test]
+    fn claude_config_without_engines_is_unchanged() {
+        let dir = tmp("none");
+        let c = ctx(&dir, "/work/wt");
+        let v = claude_mcp_servers(&c, &[]);
+        assert_eq!(v.to_string(), json!({ "prism": { "type": "http", "url": c.mcp_url() } }).to_string());
+        assert!(v.get("deckcraft").is_none());
+    }
+
+    #[test]
+    fn claude_config_with_deckcraft_limits_it_to_the_agent_folder() {
+        let dir = tmp("dc");
+        let c = ctx(&dir, "/work/wt");
+        let v = claude_mcp_servers(&c, &[("deckcraft", PathBuf::from("/opt/deckcraft-cli"))]);
+        assert_eq!(v["deckcraft"]["command"], "/opt/deckcraft-cli");
+        assert_eq!(
+            v["deckcraft"]["args"],
+            json!(["mcp", "--automation-read-root", "/work/wt", "--automation-write-root", "/work/wt"])
+        );
+        assert!(v.get("figcraft").is_none());
+        assert!(v["prism"].is_object());
+    }
+
+    #[test]
+    fn codex_overrides_name_the_deckcraft_server() {
+        let out = codex_engine_config("deckcraft", Path::new("/opt/deckcraft-cli"), "/work/wt");
+        assert_eq!(out[0], "-c");
+        assert_eq!(out[1], "mcp_servers.deckcraft.command=\"/opt/deckcraft-cli\"");
+        assert_eq!(out[2], "-c");
+        assert_eq!(out[3], "mcp_servers.deckcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
+    }
+
+    #[test]
+    fn deckcraft_is_not_a_safe_tool() {
+        assert!(!SAFE_TOOLS.iter().any(|t| t.contains("deckcraft")));
     }
 }
