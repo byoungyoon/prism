@@ -151,7 +151,13 @@ function Results({ task, pid }: { task: Task; pid: string }) {
   return (
     <div className="flex flex-col gap-2">
       {editable.map((f) => (
-        <EngineFileCard key={f.path} engine={f.engine} path={f.path} onOpen={() => openEdit({ projectId: pid, taskId: task.id, path: f.path, engine: f.engine })} />
+        <EngineFileCard
+          key={f.path}
+          engine={f.engine}
+          path={f.path}
+          onOpen={() => openEdit({ projectId: pid, taskId: task.id, path: f.path, engine: f.engine })}
+          onView={() => setOpen(f.path)}
+        />
       ))}
       {plain.length > 0 && (
       <div className="flex flex-wrap gap-1.5">
