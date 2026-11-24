@@ -28,6 +28,9 @@ pub struct Ctx<'a> {
     /// continue this earlier session instead of starting a new one
     pub resume: Option<String>,
     pub cwd: &'a str,
+    /// folders the engine MCP servers may read besides `cwd` (never written): the 총괄's and
+    /// 팀장's view of the workers' folders. Created if missing, since the server needs them to exist.
+    pub extra_read_roots: Vec<String>,
     /// files the user attached (readable without prompting)
     pub attach_dir: Option<String>,
     /// account home (CLAUDE_CONFIG_DIR / CODEX_HOME / …); None = the CLI's default
@@ -98,23 +101,32 @@ fn installed_engines() -> Vec<(&'static str, PathBuf)> {
         .collect()
 }
 
-/// An engine's MCP server (`<cli> mcp`), reading and writing only inside the agent's folder.
-/// Same for every engine: the flags are the engines' shared `--automation-*` confinement.
-fn engine_mcp_args(cwd: &str) -> Vec<String> {
-    ["mcp", "--automation-read-root", cwd, "--automation-write-root", cwd].iter().map(|s| s.to_string()).collect()
+/// An engine's MCP server (`<cli> mcp`). Writes only inside the agent's folder; reads inside that
+/// folder and the extra read roots. Same for every engine: the flags are the engines' shared
+/// `--automation-*` confinement (each flag may repeat).
+fn engine_mcp_args(c: &Ctx) -> Vec<String> {
+    let mut args = vec!["mcp".to_string(), "--automation-read-root".into(), c.cwd.into()];
+    for root in &c.extra_read_roots {
+        args.extend(["--automation-read-root".into(), root.clone()]);
+    }
+    args.extend(["--automation-write-root".into(), c.cwd.into()]);
+    args
 }
 
 /// The `mcpServers` object for Claude's --mcp-config: Prism's own server, plus each installed engine.
 fn claude_mcp_servers(c: &Ctx, engines: &[(&str, PathBuf)]) -> serde_json::Value {
     let mut servers = json!({ "prism": { "type": "http", "url": c.mcp_url() } });
     for (name, cli) in engines {
-        servers[*name] = json!({ "command": cli.to_string_lossy(), "args": engine_mcp_args(c.cwd) });
+        servers[*name] = json!({ "command": cli.to_string_lossy(), "args": engine_mcp_args(c) });
     }
     servers
 }
 
 pub fn build(c: &Ctx) -> Result<Launch, String> {
     std::fs::create_dir_all(c.dir).map_err(|e| e.to_string())?;
+    for root in &c.extra_read_roots {
+        std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    }
     match c.kind {
         "claude" => claude(c),
         "codex" => codex(c),
@@ -199,9 +211,9 @@ fn home_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Codex `-c` overrides that add an engine's MCP server (same command and folder as for Claude).
-fn codex_engine_config(name: &str, cli: &Path, cwd: &str) -> Vec<String> {
-    let args = serde_json::to_string(&engine_mcp_args(cwd)).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
+/// Codex `-c` overrides that add an engine's MCP server (same command and args as for Claude).
+fn codex_engine_config(name: &str, cli: &Path, engine_args: &[String]) -> Vec<String> {
+    let args = serde_json::to_string(engine_args).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
     vec![
         "-c".into(), format!("mcp_servers.{name}.command={}", serde_json::to_string(&cli.to_string_lossy()).unwrap_or_default()),
         "-c".into(), format!("mcp_servers.{name}.args={args}"),
@@ -229,8 +241,9 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
         "-c".into(), format!("developer_instructions={}", toml_str(c.system)),
         "-c".into(), format!("projects.{}.trust_level=\"trusted\"", toml_str(c.cwd)),
     ];
+    let engine_args = engine_mcp_args(c);
     for (name, cli) in installed_engines() {
-        shared.extend(codex_engine_config(name, &cli, c.cwd));
+        shared.extend(codex_engine_config(name, &cli, &engine_args));
     }
     if !c.model.is_empty() {
         shared.extend(["-m".into(), c.model.into()]);
@@ -412,7 +425,7 @@ mod figcraft_tests {
         Ctx {
             kind: "claude", agent_id: "a1", project_id: "p1", base: "http://127.0.0.1:1", token: "t", dir,
             model: "", effort: "", permission_mode: "default", system: "", prompt: None, session_id: "s",
-            resume: None, cwd, attach_dir: None, home: None,
+            resume: None, cwd, extra_read_roots: vec![], attach_dir: None, home: None,
         }
     }
 
@@ -455,7 +468,8 @@ mod figcraft_tests {
 
     #[test]
     fn codex_overrides_name_the_same_server() {
-        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), "/work/wt");
+        let args = engine_mcp_args(&ctx(Path::new("/unused"), "/work/wt"));
+        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), &args);
         assert_eq!(out[0], "-c");
         assert_eq!(out[1], "mcp_servers.figcraft.command=\"/opt/figcraft-cli\"");
         assert_eq!(out[3], "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
@@ -477,7 +491,7 @@ mod deckcraft_tests {
         Ctx {
             kind: "claude", agent_id: "a1", project_id: "p1", base: "http://127.0.0.1:1", token: "t", dir,
             model: "", effort: "", permission_mode: "default", system: "", prompt: None, session_id: "s",
-            resume: None, cwd, attach_dir: None, home: None,
+            resume: None, cwd, extra_read_roots: vec![], attach_dir: None, home: None,
         }
     }
 
@@ -526,7 +540,8 @@ mod deckcraft_tests {
 
     #[test]
     fn codex_overrides_name_the_deckcraft_server() {
-        let out = codex_engine_config("deckcraft", Path::new("/opt/deckcraft-cli"), "/work/wt");
+        let args = engine_mcp_args(&ctx(Path::new("/unused"), "/work/wt"));
+        let out = codex_engine_config("deckcraft", Path::new("/opt/deckcraft-cli"), &args);
         assert_eq!(out[0], "-c");
         assert_eq!(out[1], "mcp_servers.deckcraft.command=\"/opt/deckcraft-cli\"");
         assert_eq!(out[2], "-c");
@@ -536,5 +551,92 @@ mod deckcraft_tests {
     #[test]
     fn deckcraft_is_not_a_safe_tool() {
         assert!(!SAFE_TOOLS.iter().any(|t| t.contains("deckcraft")));
+    }
+}
+
+#[cfg(test)]
+mod read_root_tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("prism-t35-launch-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ctx<'a>(dir: &'a Path, cwd: &'a str, extra: &[&str]) -> Ctx<'a> {
+        Ctx {
+            kind: "claude", agent_id: "a1", project_id: "p1", base: "http://127.0.0.1:1", token: "t", dir,
+            model: "", effort: "", permission_mode: "default", system: "", prompt: None, session_id: "s",
+            resume: None, cwd, extra_read_roots: extra.iter().map(|s| s.to_string()).collect(), attach_dir: None, home: None,
+        }
+    }
+
+    /// (read roots, write roots) of an engine's args, in order
+    fn roots(args: &[String]) -> (Vec<String>, Vec<String>) {
+        let mut reads = vec![];
+        let mut writes = vec![];
+        for w in args.windows(2) {
+            match w[0].as_str() {
+                "--automation-read-root" => reads.push(w[1].clone()),
+                "--automation-write-root" => writes.push(w[1].clone()),
+                _ => {}
+            }
+        }
+        (reads, writes)
+    }
+
+    #[test]
+    fn lead_and_manager_read_all_workers_folders_and_write_only_their_own() {
+        let dir = tmp("lead");
+        let cwd = "/proj/.prism/worktrees/r1-t-1";
+        let c = ctx(&dir, cwd, &["/proj/.prism/worktrees"]);
+        let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
+        assert_eq!(
+            v["figcraft"]["args"],
+            json!(["mcp", "--automation-read-root", cwd, "--automation-read-root", "/proj/.prism/worktrees", "--automation-write-root", cwd])
+        );
+        let (reads, writes) = roots(&engine_mcp_args(&c));
+        assert_eq!(reads, vec![cwd.to_string(), "/proj/.prism/worktrees".to_string()]);
+        assert_eq!(writes, vec![cwd.to_string()]);
+    }
+
+    #[test]
+    fn worker_reads_and_writes_only_its_own_folder() {
+        let dir = tmp("worker");
+        let cwd = "/proj/.prism/worktrees/r1-t-2";
+        let c = ctx(&dir, cwd, &[]);
+        let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
+        assert_eq!(
+            v["figcraft"]["args"],
+            json!(["mcp", "--automation-read-root", cwd, "--automation-write-root", cwd])
+        );
+        let (reads, writes) = roots(&engine_mcp_args(&c));
+        assert_eq!(reads, vec![cwd.to_string()]);
+        assert_eq!(writes, vec![cwd.to_string()]);
+    }
+
+    #[test]
+    fn codex_gets_the_same_read_roots_as_claude() {
+        let dir = tmp("codex");
+        let c = ctx(&dir, "/work/wt", &["/work/.prism/worktrees"]);
+        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), &engine_mcp_args(&c));
+        assert_eq!(
+            out[3],
+            "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-read-root\",\"/work/.prism/worktrees\",\"--automation-write-root\",\"/work/wt\"]"
+        );
+    }
+
+    #[test]
+    fn build_creates_the_read_root_folder_so_the_engine_server_can_start() {
+        let base = tmp("build");
+        let worktrees = base.join("proj").join(".prism").join("worktrees");
+        let agents = base.join("agents");
+        let cwd = worktrees.join("r1-t-1").to_string_lossy().into_owned();
+        assert!(!worktrees.exists());
+        let c = ctx(&agents, &cwd, &[&worktrees.to_string_lossy()]);
+        build(&c).unwrap();
+        assert!(worktrees.is_dir());
     }
 }

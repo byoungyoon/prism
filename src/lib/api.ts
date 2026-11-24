@@ -369,6 +369,9 @@ export const api = {
   /** writes into the task's work copy; returns the new stamp */
   taskFileSave: (projectId: string, taskId: string, path: string, b64: string) =>
     call<string>("task_file_save", { projectId, taskId, path, b64 }),
+  /** files in the task's work copy (uncommitted too) whose name ends with one of `exts` (".figcraft", ".pptx"); paths relative to the copy */
+  taskEngineFiles: (projectId: string, taskId: string, exts: string[]) =>
+    call<{ path: string; size: number }[]>("task_engine_files", { projectId, taskId, exts }),
   messageAgent: (projectId: string, agentId: string, text: string) =>
     call<void>("agent_message", { projectId, agentId, text }),
   setAgentModel: (projectId: string, agentId: string, model: string) =>

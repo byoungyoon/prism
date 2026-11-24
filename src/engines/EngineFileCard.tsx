@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 import type { EngineDef } from "./types";
 import { engineAvailable } from "./registry";
 
-export function EngineFileCard({ engine, path, onOpen, onView }: { engine: EngineDef; path: string; onOpen: () => void; onView?: () => void }) {
+// `status`: the line under the name while the file is still being worked on ("팀원 · 그리는 중")
+export function EngineFileCard({ engine, path, status, onOpen, onView }: { engine: EngineDef; path: string; status?: string; onOpen: () => void; onView?: () => void }) {
   const name = path.split(/[\\/]/).pop() || path;
   // undefined while the check runs
   const [installed, setInstalled] = useState<boolean | undefined>(undefined);
@@ -18,8 +19,9 @@ export function EngineFileCard({ engine, path, onOpen, onView }: { engine: Engin
     };
   }, [engine]);
 
-  const note =
-    installed === undefined
+  const note = status
+    ? `${status}${installed === false ? " · 편집기 설치 필요" : ""}`
+    : installed === undefined
       ? "편집기를 준비하는 중…"
       : installed
         ? `${engine.label} 파일 · 편집 화면에서 직접 고칠 수 있어요`
