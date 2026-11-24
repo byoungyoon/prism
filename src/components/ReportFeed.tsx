@@ -10,6 +10,9 @@ import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { FailPill } from "./ReportFold";
+import { engineFor } from "../engines/registry";
+import { useEngineEdit } from "../engines/editing";
+import { EngineFileCard } from "../engines/EngineFileCard";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -104,6 +107,7 @@ function Results({ task, pid }: { task: Task; pid: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [content, setContent] = useState<{ path: string; kind: "preview" | "diff"; text: string } | null>(null);
+  const openEdit = useEngineEdit((s) => s.open);
 
   useEffect(() => {
     let alive = true;
@@ -137,10 +141,21 @@ function Results({ task, pid }: { task: Task; pid: string }) {
   if (!files) return <span className="text-xs text-ink-2">결과 불러오는 중…</span>;
   if (!files.length) return <span className="text-xs text-ink-2">바뀐 파일이 없어요.</span>;
 
+  // files an outside editor opens get a card each; the rest are previewed or diffed as before
+  const editable = files.flatMap((f) => {
+    const engine = engineFor(f.path);
+    return engine ? [{ path: f.path, engine }] : [];
+  });
+  const plain = files.filter((f) => !engineFor(f.path));
+
   return (
     <div className="flex flex-col gap-2">
+      {editable.map((f) => (
+        <EngineFileCard key={f.path} engine={f.engine} path={f.path} onOpen={() => openEdit({ projectId: pid, taskId: task.id, path: f.path, engine: f.engine })} />
+      ))}
+      {plain.length > 0 && (
       <div className="flex flex-wrap gap-1.5">
-        {files.map((f) => {
+        {plain.map((f) => {
           const on = f.path === open;
           return (
             <button
@@ -162,6 +177,7 @@ function Results({ task, pid }: { task: Task; pid: string }) {
           );
         })}
       </div>
+      )}
       <AnimatePresence mode="wait">
         {content && (
           <motion.div key={content.path} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring}>
