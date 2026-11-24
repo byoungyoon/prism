@@ -96,3 +96,53 @@ unzip -p "$W/ridgeline-app.figcraft" document.json > "$W/doc.json"
 - figcraft 작업 트리에 커밋되지 않은 변경이 많습니다(빌드 시점 기준 36개 항목). 빌드 결과는 그 상태를 반영합니다. 원본 저장소 쪽 정리는 이 작업 범위가 아닙니다.
 - WebGPU/WebGL2가 필요합니다. 헤드리스 Chrome에서는 두 경로 모두 로드를 확인했지만, 실제 GPU 성능은 확인하지 않았습니다.
 - 예제 파일은 Inter 폰트가 없는 환경에서 경고를 냅니다. 저장 자체는 막지 않습니다.
+
+## 5. 배포판에 엔진 포함
+
+배포판(태그 `v*`로 도는 `.github/workflows/release.yml`)은 엔진 웹판을 앱 안에 넣어 보냅니다. 앱이 처음 열릴 때 내려받지 않고, 오프라인에서도 바로 편집기가 뜹니다.
+
+### CI 구조
+
+- **`engines` 잡(ubuntu-latest)**: 한 번만 실행합니다.
+  - `actions/checkout`으로 `byoungyoon/figcraft`와 `storytold/deckcraft`를 `engine-src/` 아래에 받습니다. 두 저장소는 공개라서 토큰이 없어도 됩니다.
+  - 기준 커밋은 workflow 맨 위 `env`의 `FIGCRAFT_REF`, `DECKCRAFT_REF`로 정합니다. 기본은 `main`입니다. 릴리스를 재현 가능하게 고정하려면 두 값을 전체 SHA로 바꿉니다.
+  - Rust 툴체인(`wasm32-unknown-unknown`)과 trunk를 설치합니다. trunk는 `cargo binstall`로 먼저 받고, 안 되면 `cargo install --locked trunk`로 빌드합니다.
+  - `scripts/build-engine-figcraft.sh`, `scripts/build-engine-deckcraft.sh`를 `FIGCRAFT_DIR`, `DECKCRAFT_DIR`, `CARGO_TARGET_DIR`를 넘겨 실행합니다. 결과는 `public/engines/`에 쌓입니다.
+  - 결과를 `engines`라는 artifact로 올립니다(보관 1일).
+- **`build` 잡(macOS arm64·x64, Windows)**: `needs: engines`입니다. `pnpm install` 뒤, `tauri-action` 전에 artifact를 `public/engines/`로 내려받습니다. `vite build`가 `public/`을 `dist/`로 복사하므로 앱에 엔진이 들어갑니다. 웹판 wasm은 OS와 무관해서 세 플랫폼이 같은 산출물을 씁니다.
+
+### 캐시
+
+| 캐시 | 키 | 맞으면 |
+|---|---|---|
+| 엔진 산출물 (`public/engines/<엔진>`) | 엔진 커밋 SHA + 빌드 스크립트 해시 | 빌드를 건너뜀 |
+| trunk 바이너리 (`~/.cargo/bin/trunk`) | `trunk-<OS>-v1` | 설치를 건너뜀. trunk 버전을 올리려면 `v1`을 `v2`로 바꿈 |
+| cargo 레지스트리·의존성 빌드 (`swatinem/rust-cache`) | 각 저장소의 `Cargo.lock` 해시 (기본값) | 의존성 재컴파일을 줄임 |
+
+산출물 캐시 키에 SHA를 넣는 이유는, 엔진 저장소에 커밋이 생기면 반드시 다시 빌드해야 하기 때문입니다. cargo 캐시는 SHA를 넣지 않습니다. 의존성 버전이 같으면 커밋이 바뀌어도 재사용하는 편이 빠르고, 바뀐 크레이트는 cargo가 알아서 다시 빌드합니다.
+
+### 결정 근거
+
+- 엔진을 배포판에 포함하면 앱이 오프라인에서도 바로 동작합니다. 첫 실행 때 내려받는 방식은 쓰지 않습니다.
+- 별도 다운로드 서버가 필요 없습니다. 두 엔진이 GitHub 공개 저장소이므로 CI가 토큰 없이 받을 수 있습니다.
+- 웹판 wasm은 OS와 무관하므로 한 번만 빌드해 세 플랫폼이 공유합니다. 엔진 빌드는 릴리스마다 한 번만 돌아갑니다.
+
+### 용량과 시간 (추정)
+
+- 로컬 실측: figcraft 빌드 약 6분, 산출물 약 47 MB(wasm 24 MB 포함). deckcraft 산출물 크기와 빌드 시간은 아직 재지 않았습니다.
+- 캐시가 비었을 때 `engines` 잡은 엔진 두 개 빌드 시간만큼 걸립니다. 캐시가 맞으면 수십 초입니다.
+- 앱 번들에는 엔진 용량이 그대로 더해집니다. 설치 파일이 그만큼 커집니다.
+
+### 엔진이 없을 때 (앱 쪽)
+
+- `src/engines/registry.ts`의 `engineAvailable(engine)`이 `engine.url`(쿼리 제외)을 한 번 가져와 확인합니다. 응답이 성공이고 `text/html`이면 설치된 것입니다. 결과는 페이지가 열려 있는 동안 캐시합니다.
+- 확인은 `Accept: application/octet-stream`으로 보냅니다. `text/html`이나 `*/*`로 보내면 개발 서버가 없는 파일에도 앱의 HTML을 200으로 돌려주므로 판정이 틀립니다(실측: 404 대신 200 `text/html`).
+- 설치되지 않았으면 보고 카드는 "이 파일을 고치는 편집기가 이 앱에 설치돼 있지 않아요 (설치 필요)"를 보여 주고, 열기 대신 "내용 보기"(기존 diff/미리보기)를 씁니다. 편집 화면은 iframe을 띄우지 않고 같은 안내와 "닫기"를 보여 줍니다.
+- 확인 중에는 카드에 "편집기를 준비하는 중…"이 뜨고 열기 버튼은 잠깁니다.
+- 개발 빌드는 `public/engines/`가 없을 수 있습니다. 이때는 위 "설치 필요" 안내가 맞는 결과입니다. 엔진을 쓰려면 `scripts/build-engine-*.sh`를 먼저 실행합니다.
+
+### 알려진 제한
+
+- deckcraft는 `craft-fonts`(`../craft-fonts`, 또는 `CRAFT_FONTS_DIR`)가 없으면 폰트를 넣지 않고 경고만 냅니다. CI에는 이 폰트 저장소가 없으므로 배포판 deckcraft에는 번들 폰트가 들어가지 않습니다. deckcraft 웹판은 원래도 번들 폰트가 없습니다(`docs/engines-deckcraft.md` 5절 참고).
+- 엔진 빌드가 실패하면 `engines` 잡이 실패하고 릴리스도 중단됩니다. 엔진이 빠진 릴리스를 내지 않으려는 의도입니다.
+- `actionlint`와 YAML 파싱으로 문법만 확인했습니다. 실제 GitHub Actions 실행은 아직 해 보지 않았습니다.

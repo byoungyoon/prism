@@ -6,12 +6,13 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { useApp } from "../store";
 import { useEngineEdit, type EditTarget } from "./editing";
+import { engineAvailable } from "./registry";
 import { fromBase64, toBase64 } from "./bytes";
 
 const TICK_MS = 2000;
 const READY_MS = 15000;
 const FLASH_MS = 3000;
-const NOT_READY = "편집 엔진을 불러오지 못했어요. 엔진이 설치되어 있지 않거나 아직 준비 중일 수 있어요.";
+const NOT_READY = "편집기가 제때 열리지 않았어요. 잠시 뒤에 다시 열어 보세요.";
 
 const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -46,8 +47,21 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
   const [flash, setFlash] = useState(false);
   const [askClose, setAskClose] = useState(false);
   const [busy, setBusy] = useState(false);
+  // whether this build ships the editor for the file; undefined while checking
+  const [installed, setInstalled] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
+    let alive = true;
+    setInstalled(undefined);
+    engineAvailable(engine).then((ok) => alive && setInstalled(ok));
+    return () => {
+      alive = false;
+    };
+  }, [engine]);
+
+  useEffect(() => {
+    // no editor in this build: nothing to start, the screen shows the 설치 필요 note
+    if (installed !== true) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let flashTimer: ReturnType<typeof setTimeout> | undefined;
@@ -198,7 +212,7 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       clearTimeout(flashTimer);
       editor.current = null;
     };
-  }, [pid, taskId, path, engine, name, setError]);
+  }, [pid, taskId, path, engine, name, setError, installed]);
 
   const tryClose = async () => {
     // ask the editor now, but don't hang on an engine that doesn't answer: fall back to the last check
@@ -214,7 +228,9 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
     else setAskClose(false);
   };
 
-  const status = busy
+  const status = installed === false
+    ? { text: "설치 필요", color: "var(--text2)" }
+    : busy
     ? { text: "저장하는 중…", color: "var(--text2)" }
     : working
       ? { text: "AI가 고치는 중", color: "var(--amber)" }
@@ -290,7 +306,15 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
       )}
 
       <div className="relative min-h-0 flex-auto overflow-hidden rounded-2xl bg-white" style={{ border: "1px solid var(--glass-border)" }}>
-        {phase === "failed" ? (
+        {installed === false ? (
+          <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center">
+            <span className="max-w-[380px] text-[14px] leading-relaxed text-[var(--text)]">이 파일을 고치는 편집기가 이 앱에 설치돼 있지 않아요 (설치 필요).</span>
+            <span className="max-w-[380px] text-[12.5px] text-ink-2">지금은 고칠 수 없어요. 바뀐 내용은 작업 보고에서 볼 수 있어요.</span>
+            <button onClick={close} className="min-h-8 rounded-full px-3.5 text-[12.5px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
+              닫기
+            </button>
+          </div>
+        ) : phase === "failed" ? (
           <div className="flex size-full flex-col items-center justify-center gap-3 p-6 text-center">
             <span className="max-w-[360px] text-[14px] leading-relaxed text-[var(--text)]">{failMsg}</span>
             <button onClick={close} className="min-h-8 rounded-full px-3.5 text-[12.5px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
@@ -299,10 +323,10 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
           </div>
         ) : (
           <>
-            <iframe ref={frame} src={engine.url} title={`${name} 편집`} className="block size-full border-0" />
-            {phase === "loading" && (
+            {installed === true && <iframe ref={frame} src={engine.url} title={`${name} 편집`} className="block size-full border-0" />}
+            {(installed === undefined || phase === "loading") && (
               <div className="absolute inset-0 z-10 flex items-center justify-center text-[13px] text-ink-2" style={{ background: "var(--bg1)" }}>
-                편집 화면을 준비하는 중…
+                편집기를 준비하는 중…
               </div>
             )}
           </>

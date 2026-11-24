@@ -11,6 +11,9 @@
 #
 # Output: public/engines/deckcraft/ (git-ignored, never commit it).
 # Needs: trunk, cargo with the wasm32-unknown-unknown target.
+# CI (release.yml, engines job) runs this too, with DECKCRAFT_DIR and CARGO_TARGET_DIR set.
+# craft-fonts: deckcraft-web's build.rs looks for ../craft-fonts (CRAFT_FONTS_DIR). When it is
+# missing the build only warns and ships without the bundled fonts, so CI does not need it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,7 +29,10 @@ fi
 for tool in trunk cargo; do
   command -v "$tool" >/dev/null || { echo "error: $tool is not installed" >&2; exit 1; }
 done
-if ! rustup target list --installed 2>/dev/null | grep -q '^wasm32-unknown-unknown$'; then
+# Read the list into a variable first: with pipefail, `rustup | grep -q` can report a false miss
+# when grep quits early and rustup gets SIGPIPE.
+installed_targets="$(rustup target list --installed 2>/dev/null || true)"
+if ! grep -qx 'wasm32-unknown-unknown' <<<"$installed_targets"; then
   echo "error: run: rustup target add wasm32-unknown-unknown" >&2
   exit 1
 fi
