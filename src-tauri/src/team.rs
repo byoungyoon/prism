@@ -2474,7 +2474,34 @@ impl TeamManager {
             _ => Err("이 작업은 별도 브랜치 없이 진행돼서 결과 파일을 따로 볼 수 없어요".into()),
         }
     }
+
+    /// Where a task's files are: its work copy (while it still exists, uncommitted edits included)
+    /// and its branch. Unlike `task_refs` this does not need a base commit or a branch.
+    fn task_spot(&self, pid: &str, tid: &str) -> Result<TaskSpot, String> {
+        let teams = self.teams.lock().unwrap();
+        let team = teams.get(pid).ok_or("no team")?;
+        let t = team.tasks.iter().find(|t| t.id == tid).ok_or("no task")?;
+        let agent = t.assignee.as_deref().and_then(|a| team.agent(a));
+        let branch = t.branch.clone().or_else(|| agent.and_then(|a| a.branch.clone()));
+        let worktree = agent
+            .map(|a| PathBuf::from(&a.cwd))
+            .filter(|p| p.to_string_lossy().contains("/.prism/worktrees/"))
+            .or_else(|| Some(PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{}", team.run, t.id.to_lowercase()))))
+            .filter(|p| p.is_dir());
+        Ok(TaskSpot { repo: team.project.path.clone(), worktree, branch })
+    }
 }
+
+/// Where a task's files can be read or written.
+struct TaskSpot {
+    repo: String,
+    /// the assignee's work copy, if it is still on disk
+    worktree: Option<PathBuf>,
+    branch: Option<String>,
+}
+
+/// The biggest file the task-file commands read or write.
+const TASK_FILE_MAX: u64 = 100 * 1024 * 1024;
 
 #[tauri::command]
 pub fn task_files(teams: Teams<'_>, project_id: String, task_id: String) -> Result<Vec<FileStat>, String> {
@@ -2502,6 +2529,264 @@ pub fn task_diff(teams: Teams<'_>, project_id: String, task_id: String, path: St
 pub fn task_file(teams: Teams<'_>, project_id: String, task_id: String, path: String) -> Result<String, String> {
     let (repo, _, branch) = teams.task_refs(&project_id, &task_id)?;
     sys::git(&repo, &["show", &format!("{branch}:{path}")])
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskFileBytes {
+    /// the file's bytes, base64
+    pub b64: String,
+    /// "mtimeNs:size" (work copy) or "git:<blob sha>" (branch)
+    pub stamp: String,
+}
+
+/// A task's file as raw bytes: the work copy's version if it's there (uncommitted edits included),
+/// otherwise the branch's. Binary-safe, unlike `task_file`.
+#[tauri::command]
+pub fn task_file_bytes(teams: Teams<'_>, project_id: String, task_id: String, path: String) -> Result<TaskFileBytes, String> {
+    let rel = rel_path(&path)?;
+    let spot = teams.task_spot(&project_id, &task_id)?;
+    let (bytes, stamp) = read_spot(&spot, &rel)?.ok_or_else(|| format!("파일을 찾을 수 없어요: {path}"))?;
+    Ok(TaskFileBytes { b64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes), stamp })
+}
+
+/// Just the stamp of a task's file (cheap change check); "missing" when it isn't anywhere.
+#[tauri::command]
+pub fn task_file_stamp(teams: Teams<'_>, project_id: String, task_id: String, path: String) -> Result<String, String> {
+    let rel = rel_path(&path)?;
+    let spot = teams.task_spot(&project_id, &task_id)?;
+    Ok(stamp_spot(&spot, &rel)?.unwrap_or_else(|| "missing".into()))
+}
+
+/// Writes a file into the task's work copy (atomically) and returns its new stamp.
+#[tauri::command]
+pub fn task_file_save(teams: Teams<'_>, project_id: String, task_id: String, path: String, b64: String) -> Result<String, String> {
+    let rel = rel_path(&path)?;
+    let spot = teams.task_spot(&project_id, &task_id)?;
+    let wt = spot.worktree.ok_or("이 작업의 작업 폴더가 없어서 저장할 수 없어요. 작업을 다시 시작해 주세요")?;
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64.trim())
+        .map_err(|_| "저장할 파일 내용을 읽을 수 없어요".to_string())?;
+    write_atomic(&wt, &rel, &bytes)
+}
+
+/// A path written relative to the work copy: no `..`, no absolute parts, no `.git`.
+fn rel_path(path: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in std::path::Path::new(path).components() {
+        match c {
+            Component::Normal(s) if s != ".git" => out.push(s),
+            Component::CurDir => {}
+            _ => return Err(format!("작업 폴더 밖이거나 쓸 수 없는 경로예요: {path}")),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err("파일 경로가 비어 있어요".into());
+    }
+    Ok(out)
+}
+
+/// "mtimeNs:size" for a file on disk.
+fn disk_stamp(meta: &std::fs::Metadata) -> String {
+    let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{mtime}:{}", meta.len())
+}
+
+fn check_size(len: u64) -> Result<(), String> {
+    if len > TASK_FILE_MAX {
+        return Err("파일이 너무 커요 (100MB까지만 다룰 수 있어요)".into());
+    }
+    Ok(())
+}
+
+/// Ensures `p` (existing) resolves to a place inside `root`; links that point out are refused.
+fn check_inside(root: &std::path::Path, p: &std::path::Path) -> Result<(), String> {
+    let inside = p.canonicalize().and_then(|p| root.canonicalize().map(|r| p.starts_with(r))).map_err(|e| e.to_string())?;
+    if inside { Ok(()) } else { Err("작업 폴더 밖을 가리키는 링크라 다룰 수 없어요".into()) }
+}
+
+/// The work copy's file, if it is there.
+fn disk_file(wt: &std::path::Path, rel: &std::path::Path) -> Result<Option<(PathBuf, std::fs::Metadata)>, String> {
+    let full = wt.join(rel);
+    let Ok(meta) = std::fs::metadata(&full) else { return Ok(None) };
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    check_inside(wt, &full)?;
+    Ok(Some((full, meta)))
+}
+
+/// The branch's blob for `rel`, if the branch has that file: (raw bytes, "git:<sha>").
+fn git_blob(repo: &str, branch: &str, rel: &std::path::Path, want_bytes: bool) -> Result<Option<(Vec<u8>, String)>, String> {
+    let spec = format!("{branch}:{}", rel.to_string_lossy());
+    if sys::git(repo, &["cat-file", "-t", &spec]).ok().as_deref() != Some("blob") {
+        return Ok(None);
+    }
+    let sha = sys::git(repo, &["rev-parse", &spec])?;
+    let stamp = format!("git:{sha}");
+    if !want_bytes {
+        return Ok(Some((Vec::new(), stamp)));
+    }
+    let size: u64 = sys::git(repo, &["cat-file", "-s", &spec])?.trim().parse().unwrap_or(0);
+    check_size(size)?;
+    let out = sys::command("git").arg("-C").arg(repo).args(["cat-file", "blob", &spec]).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(Some((out.stdout, stamp)))
+}
+
+/// Bytes + stamp of the task's file: work copy first, then the branch.
+fn read_spot(spot: &TaskSpot, rel: &std::path::Path) -> Result<Option<(Vec<u8>, String)>, String> {
+    if let Some(wt) = &spot.worktree {
+        if let Some((full, meta)) = disk_file(wt, rel)? {
+            check_size(meta.len())?;
+            let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+            return Ok(Some((bytes, disk_stamp(&meta))));
+        }
+    }
+    match &spot.branch {
+        Some(br) => git_blob(&spot.repo, br, rel, true),
+        None => Ok(None),
+    }
+}
+
+/// Stamp only (no bytes) of the task's file: work copy first, then the branch.
+fn stamp_spot(spot: &TaskSpot, rel: &std::path::Path) -> Result<Option<String>, String> {
+    if let Some(wt) = &spot.worktree {
+        if let Some((_, meta)) = disk_file(wt, rel)? {
+            return Ok(Some(disk_stamp(&meta)));
+        }
+    }
+    match &spot.branch {
+        Some(br) => Ok(git_blob(&spot.repo, br, rel, false)?.map(|(_, s)| s)),
+        None => Ok(None),
+    }
+}
+
+/// Writes `bytes` to `wt/rel` through a temp file + rename, creating folders as needed.
+/// Returns the file's new stamp.
+fn write_atomic(wt: &std::path::Path, rel: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+    use std::io::Write;
+    check_size(bytes.len() as u64)?;
+    let full = wt.join(rel);
+    let dir = full.parent().ok_or("파일 경로가 잘못됐어요")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    check_inside(wt, dir)?;
+    let name = full.file_name().ok_or("파일 이름이 없어요")?.to_string_lossy().into_owned();
+    let tmp = full.with_file_name(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &full)
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("파일을 저장하지 못했어요: {e}"));
+    }
+    let meta = std::fs::metadata(&full).map_err(|e| e.to_string())?;
+    Ok(disk_stamp(&meta))
+}
+
+#[cfg(test)]
+mod task_file_tests {
+    use super::*;
+
+    /// a fresh folder under the temp dir, unique per test
+    fn tmp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("prism-t21-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn rel_path_accepts_plain_paths() {
+        assert_eq!(rel_path("src/a.txt").unwrap(), PathBuf::from("src/a.txt"));
+        assert_eq!(rel_path("./a/b.png").unwrap(), PathBuf::from("a/b.png"));
+        assert_eq!(rel_path("한글 폴더/그림.png").unwrap(), PathBuf::from("한글 폴더/그림.png"));
+    }
+
+    #[test]
+    fn rel_path_rejects_escapes() {
+        for bad in ["../x", "/etc/passwd", "a/../../b", "a/../b", "", ".", ".git/config", "a/.git/x"] {
+            assert!(rel_path(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn disk_stamp_changes_with_content_and_is_missing_for_absent_files() {
+        let wt = tmp_dir("stamp");
+        let f = wt.join("a.bin");
+        std::fs::write(&f, [1u8, 2, 3]).unwrap();
+        let s1 = disk_stamp(&std::fs::metadata(&f).unwrap());
+        assert!(s1.ends_with(":3"), "stamp is mtime:size, got {s1}");
+        std::fs::write(&f, [1u8, 2, 3, 4]).unwrap();
+        let s2 = disk_stamp(&std::fs::metadata(&f).unwrap());
+        assert_ne!(s1, s2);
+        assert!(disk_file(&wt, std::path::Path::new("nope.txt")).unwrap().is_none());
+    }
+
+    #[test]
+    fn save_then_read_roundtrips_binary_bytes() {
+        let wt = tmp_dir("roundtrip");
+        let rel = rel_path("deep/dir/pic.png").unwrap();
+        let bytes: Vec<u8> = (0..=255u8).chain([0, 0, 0xff]).collect();
+        let stamp = write_atomic(&wt, &rel, &bytes).unwrap();
+        let spot = TaskSpot { repo: String::new(), worktree: Some(wt.clone()), branch: None };
+        let (got, got_stamp) = read_spot(&spot, &rel).unwrap().unwrap();
+        assert_eq!(got, bytes);
+        assert_eq!(got_stamp, stamp);
+        assert_eq!(stamp_spot(&spot, &rel).unwrap().unwrap(), stamp);
+        // no temp files left behind
+        let left: Vec<_> = std::fs::read_dir(wt.join("deep/dir")).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("pic.png")]);
+    }
+
+    #[test]
+    fn base64_wire_format_is_standard() {
+        let bytes = vec![0u8, 255, 16];
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        assert_eq!(b64, "AP8Q");
+        assert_eq!(base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_work_copy_are_refused() {
+        let root = tmp_dir("links");
+        let wt = root.join("wt");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("link")).unwrap();
+        assert!(disk_file(&wt, &rel_path("link/secret.txt").unwrap()).is_err());
+        assert!(write_atomic(&wt, &rel_path("link/new.txt").unwrap(), b"hi").is_err());
+        assert!(!outside.join("new.txt").exists());
+    }
+
+    #[test]
+    fn branch_blob_is_read_with_git_stamp() {
+        let repo = tmp_dir("repo");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap().status.success();
+            assert!(ok, "git {args:?} failed");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("img.bin"), [0u8, 255, 10, 13]).unwrap();
+        git(&["add", "img.bin"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let repo_s = repo.to_string_lossy().into_owned();
+        let rel = rel_path("img.bin").unwrap();
+        let (bytes, stamp) = git_blob(&repo_s, "main", &rel, true).unwrap().unwrap();
+        assert_eq!(bytes, vec![0u8, 255, 10, 13]);
+        assert!(stamp.starts_with("git:") && stamp.len() > 4);
+        assert!(git_blob(&repo_s, "main", &rel_path("nope.bin").unwrap(), true).unwrap().is_none());
+    }
 }
 
 #[tauri::command]

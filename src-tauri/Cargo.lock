@@ -3171,6 +3171,7 @@ name = "prism"
 version = "0.2.6"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "portable-pty",
  "reqwest",
  "serde",
