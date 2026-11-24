@@ -782,7 +782,9 @@ mod tests {
 
     #[test]
     fn dying_mid_turn_ends_the_turn() {
-        let rx = run_fake("read l; echo 'fatal: something broke' >&2; exit 3", no_ask());
+        // The stderr line must reach the driver's stderr tail before the process exits; the driver
+        // reads that tail as soon as stdout closes. Give the drain thread a moment (races under load).
+        let rx = run_fake("read l; echo 'fatal: something broke' >&2; sleep 1; exit 3", no_ask());
         assert_eq!(next(&rx), "start");
         let end = next(&rx);
         assert!(end.starts_with("end:true:") && end.contains("코드 3") && end.contains("something broke"), "{end}");
