@@ -27,9 +27,9 @@ const short = (t: string, n = 14) => (t.length > n ? `${t.slice(0, n - 1)}…` :
 const PLACEHOLDER: Record<string, string> = { title: "제목", ctrTitle: "제목", subTitle: "부제목", body: "본문", obj: "본문", pic: "그림", tbl: "표", chart: "차트" };
 
 type Rec = Record<string, unknown>;
-const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-const obj = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : {});
+export const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+export const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+export const obj = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : {});
 /** engine points → CSS pixels: the UI scale it draws at (a number, or {drawn} — 2 on a Retina screen) */
 const scaleOf = (v: unknown) => num(v) ?? num(obj(v).drawn) ?? 1;
 
@@ -283,4 +283,68 @@ export function describeCall(call: EngineCall, found?: Omit<Found, "spot">): str
       if (name === "edit.delete") return "지우는 중";
       return "디자인 고치는 중";
   }
+}
+
+// ── the editor's view, for anything drawn over it ─────────────────────
+
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** How the engine shows its document right now, in CSS pixels of the frame. */
+export interface EngineView {
+  /** document point (figcraft page units, deckcraft slide points) → frame pixels */
+  toScreen(x: number, y: number): Spot;
+  /** frame pixels per document unit */
+  unit: number;
+  /** where the canvas is (the area critters may wander) */
+  area: Box;
+  /** deckcraft: the slide shown (0-based) */
+  shown?: number;
+}
+
+export const figApi = (w: Window) => (w as Window & { figcraft?: FigApi }).figcraft;
+export const deckApi = (w: Window) => (w as Window & { deckcraft?: DeckApi }).deckcraft;
+
+export async function engineView(engine: string, w: Window): Promise<EngineView | null> {
+  if (engine === "figcraft") {
+    const fc = figApi(w);
+    if (!fc) return null;
+    const [view, ui] = await Promise.all([fc.execute("view.get", {}).then(obj), fc.request("ui.inspect", {}).then(obj)]);
+    const rect = arr(obj(ui.canvas).rect).map(Number);
+    const zoom = num(view.zoom);
+    const cx = num(view.cx);
+    const cy = num(view.cy);
+    if (rect.length !== 4 || !zoom || cx == null || cy == null) return null;
+    const s = scaleOf(ui.uiScale);
+    const [x0, y0, x1, y1] = rect;
+    const ox = cx - (x1 - x0) / 2 / zoom;
+    const oy = cy - (y1 - y0) / 2 / zoom;
+    return {
+      toScreen: (px, py) => ({ x: (x0 + (px - ox) * zoom) * s, y: (y0 + (py - oy) * zoom) * s }),
+      unit: zoom * s,
+      area: { x: x0 * s, y: y0 * s, w: (x1 - x0) * s, h: (y1 - y0) * s },
+    };
+  }
+  if (engine === "deckcraft") {
+    const dc = deckApi(w);
+    if (!dc) return null;
+    const [doc, ui] = await Promise.all([dc.docInspect({}).then(obj), dc.uiInspect({}).then(obj)]);
+    const r = arr(ui.slideRect).map(Number);
+    const c = arr(ui.canvasRect).map(Number);
+    const k = num(ui.canvasScale);
+    if (r.length !== 4 || c.length !== 4 || !k) return null;
+    const pw = num(arr(ui.window)[0]);
+    const s = pw ? w.innerWidth / pw : scaleOf(obj(ui.ui).uiScale ?? ui.uiScale);
+    return {
+      toScreen: (x, y) => ({ x: (r[0] + x * k) * s, y: (r[1] + y * k) * s }),
+      unit: k * s,
+      area: { x: c[0] * s, y: c[1] * s, w: c[2] * s, h: c[3] * s },
+      shown: num(obj(doc.selection).slide) ?? 0,
+    };
+  }
+  return null;
 }

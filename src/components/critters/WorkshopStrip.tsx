@@ -6,6 +6,7 @@ import { isLive, useApp } from "../../store";
 import type { Agent, Task } from "../../lib/api";
 import { CritterLayer, useReducedMotion, type PlacedCritter } from "./CritterLayer";
 import { critterLine, critterState } from "./state";
+import { useCritterStore } from "./critterStore";
 
 const ROLE_ORDER = { lead: 0, mgr: 1, worker: 2 } as const;
 
@@ -40,7 +41,9 @@ export function WorkshopStrip() {
     }
     return list.sort((x, y) => ROLE_ORDER[x.agent.role] - ROLE_ORDER[y.agent.role] || x.agent.name.localeCompare(y.agent.name, "ko"));
   }, [projects, teams]);
-  const shown = on && crew.length > 0;
+  // an editing screen has the critters: the strip steps aside meanwhile
+  const onStage = useCritterStore((s) => s.stages > 0);
+  const shown = on && crew.length > 0 && !onStage;
   const cap = narrow ? 8 : 16;
   // when there are too many, the ones at work get a spot first
   const crewShown = useMemo(() => {

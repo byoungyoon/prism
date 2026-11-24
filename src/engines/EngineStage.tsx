@@ -9,6 +9,7 @@ import { useEngineEdit, type EditTarget } from "./editing";
 import { engineAvailable } from "./registry";
 import { fromBase64, toBase64 } from "./bytes";
 import { EditorCritters } from "./EditorCritters";
+import { stageDirector } from "./drawShow";
 
 const TICK_MS = 2000;
 const READY_MS = 15000;
@@ -174,13 +175,16 @@ export function EngineStage({ target, hidden }: { target: EditTarget; hidden: bo
           return;
         }
         // the team changed it and the person has nothing unsaved: take the new copy in
+        // (the critters' drawing show covers the old picture first, then draws the change in)
         busyNow = true;
         try {
+          await stageDirector.before(w);
           await pull();
         } finally {
           busyNow = false;
         }
         if (!alive) return;
+        void stageDirector.after(w);
         setDirty(false);
         setFlash(true);
         setChanges((n) => n + 1);

@@ -41,19 +41,26 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
   const [walk, setWalk] = useState<{ ms: number; flip: boolean }>({ ms: 0, flip: false });
   const [moving, setMoving] = useState(false);
 
+  const tracing = !!o?.draw;
+  const pace = o?.speed ?? speed;
   useEffect(() => {
     const prev = last.current;
     last.current = { x, y };
     if (!prev || still) return setWalk((w) => ({ ...w, ms: 0 }));
     const dx = x - prev.x;
+    // traced frame by frame: no transition, just face the way the pen goes
+    if (tracing) {
+      setMoving(false);
+      return setWalk((w) => ({ ms: 0, flip: Math.abs(dx) > 0.6 ? dx < 0 : w.flip }));
+    }
     const dist = Math.hypot(dx, y - prev.y);
     if (dist < 1) return;
-    const ms = Math.min(9000, Math.max(200, (dist / speed) * 1000));
+    const ms = Math.min(12000, Math.max(200, (dist / pace) * 1000));
     setWalk((w) => ({ ms, flip: Math.abs(dx) > 2 ? dx < 0 : w.flip }));
     setMoving(true);
     const t = setTimeout(() => setMoving(false), ms);
     return () => clearTimeout(t);
-  }, [x, y, speed, still]);
+  }, [x, y, pace, still, tracing]);
 
   const real = item.state ?? (item.agent ? critterState(item.agent, item.task) : (item.look?.state ?? "idle"));
   const state: CritterState = moving ? "walk" : (o?.state ?? real);
