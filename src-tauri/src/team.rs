@@ -72,6 +72,16 @@ pub struct Agent {
 pub struct Activity {
     pub at: u64,
     pub text: String,
+    /// a call to an outside editor's MCP tool (figcraft, deckcraft): which one and its small
+    /// arguments, so the editing screen can walk the member's character to the node or slide
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<Value>,
+}
+
+impl Activity {
+    fn of(payload: &Value) -> Option<Activity> {
+        Some(Activity { at: now_ms(), text: describe_tool(payload)?, engine: engine_call(payload) })
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1526,11 +1536,11 @@ impl TeamManager {
             }
             Event::Tool { name, input } => {
                 let payload = json!({ "tool_name": name, "tool_input": input });
-                if let (Some(text), Some(a)) = (describe_tool(&payload), team.agent_mut(aid)) {
+                if let (Some(act), Some(a)) = (Activity::of(&payload), team.agent_mut(aid)) {
                     if a.status != "block" {
                         a.status = "work".into();
                     }
-                    a.activity.push(Activity { at: now_ms(), text });
+                    a.activity.push(act);
                     a.last_active = now_ms();
                     if a.activity.len() > 8 {
                         a.activity.remove(0);
@@ -2008,9 +2018,9 @@ impl TeamManager {
                 if agent.status == "block" {
                     team.set_status(aid, "work");
                 }
-                if let Some(text) = describe_tool(&payload) {
+                if let Some(act) = Activity::of(&payload) {
                     if let Some(a) = team.agent_mut(aid) {
-                        a.activity.push(Activity { at: now_ms(), text });
+                        a.activity.push(act);
                     a.last_active = now_ms();
                         if a.activity.len() > 8 {
                             a.activity.remove(0);
@@ -2381,6 +2391,75 @@ fn describe_tool(payload: &Value) -> Option<String> {
         t if t.starts_with("mcp__prism__") || t.starts_with("prism") => return None, // shown elsewhere
         t => format!("🔧 {t}"),
     })
+}
+
+/// For an outside editor's MCP tool ("mcp__figcraft__set_properties"): the engine, the tool and
+/// the arguments that point at things (ids, slide numbers, nested `params.ids`…). Long values (text
+/// bodies, images) are dropped; an object also lists its keys (which properties it touches).
+fn engine_call(payload: &Value) -> Option<Value> {
+    let tool = payload.get("tool_name").and_then(Value::as_str)?;
+    let rest = tool.strip_prefix("mcp__")?;
+    let (engine, name) = rest.split_once("__")?;
+    if !matches!(engine, "figcraft" | "deckcraft") {
+        return None;
+    }
+    let input = payload.get("tool_input").map(|v| slim(v, 0)).unwrap_or(Value::Null);
+    let input = if input.to_string().len() > 4000 { slim(&input, 2) } else { input };
+    Some(json!({ "engine": engine, "tool": name, "input": if input.is_object() { input } else { json!({}) } }))
+}
+
+/// A small copy of a tool argument: short strings, numbers, short lists, a few levels deep.
+fn slim(v: &Value, depth: u8) -> Value {
+    match v {
+        Value::Number(_) | Value::Bool(_) => v.clone(),
+        Value::String(t) if t.chars().count() <= 80 => v.clone(),
+        Value::Array(a) if depth < 3 && a.len() <= 32 => Value::Array(a.iter().map(|x| slim(x, depth + 1)).filter(|x| !x.is_null()).collect()),
+        Value::Object(o) => {
+            let mut keep = serde_json::Map::new();
+            if depth < 3 {
+                for (k, x) in o {
+                    let x = slim(x, depth + 1);
+                    if !x.is_null() {
+                        keep.insert(k.clone(), x);
+                    }
+                }
+            }
+            if depth > 0 {
+                keep.insert("keys".into(), json!(o.keys().take(16).collect::<Vec<_>>()));
+            }
+            Value::Object(keep)
+        }
+        _ => Value::Null,
+    }
+}
+
+#[cfg(test)]
+mod engine_call_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_targets_and_drops_bodies() {
+        let long = "x".repeat(500);
+        let v = engine_call(&json!({
+            "tool_name": "mcp__figcraft__run_command",
+            "tool_input": { "command": "node.set", "params": { "ids": [68, 70], "props": { "fills": [{ "type": "solid" }] } }, "body": long }
+        }))
+        .unwrap();
+        assert_eq!(v["engine"], "figcraft");
+        assert_eq!(v["tool"], "run_command");
+        assert_eq!(v["input"]["command"], "node.set");
+        assert_eq!(v["input"]["params"]["ids"], json!([68, 70]));
+        assert_eq!(v["input"]["params"]["props"]["keys"], json!(["fills"]));
+        assert!(v["input"].get("body").is_none());
+    }
+
+    #[test]
+    fn other_tools_are_not_engine_calls() {
+        assert!(engine_call(&json!({ "tool_name": "Edit", "tool_input": {} })).is_none());
+        assert!(engine_call(&json!({ "tool_name": "mcp__prism__report", "tool_input": {} })).is_none());
+        let d = engine_call(&json!({ "tool_name": "mcp__deckcraft__set_text", "tool_input": { "id": 262, "text": "Hi" } })).unwrap();
+        assert_eq!(d["input"]["id"], 262);
+    }
 }
 
 /// Fallback when the Stop hook has no `last_assistant_message`: read the transcript tail.
