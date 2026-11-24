@@ -22,6 +22,8 @@ use crate::sys;
 
 /// Tailnet HTTPS port Prism publishes on (kept off 443 so the user's own serve config is safe).
 const TS_PORT: &str = "8443";
+/// Biggest file a remote device may attach (raw bytes, not JSON).
+const MAX_UPLOAD: usize = 50 * 1024 * 1024;
 const EVENTS: [&str; 5] = ["team://snapshot", "agent://entry", "usage://update", "cli://status", "batch-update"];
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -209,6 +211,7 @@ async fn start_server(app: &AppHandle) -> Result<u16, String> {
     let ctx = Ctx { app: app.clone(), key: r.key(), events: r.events.clone() };
     let router = Router::new()
         .route("/api/events", get(events))
+        .route("/api/upload", post(upload).layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD)))
         .route("/api/{cmd}", post(call))
         .fallback(get(asset))
         .with_state(ctx);
@@ -248,12 +251,20 @@ async fn events(State(ctx): State<Ctx>, headers: HeaderMap, q: Q, ws: WebSocketU
 }
 
 async fn pump_events(mut socket: WebSocket, mut rx: tokio::sync::broadcast::Receiver<String>) {
+    // a ping every 20s keeps the client's "last heard" clock fresh and lets it spot a dead link
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(20));
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
                 Ok(text) => if socket.send(Message::Text(text.into())).await.is_err() { break },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // we dropped some updates: tell the client to reload everything
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if socket.send(Message::Text(r#"{"event":"resync","payload":null}"#.into())).await.is_err() { break }
+                }
                 Err(_) => break,
+            },
+            _ = ping.tick() => {
+                if socket.send(Message::Text(r#"{"event":"ping","payload":null}"#.into())).await.is_err() { break }
             },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
@@ -271,6 +282,22 @@ async fn call(State(ctx): State<Ctx>, Path(cmd): Path<String>, headers: HeaderMa
     match dispatch(&ctx.app, &cmd, args).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!(e))).into_response(),
+    }
+}
+
+/// POST /api/upload?projectId=&name= — body is the file's raw bytes.
+async fn upload(State(ctx): State<Ctx>, headers: HeaderMap, q: Q, body: axum::body::Bytes) -> Response {
+    if !authed(&ctx, &headers, &q) {
+        return (StatusCode::UNAUTHORIZED, Json(json!("접속 키가 맞지 않아요"))).into_response();
+    }
+    let pid = q.get("projectId").cloned().unwrap_or_default();
+    let name = q.get("name").cloned().unwrap_or_default();
+    let app = ctx.app.clone();
+    let res = tokio::task::spawn_blocking(move || crate::team::save_attachment(&app.state::<crate::projects::Projects>(), &pid, &name, &body)).await;
+    match res {
+        Ok(Ok(path)) => Json(json!(path)).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!(e))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!(e.to_string()))).into_response(),
     }
 }
 

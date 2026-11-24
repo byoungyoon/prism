@@ -77,6 +77,9 @@ export function HomeScreen() {
   const [newName, setNewName] = useState("");
   const [arriving, setArriving] = useState(-1); // 0 worker, 1 manager, 2 lead
   const [busy, setBusy] = useState(false);
+  const lastTeams = useApp((s) => s.lastTeams);
+  const clockingIn = useApp((s) => s.clockingIn);
+  const failures = useApp((s) => s.startFailures);
 
   const cur: Project | undefined = projects.find((p) => p.id === selId) ?? projects[0];
   const create = async () => {
@@ -188,6 +191,8 @@ export function HomeScreen() {
 
   const isLiveId = (id: string) => !!teams[id]?.agents.some((a) => a.status !== "off");
   const crew = picked.filter((id) => !isLiveId(id));
+  const lastToStart = lastTeams.filter((id) => !isLiveId(id) && projects.some((p) => p.id === id));
+  const offCount = projects.filter((p) => !isLiveId(p.id)).length;
 
   const depart = async () => {
     if (!cur || busy) return;
@@ -255,14 +260,14 @@ export function HomeScreen() {
       <div
         className={
           empty
-            ? "relative mx-auto my-auto flex w-full max-w-[440px] flex-col px-8 py-10"
-            : "relative mx-auto flex w-full max-w-[1180px] flex-wrap items-start gap-10 px-8 pt-10 pb-10"
+            ? "relative mx-auto my-auto flex w-full max-w-[440px] flex-col px-8 py-10 max-[820px]:px-4 max-[820px]:py-6"
+            : "relative mx-auto flex w-full max-w-[1180px] flex-wrap items-start gap-10 px-8 pt-10 pb-10 max-[820px]:gap-5 max-[820px]:px-4 max-[820px]:pt-5 max-[820px]:pb-[max(1.5rem,env(safe-area-inset-bottom))]"
         }
       >
         <section aria-labelledby="h-projects" className="flex min-w-0 flex-[1_1_340px] flex-col gap-[18px]">
           <div className={empty ? "flex flex-col items-center gap-1.5 text-center" : "flex flex-col gap-1.5"}>
             <span className="text-[13px] font-semibold tracking-[0.04em] text-ink-2">Prism</span>
-            <h1 id="h-projects" className="m-0 text-[28px] leading-[1.3] font-semibold">
+            <h1 id="h-projects" className="m-0 text-[28px] leading-[1.3] font-semibold max-[820px]:text-[22px]">
               {projects.length ? "오늘은 어느 팀을 출근시킬까요?" : "첫 팀을 꾸려볼까요?"}
             </h1>
             <span className="flex items-center gap-1.5 text-xs text-ink-2">
@@ -295,6 +300,40 @@ export function HomeScreen() {
             </motion.div>
           ) : (
             <div className="flex flex-col gap-2.5">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={clockingIn || lastToStart.length === 0}
+                  onClick={() => void useApp.getState().clockInLast()}
+                  title={lastToStart.length ? "앱을 끄기 직전에 출근해 있던 팀을 한 번에 출근시켜요" : "다시 출근시킬 지난번 팀이 없어요"}
+                  className="glass min-h-10 rounded-full border-0 px-4 text-[13px] font-medium disabled:opacity-50"
+                >
+                  지난번 팀 다시 출근{lastToStart.length ? ` (${lastToStart.length})` : ""}
+                </button>
+                <button
+                  type="button"
+                  disabled={clockingIn || offCount === 0}
+                  onClick={() => void useApp.getState().clockInAll()}
+                  title={offCount ? "아직 출근하지 않은 팀을 모두 출근시켜요" : "모든 팀이 이미 출근해 있어요"}
+                  className="min-h-10 rounded-full border-0 px-4 text-[13px] font-semibold disabled:opacity-50"
+                  style={{ background: "var(--amber)", color: "#2b2520" }}
+                >
+                  {clockingIn ? "출근시키는 중…" : "모두 출근"}
+                </button>
+              </div>
+              {failures.length > 0 && (
+                <div role="alert" className="glass-soft flex flex-col gap-1 rounded-xl px-3.5 py-2.5 text-[12.5px]" style={{ border: "1px solid var(--block)" }}>
+                  <span className="font-semibold">출근하지 못한 팀이 있어요</span>
+                  {failures.map((f) => (
+                    <span key={f.id}>
+                      {f.name}: {f.reason}
+                    </span>
+                  ))}
+                  <button type="button" onClick={() => useApp.getState().dismissFailures()} className="w-fit border-0 bg-transparent p-0 text-xs text-ink-2 underline underline-offset-2">
+                    닫기
+                  </button>
+                </div>
+              )}
               <AnimatePresence initial={false}>
                 {projects.map((p) => {
                   const on = p.id === cur?.id;
@@ -311,10 +350,10 @@ export function HomeScreen() {
                           {p.name.charAt(0).toUpperCase()}
                         </span>
                         <span className="flex min-w-0 flex-auto flex-col gap-0.5">
-                          <span className="flex items-center gap-2 text-[15px] font-semibold">
-                            {p.name}
+                          <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-[15px] font-semibold">
+                            <span className="min-w-0 break-words">{p.name}</span>
                             {teams[p.id]?.agents.some((a) => a.status !== "off") && (
-                              <span className="flex items-center gap-1 rounded-full px-2 py-px text-[10.5px] font-medium" style={{ background: "var(--chip)", color: "var(--work-ink)" }}>
+                              <span className="flex shrink-0 items-center gap-1 rounded-full px-2 py-px text-[10.5px] font-medium whitespace-nowrap" style={{ background: "var(--chip)", color: "var(--work-ink)" }}>
                                 <span className="s-work size-1.5 rounded-full" style={{ background: "var(--work)" }} />
                                 출근 중
                               </span>
@@ -356,7 +395,7 @@ export function HomeScreen() {
         </section>
 
         {cur && t && (
-          <section aria-labelledby="h-team" className="glass flex min-w-0 flex-[1_1_460px] flex-col gap-[22px] rounded-[20px] p-7">
+          <section aria-labelledby="h-team" className="glass flex min-w-0 flex-[1_1_460px] flex-col gap-[22px] rounded-[20px] p-7 max-[820px]:basis-full max-[820px]:gap-4 max-[820px]:p-4">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div className="flex flex-col gap-1">
                 <span className="text-[12.5px] text-ink-2">{cur.name} · 팀 구성 미리보기</span>
@@ -364,7 +403,7 @@ export function HomeScreen() {
                   {PRESET_TITLE[t.preset]}
                 </h2>
               </div>
-              <div role="group" aria-label="추천 설정" className="flex gap-0.5 rounded-full p-[3px]" style={{ background: "var(--glass2)", border: "1px solid var(--glass-border)" }}>
+              <div role="group" aria-label="추천 설정" className="flex max-w-full gap-0.5 overflow-x-auto rounded-full p-[3px]" style={{ background: "var(--glass2)", border: "1px solid var(--glass-border)" }}>
                 {PRESETS.map((s) => {
                   const on = t.preset === s.id;
                   return (

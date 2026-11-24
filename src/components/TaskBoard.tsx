@@ -156,7 +156,7 @@ export function TaskBoard() {
         )}
       </div>
 
-      <div className="flex max-h-[38%] min-h-0 flex-col" style={{ borderTop: "1px solid var(--line)" }}>
+      <div className="flex max-h-[38%] min-h-0 flex-col max-[820px]:max-h-[26%]" style={{ borderTop: "1px solid var(--line)" }}>
         <button onClick={() => setLogOpen((v) => !v)} aria-expanded={logOpen} className="flex items-center gap-1.5 border-0 bg-transparent px-4 pt-2.5 pb-1.5 text-left text-[13px] font-semibold">
           진행 기록
           <span className="text-[11.5px] font-normal text-ink-2">{events.length}</span>

@@ -180,6 +180,8 @@ function Switch({ on, onChange, label }: { on: boolean; onChange: (v: boolean) =
 export function SettingsScreen() {
   const { project, team } = useCurrent();
   const { go, saveTeam } = useApp(useShallow((s) => ({ go: s.go, saveTeam: s.saveTeam })));
+  const autoResume = useApp((s) => s.autoResume);
+  const setAutoResume = useApp((s) => s.setAutoResume);
   const saved = project?.team;
   const [draft, setDraft] = useState<TeamConfig | undefined>(saved);
 
@@ -320,6 +322,12 @@ export function SettingsScreen() {
           </Card>
         </div>
 
+        <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
+          </span>
+        </Card>
+
         <Card title="허락 방식">
           <div role="radiogroup" aria-label="허락 방식" className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
             {PERMISSIONS.map((p) => {
@@ -356,7 +364,7 @@ export function SettingsScreen() {
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 80, opacity: 0 }}
             transition={spring}
-            className="glass fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full py-2 pr-2 pl-5"
+            className="glass fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100%-24px)] -translate-x-1/2 max-[820px]:bottom-[max(0.75rem,env(safe-area-inset-bottom))] items-center gap-3 rounded-full py-2 pr-2 pl-5"
           >
             <span className="size-2 rounded-full" style={{ background: "var(--amber)" }} />
             <span className="text-[13px] whitespace-nowrap">저장하지 않은 변경이 있어요</span>

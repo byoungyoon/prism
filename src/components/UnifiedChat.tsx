@@ -19,7 +19,7 @@ import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } fr
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
 /** A file waiting to go out: a local path (desktop) or bytes (browser / pasted). */
-type Pending = { name: string; path?: string; bytes?: number[] };
+type Pending = { name: string; path?: string; bytes?: Blob };
 
 /** "@쇼핑몰 장바구니 고쳐줘 @블로그" → recipients + the order without the mentions. */
 function parse(text: string, teams: Project[]) {
@@ -155,9 +155,8 @@ export function UnifiedChat() {
   const addBytes = async (list: FileList | File[]) => {
     for (const f of [...list]) {
       const ext = f.type.split("/")[1] || "bin";
-      const name = f.name && f.name !== "image.png" ? f.name : `붙여넣기.${ext}`;
-      const bytes = Array.from(new Uint8Array(await f.arrayBuffer()));
-      setFiles((x) => [...x, { name, bytes }]);
+      const name = f.name && f.name !== "image.png" ? f.name : `${f.type.startsWith("image/") ? "사진" : "파일"}-${Date.now()}.${ext}`;
+      setFiles((x) => [...x, { name, bytes: f }]);
     }
   };
   const pick = async () => {
@@ -202,14 +201,24 @@ export function UnifiedChat() {
     // 2+ teams: make the batch first (its card and summary), then send to each team as before
     if (targets.length >= 2) await startBatch(targets, text);
     for (const pid of targets) {
-      try {
-        const paths = pending.filter((f) => f.path).map((f) => f.path!);
-        const copied = paths.length ? await api.attachFiles(pid, paths) : [];
-        for (const f of pending.filter((f) => f.bytes)) copied.push(await api.attachBytes(pid, f.name, f.bytes!));
-        void sendToLead(text + (copied.length ? `${ATTACH_MARK}${copied.join(", ")}` : ""), pid);
-      } catch (e) {
-        setError(e);
+      // one failed attachment must not block the message or the other attachments
+      const copied: string[] = [];
+      const paths = pending.filter((f) => f.path).map((f) => f.path!);
+      if (paths.length) {
+        try {
+          copied.push(...(await api.attachFiles(pid, paths)));
+        } catch (e) {
+          setError(e);
+        }
       }
+      for (const f of pending.filter((f) => f.bytes)) {
+        try {
+          copied.push(await api.attachBlob(pid, f.name, f.bytes!));
+        } catch (e) {
+          setError(e);
+        }
+      }
+      void sendToLead(text + (copied.length ? `${ATTACH_MARK}${copied.join(", ")}` : ""), pid);
     }
   };
 
@@ -419,7 +428,7 @@ export function UnifiedChat() {
             onKeyDown={onKey}
             onPaste={onPaste}
             onBlur={() => setTimeout(() => setMenu(null), 100)}
-            placeholder="@팀이름 으로 받을 팀을 지정하고 지시하기"
+            placeholder="@팀이름 으로 지시하기"
             className="min-h-[34px] min-w-0 flex-auto border-0 bg-transparent text-[13.5px] outline-none"
           />
           <button

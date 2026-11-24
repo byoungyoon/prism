@@ -411,7 +411,7 @@ export function AccountSheet() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="absolute inset-0 z-50 flex items-start justify-center pt-[10vh]"
+          className="absolute inset-0 z-50 flex items-start justify-center pt-[10vh] max-[820px]:items-end max-[820px]:pt-0"
           style={{ background: "rgba(30,24,18,0.32)", backdropFilter: "blur(6px)" }}
           onMouseDown={(e) => e.target === e.currentTarget && closeAccounts()}
         >
@@ -422,7 +422,7 @@ export function AccountSheet() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
             transition={spring}
-            className="glass flex max-h-[78vh] w-[min(560px,calc(100%-32px))] flex-col gap-4 overflow-y-auto rounded-[22px] p-6"
+            className="glass flex max-h-[78vh] w-[min(560px,calc(100%-32px))] flex-col gap-4 overflow-y-auto rounded-[22px] p-6 max-[820px]:max-h-[92dvh] max-[820px]:w-full max-[820px]:overflow-y-auto max-[820px]:rounded-b-none max-[820px]:p-4 max-[820px]:pb-[max(1rem,env(safe-area-inset-bottom))]"
             style={{ background: "color-mix(in srgb, var(--bg2) 94%, transparent)" }}
           >
             <header className="flex items-start gap-3">

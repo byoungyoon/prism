@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api } from "../lib/api";
-import { useApp } from "../store";
+import { isLive, useApp } from "../store";
 import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
 import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
@@ -47,7 +47,7 @@ function UsageMeter() {
   const shown = (main?.windows ?? []).slice(0, 2);
 
   return (
-    <div className="relative max-[820px]:static">
+    <div className="relative">
       <button
         onClick={() => {
           setOpen((o) => !o);
@@ -55,16 +55,16 @@ function UsageMeter() {
         }}
         aria-expanded={open}
         aria-label="구독 남은 사용량"
-        className="glass flex min-h-9 max-w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-full px-3.5"
+        className="glass flex min-h-9 max-w-full items-center gap-x-3 rounded-full px-3.5 max-[820px]:gap-x-2 max-[820px]:px-3"
       >
         {shown.length ? (
           <>
             <span className="text-[11.5px] font-semibold">{USAGE_NAME[main!.provider]}</span>
-            {shown.map((w) => {
+            {shown.map((w, i) => {
               const left = Math.max(0, 100 - w.usedPercent);
               return (
-                <span key={w.id} className="flex items-center gap-1.5">
-                  <span className="text-[11.5px] text-ink-2">{w.label}</span>
+                <span key={w.id} className={`items-center gap-1.5 ${i > 0 ? "flex max-[820px]:hidden" : "flex"}`}>
+                  <span className="text-[11.5px] text-ink-2 max-[820px]:hidden">{w.label}</span>
                   <Bar left={left} />
                   <span className="font-mono text-[12px] font-medium">{Math.round(left)}%</span>
                 </span>
@@ -77,12 +77,17 @@ function UsageMeter() {
       </button>
       <AnimatePresence>
         {open && (
+          <div aria-hidden="true" onClick={() => setOpen(false)} className="fixed inset-0 z-40 hidden bg-black/25 max-[820px]:block" />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {open && (
           <motion.div
             initial={{ opacity: 0, y: -6, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 340, damping: 30 }}
-            className="absolute top-11 right-0 z-50 flex w-[320px] max-w-[calc(100vw-24px)] flex-col max-[820px]:top-full max-[820px]:right-3 max-[820px]:mt-1 gap-3 rounded-2xl p-4"
+            className="absolute top-11 right-0 z-50 flex w-[320px] max-w-[calc(100vw-24px)] flex-col max-[820px]:fixed max-[820px]:inset-x-0 max-[820px]:top-auto max-[820px]:bottom-0 max-[820px]:w-auto max-[820px]:max-w-none max-[820px]:rounded-b-none max-[820px]:pb-[max(1rem,env(safe-area-inset-bottom))] gap-3 rounded-2xl p-4"
             style={{ background: "color-mix(in srgb, var(--bg2) 96%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
           >
             <span className="text-[13px] font-semibold">구독 남은 사용량</span>
@@ -97,11 +102,11 @@ function UsageMeter() {
                 {u.windows.map((w) => {
                   const left = Math.max(0, 100 - w.usedPercent);
                   return (
-                    <span key={w.id} className="flex items-center gap-2 text-[12px]">
+                    <span key={w.id} className="flex flex-wrap items-center gap-x-2 text-[12px]">
                       <span className="w-20 shrink-0 text-ink-2">{w.label}</span>
                       <Bar left={left} w={90} />
                       <span className="w-10 shrink-0 text-right font-mono font-medium">{Math.round(left)}%</span>
-                      <span className="min-w-0 truncate text-[10.5px] text-ink-2">{resetText(w.resetsAt)}</span>
+                      <span className="min-w-0 truncate text-[10.5px] text-ink-2 max-[820px]:basis-full max-[820px]:whitespace-normal">{resetText(w.resetsAt)}</span>
                     </span>
                   );
                 })}
@@ -131,7 +136,7 @@ function PhoneAccess() {
     };
   }, [open]);
   return (
-    <div ref={ref} className="relative max-[820px]:static">
+    <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -152,7 +157,7 @@ function PhoneAccess() {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ type: "spring", stiffness: 380, damping: 32 }}
-            className="absolute top-[calc(100%+8px)] right-0 z-50 w-[400px] max-[820px]:right-3 max-w-[calc(100vw-24px)] origin-top-right rounded-2xl p-5"
+            className="absolute top-[calc(100%+8px)] right-0 z-50 w-[400px] max-w-[calc(100vw-24px)] origin-top-right rounded-2xl p-5 max-[820px]:fixed max-[820px]:inset-x-0 max-[820px]:top-auto max-[820px]:bottom-0 max-[820px]:w-auto max-[820px]:max-w-none max-[820px]:rounded-b-none max-[820px]:pb-[max(1.25rem,env(safe-area-inset-bottom))]"
             style={{ background: "color-mix(in srgb, var(--bg2) 97%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
           >
             <RemoteCard bare />
@@ -170,12 +175,12 @@ function KnowledgeButton() {
     <>
       <button
         onClick={() => setOpen(true)}
-        title="모든 AI가 참고할 메모 (서버 정보, 규칙…)"
+        title="모든 AI가 참고할 메모 (서버 정보, 규칙…)" aria-label="지식"
         className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
         style={{ border: "1px solid var(--line)" }}
       >
         <Book size={15} />
-        지식
+        <span className="max-[820px]:hidden">지식</span>
       </button>
       <KnowledgeSheet open={open} onClose={() => setOpen(false)} />
     </>
@@ -186,9 +191,21 @@ function KnowledgeButton() {
 function AddTeam() {
   const go = useApp((s) => s.go);
   return (
-    <button onClick={() => go({ name: "home" })} title="다른 팀도 출근시키기" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)]">
+    <button onClick={() => go({ name: "home" })} title="다른 팀도 출근시키기" aria-label="팀 추가" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)]">
       <Plus size={15} />
-      팀 추가
+      <span className="max-[820px]:hidden">팀 추가</span>
+    </button>
+  );
+}
+
+/** Clock in every team that isn't in yet (shown while some team is at work). */
+function ClockInAll() {
+  const show = useApp((s) => s.projects.some((p) => !isLive(s.teams[p.id])) && s.projects.some((p) => isLive(s.teams[p.id])));
+  const busy = useApp((s) => s.clockingIn);
+  if (!show) return null;
+  return (
+    <button disabled={busy} onClick={() => void useApp.getState().clockInAll()} title="아직 출근하지 않은 팀을 모두 출근시켜요" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)] disabled:opacity-60 max-[820px]:hidden">
+      {busy ? "출근시키는 중…" : "모두 출근"}
     </button>
   );
 }
@@ -204,7 +221,7 @@ export function TopBar() {
     // left padding keeps clear of the macOS traffic lights
     <header
       data-tauri-drag-region
-      className={`relative flex min-h-[52px] flex-wrap items-center gap-2 py-1.5 pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.375rem,env(safe-area-inset-top))] ${isRemote ? "pl-[max(1rem,env(safe-area-inset-left))]" : "pl-[88px]"}`}
+      className={`relative flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 max-[820px]:flex-nowrap max-[820px]:gap-1 py-1.5 pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.375rem,env(safe-area-inset-top))] ${isRemote ? "pl-[max(1rem,env(safe-area-inset-left))]" : "pl-[88px]"}`}
       style={{ borderBottom: "1px solid var(--line)" }}
     >
       {!onHome && (
@@ -213,6 +230,7 @@ export function TopBar() {
         </button>
       )}
       {hasProject && !onHome && <AddTeam />}
+      {!onHome && <ClockInAll />}
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
@@ -223,7 +241,7 @@ export function TopBar() {
         onClick={() => openAccounts()}
         aria-label={`Claude 계정: ${account?.status.email ?? account?.name ?? "확인 중"}${account?.status.loggedIn ? "" : " (로그인 필요)"}`}
         title={account?.status.email ?? "Claude 계정"}
-        className="flex min-h-9 items-center gap-2 rounded-full py-1 pr-3 pl-1 hover:bg-[var(--chip)]"
+        className="flex min-h-9 items-center gap-2 rounded-full py-1 pr-3 pl-1 hover:bg-[var(--chip)] max-[820px]:pr-1"
       >
         <span
           className="relative flex size-7 items-center justify-center rounded-full text-[12px] font-semibold"
@@ -235,7 +253,7 @@ export function TopBar() {
             style={{ background: account?.status.loggedIn ? "var(--work)" : "var(--block)", border: "2px solid var(--bg2)" }}
           />
         </span>
-        <span className="max-w-[120px] truncate text-[12.5px]">{account ? (account.status.loggedIn ? account.name : "로그인 필요") : "계정"}</span>
+        <span className="max-w-[120px] truncate text-[12.5px] max-[820px]:hidden">{account ? (account.status.loggedIn ? account.name : "로그인 필요") : "계정"}</span>
       </button>
       <button onClick={toggleDark} aria-label={dark ? "라이트 모드로" : "다크 모드로"} className={iconBtn}>
         {dark ? <Sun /> : <Moon />}

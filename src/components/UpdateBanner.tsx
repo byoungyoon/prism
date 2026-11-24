@@ -57,7 +57,7 @@ export function UpdateBanner() {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 16 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
-          className="glass absolute right-4 bottom-4 z-[55] flex w-[340px] flex-col gap-2.5 rounded-2xl p-4"
+          className="glass absolute right-4 bottom-4 z-[55] flex w-[340px] max-[820px]:right-3 max-[820px]:bottom-[max(0.75rem,env(safe-area-inset-bottom))] max-[820px]:left-3 max-[820px]:w-auto flex-col gap-2.5 rounded-2xl p-4"
           style={{ border: "1px solid var(--amber)" }}
         >
           <div className="flex items-center gap-2">

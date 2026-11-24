@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { isRemote } from "./lib/transport";
+import { isRemote, onResync } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
@@ -40,6 +40,14 @@ interface AppState {
   teams: Record<string, TeamSnapshot>;
   /** 묶음 지시 (one order to several teams), newest last */
   batches: Batch[];
+  /** teams that were clocked in when the app last closed (as of this launch) */
+  lastTeams: string[];
+  /** clock the last teams back in when the app starts */
+  autoResume: boolean;
+  /** teams that could not clock in during the last group clock-in, with a plain reason */
+  startFailures: { id: string; name: string; reason: string }[];
+  /** a group clock-in is running */
+  clockingIn: boolean;
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -62,6 +70,14 @@ interface AppState {
   /** open a screen (agent detail, focus view) of a given team */
   openIn(id: string, view: View): void;
   startTeam(projectId: string, cwd?: string): Promise<void>;
+  /** clock several teams in; one failing never stops the others. Returns how many are in now. */
+  startMany(ids: string[]): Promise<number>;
+  /** every team that is not in yet */
+  clockInAll(): Promise<number>;
+  /** the teams from before the app closed that are not in yet */
+  clockInLast(): Promise<number>;
+  setAutoResume(on: boolean): Promise<void>;
+  dismissFailures(): void;
   /** `projectId` targets a given team; defaults to the current one */
   stopTeam(projectId?: string): Promise<void>;
   setPreset(preset: PresetName, projectId?: string): Promise<void>;
@@ -78,6 +94,18 @@ interface AppState {
   pauseAgent(agentId: string): Promise<void>;
   resumeAgent(agentId: string): Promise<void>;
 }
+
+/** Why a team could not clock in, in plain words. */
+const plainReason = (m: string) => {
+  if (m.includes(LOGIN_REQUIRED)) {
+    const provider = (m.split(":")[1] as Provider) || "claude";
+    const name = { claude: "Claude", codex: "Codex(ChatGPT)", antigravity: "Google Gemini(Antigravity)" }[provider] ?? "AI";
+    return `${name} 로그인이 필요해요`;
+  }
+  if (m.includes("no such project")) return "프로젝트를 찾을 수 없어요";
+  if (m.includes("git 준비 실패")) return "폴더를 준비하지 못했어요";
+  return m;
+};
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -100,6 +128,8 @@ export const useApp = create<AppState>((set, get) => {
 
   // set once the saved batches are loaded: a batch that finished before this start is not announced
   let batchesListed = false;
+  // the automatic clock-in happens once per launch
+  let autoResumed = false;
   const upsertBatch = (b: Batch) => set((s) => ({ batches: [...s.batches.filter((x) => x.id !== b.id), b] }));
 
   return {
@@ -118,6 +148,10 @@ export const useApp = create<AppState>((set, get) => {
     projectId: null,
     teams: {},
     batches: [],
+    lastTeams: [],
+    autoResume: true,
+    startFailures: [],
+    clockingIn: false,
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -142,19 +176,42 @@ export const useApp = create<AppState>((set, get) => {
       });
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
-      await get().loadProjects();
-      void get().loadAccounts();
-      void api
-        .batchList()
-        .then((list) => {
-          batchesListed = true;
-          set((s) => ({ batches: [...list, ...s.batches.filter((b) => !list.some((x) => x.id === b.id))] }));
-        })
-        .catch(() => {});
-      // every team's current state up front, so teams at work show without waiting for their next update
+      const reload = async () => {
+        await get().loadProjects();
+        void get().loadAccounts();
+        void api
+          .batchList()
+          .then((list) => {
+            batchesListed = true;
+            set((s) => ({ batches: [...list, ...s.batches.filter((b) => !list.some((x) => x.id === b.id))] }));
+          })
+          .catch(() => {});
+        // every team's current state up front, so teams at work show without waiting for their next update
+        const projects = get().projects;
+        const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
+        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+      };
+      await reload();
+      // remote: after a reconnect (or dropped updates) fetch everything again
+      if (isRemote) onResync(() => void reload());
       const projects = get().projects;
-      const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
-      set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+      // teams from the last session: remember them, and clock them in again if the user wants that
+      if (!isRemote) {
+        const prefs = await api.prefs().catch(() => null);
+        if (prefs) {
+          const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
+          set({ lastTeams: known, autoResume: prefs.autoResume });
+          if (prefs.autoResume && !autoResumed) {
+            autoResumed = true;
+            const todo = known.filter((id) => !isLive(get().teams[id]));
+            if (todo.length) {
+              await get().startMany(todo);
+              const failed = get().startFailures;
+              if (failed.length) set({ error: failed.map((f) => `${f.name}: ${f.reason}`).join(" / ") });
+            }
+          }
+        }
+      }
       // opened on a phone (remote): go straight to the 관제탑 when teams are at work
       if (isRemote && get().view.name === "home") {
         const { teams } = get();
@@ -218,6 +275,43 @@ export const useApp = create<AppState>((set, get) => {
         else set({ error: msg(e) });
       }
     },
+
+    startMany: async (ids) => {
+      const failures: { id: string; name: string; reason: string }[] = [];
+      set({ clockingIn: true, startFailures: [] });
+      for (const id of ids) {
+        const name = get().projects.find((p) => p.id === id)?.name ?? "팀";
+        try {
+          const snap = await api.startTeam(id);
+          set((s) => ({ teams: { ...s.teams, [id]: snap } }));
+        } catch (e) {
+          failures.push({ id, name, reason: plainReason(msg(e)) });
+        }
+      }
+      const { projects, teams } = get();
+      const live = projects.filter((p) => isLive(teams[p.id]));
+      set({ clockingIn: false, startFailures: failures });
+      if (live.length > 1) set({ projectId: live[0].id, view: { name: "main" }, selectedNode: "lead" });
+      else if (live.length === 1 && ids.includes(live[0].id)) get().switchTeam(live[0].id);
+      return live.length;
+    },
+    clockInAll: async () => {
+      const { projects, teams } = get();
+      return get().startMany(projects.filter((p) => !isLive(teams[p.id])).map((p) => p.id));
+    },
+    clockInLast: async () => {
+      const { lastTeams, teams } = get();
+      return get().startMany(lastTeams.filter((id) => !isLive(teams[id])));
+    },
+    setAutoResume: async (on) => {
+      set({ autoResume: on });
+      try {
+        await api.setAutoResume(on);
+      } catch (e) {
+        set({ autoResume: !on, error: msg(e) });
+      }
+    },
+    dismissFailures: () => set({ startFailures: [] }),
 
     stopTeam: guard(async (id?: string) => {
       const target = id ?? pid();

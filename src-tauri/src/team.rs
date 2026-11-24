@@ -1066,6 +1066,20 @@ impl TeamManager {
         !self.drivers.lock().unwrap().is_empty() || self.teams.lock().unwrap().values().any(|t| t.agents.iter().any(|a| a.pty_id.is_some()))
     }
 
+    /// Teams with someone clocked in right now (sorted, so it compares stably).
+    pub fn live_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .teams
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off"))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     pub fn stop_all(&self) {
         let ids: Vec<String> = self.teams.lock().unwrap().keys().cloned().collect();
         for id in ids {
@@ -2307,10 +2321,16 @@ pub fn attach_files(projects: tauri::State<'_, Projects>, project_id: String, pa
 /// Saves pasted bytes (e.g. a clipboard screenshot) as an attachment.
 #[tauri::command]
 pub fn attach_bytes(projects: tauri::State<'_, Projects>, project_id: String, name: String, data: Vec<u8>) -> Result<String, String> {
-    let p = projects.get(&project_id).ok_or("no such project")?;
+    save_attachment(&projects, &project_id, &name, &data)
+}
+
+/// Shared by the desktop command and the remote raw-bytes upload.
+pub fn save_attachment(projects: &Projects, project_id: &str, name: &str, data: &[u8]) -> Result<String, String> {
+    let name = if name.trim().is_empty() { "file" } else { name.trim() };
+    let p = projects.get(project_id).ok_or("no such project")?;
     let dir = attachments_dir(&p.path);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dst = dir.join(attach_name(&name));
+    let dst = dir.join(attach_name(name));
     std::fs::write(&dst, data).map_err(|e| e.to_string())?;
     Ok(dst.to_string_lossy().into_owned())
 }
