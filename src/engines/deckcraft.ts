@@ -28,6 +28,7 @@ export const deckcraft: EngineDef = {
   id: "deckcraft",
   label: "DeckCraft",
   icon: "📊",
+  verb: "만드는 중",
   exts: [".pptx", ".deckcraft"],
   url: "/engines/deckcraft/index.html?host=parent",
 

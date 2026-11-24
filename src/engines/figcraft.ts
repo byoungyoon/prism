@@ -22,6 +22,7 @@ export const figcraft: EngineDef = {
   id: "figcraft",
   label: "FigCraft",
   icon: "🎨",
+  verb: "그리는 중",
   exts: [".figcraft"],
   url: "/engines/figcraft/index.html?control",
 

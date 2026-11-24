@@ -1,7 +1,7 @@
 // The control tower's report feed: one card per task, newest first, with live activity while it runs
 // and the actual result (files, diff, HTML preview) when it's done. Pending permission requests
 // are gathered into a single card on top so the user answers them in one place.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useShownTeams } from "../store";
 import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
@@ -10,7 +10,8 @@ import { elapsed } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { FailPill } from "./ReportFold";
-import { engineFor } from "../engines/registry";
+import { ENGINE_EXTS, engineFor } from "../engines/registry";
+import type { EngineDef } from "../engines/types";
 import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
 
@@ -102,12 +103,70 @@ function DiffView({ text }: { text: string }) {
   );
 }
 
-function Results({ task, pid }: { task: Task; pid: string }) {
+const LIVE_MS = 3000;
+/** a card still going (or waiting for review) keeps asking its folder for engine files */
+const isLiveStage = (t: Task) => t.stage === "running" || t.stage === "review";
+
+const sameFiles = (a: { path: string; size: number }[], b: { path: string; size: number }[]) =>
+  a.length === b.length && a.every((x, i) => x.path === b[i].path && x.size === b[i].size);
+
+/**
+ * The engine files in the teammate's folder right now, merged or not. Asked every 3 s, only while
+ * the card is on screen and the page is visible; nothing is asked once `on` is false.
+ */
+function useLiveEngineFiles(pid: string, taskId: string, on: boolean, ref: RefObject<HTMLElement | null>): { path: string; size: number }[] {
+  const [list, setList] = useState<{ path: string; size: number }[]>([]);
+  const [onScreen, setOnScreen] = useState(true);
+  const [pageOn, setPageOn] = useState(() => document.visibilityState !== "hidden");
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(([e]) => setOnScreen(e.isIntersecting));
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref]);
+
+  useEffect(() => {
+    const sync = () => setPageOn(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+
+  const watching = on && onScreen && pageOn;
+  useEffect(() => {
+    if (!watching) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const f = await api.taskEngineFiles(pid, taskId, ENGINE_EXTS);
+        if (alive) setList((prev) => (sameFiles(prev, f) ? prev : f));
+      } catch {
+        // the next tick asks again
+      }
+      if (alive) timer = setTimeout(poll, LIVE_MS);
+    };
+    void poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [pid, taskId, watching]);
+
+  return on ? list : [];
+}
+
+function Results({ task, pid, who }: { task: Task; pid: string; who: string }) {
   const [files, setFiles] = useState<FileStat[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [content, setContent] = useState<{ path: string; kind: "preview" | "diff"; text: string } | null>(null);
   const openEdit = useEngineEdit((s) => s.open);
+  const root = useRef<HTMLDivElement>(null);
+  const working = task.stage === "running";
+  const live = useLiveEngineFiles(pid, task.id, isLiveStage(task), root);
+  const liveSet = new Set(live.map((f) => f.path));
 
   useEffect(() => {
     let alive = true;
@@ -116,8 +175,9 @@ function Results({ task, pid }: { task: Task; pid: string }) {
       .then((f) => {
         if (!alive) return;
         setFiles(f);
+        // a card still going shows only its engine files, so nothing opens by itself
         const first = f.find((x) => isPreviewable(x.path));
-        if (first) setOpen(first.path);
+        if (first && !working) setOpen(first.path);
       })
       .catch((e) => alive && setErr(String(e)));
     return () => {
@@ -137,24 +197,30 @@ function Results({ task, pid }: { task: Task; pid: string }) {
     };
   }, [pid, task.id, open]);
 
-  if (err) return null;
-  if (!files) return <span className="text-xs text-ink-2">결과 불러오는 중…</span>;
-  if (!files.length) return <span className="text-xs text-ink-2">바뀐 파일이 없어요.</span>;
-
-  // files an outside editor opens get a card each; the rest are previewed or diffed as before
-  const editable = files.flatMap((f) => {
+  // committed engine files and the ones still in the teammate's folder: one card per path
+  const rows = new Map<string, { path: string; engine: EngineDef; editing: boolean }>();
+  for (const f of files ?? []) {
     const engine = engineFor(f.path);
-    return engine ? [{ path: f.path, engine }] : [];
-  });
-  const plain = files.filter((f) => !engineFor(f.path));
+    if (engine) rows.set(f.path, { path: f.path, engine, editing: liveSet.has(f.path) });
+  }
+  for (const f of live) {
+    const engine = engineFor(f.path);
+    if (engine && !rows.has(f.path)) rows.set(f.path, { path: f.path, engine, editing: true });
+  }
+  const engineRows = [...rows.values()];
+  // the plain files (previews, diffs) come once the work is done, as before
+  const plain = working ? [] : (files ?? []).filter((f) => !engineFor(f.path));
 
   return (
-    <div className="flex flex-col gap-2">
-      {editable.map((f) => (
+    <div ref={root} className="flex flex-col gap-2">
+      {!working && files === null && !err && !engineRows.length && <span className="text-xs text-ink-2">결과 불러오는 중…</span>}
+      {!working && files !== null && !files.length && !engineRows.length && <span className="text-xs text-ink-2">바뀐 파일이 없어요.</span>}
+      {engineRows.map((f) => (
         <EngineFileCard
           key={f.path}
           engine={f.engine}
           path={f.path}
+          status={f.editing && working ? `${who} · ${f.engine.verb}` : f.editing ? `${who} · 검토 중` : undefined}
           onOpen={() => openEdit({ projectId: pid, taskId: task.id, path: f.path, engine: f.engine })}
           onView={() => setOpen(f.path)}
         />
@@ -413,7 +479,7 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
           {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? "작업자"}: {task.summary}</p>}
         </div>
       )}
-      {finished && !shut && task.stage !== "failed" && <Results task={task} pid={project.id} />}
+      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? "작업자"} />}
 
       {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
