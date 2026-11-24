@@ -105,11 +105,15 @@ pub struct Settings {
     /// clock the teams of last time back in when the app starts
     #[serde(default = "yes")]
     pub auto_resume: bool,
+    /// the app closed with teams at work: "update" (restarted to update — those teams come back
+    /// no matter `auto_resume`) | "quit". Cleared once the start-up clock-in is done.
+    #[serde(default)]
+    pub restart: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true }
+        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true, restart: None }
     }
 }
 
@@ -159,6 +163,17 @@ impl Projects {
                 return;
             }
             p.last_teams = ids;
+        }
+        self.save_prefs();
+    }
+
+    /// The app is going away (`why`: "update" | "quit") with these teams clocked in: remember them,
+    /// and why, in one write.
+    pub fn set_closing(&self, live: Vec<String>, why: &str) {
+        {
+            let mut p = self.prefs.lock().unwrap();
+            p.restart = (!live.is_empty()).then(|| why.to_string());
+            p.last_teams = live;
         }
         self.save_prefs();
     }
@@ -411,6 +426,14 @@ pub fn prefs_set(projects: State<'_, Projects>, providers: Vec<String>, onboarde
 #[tauri::command]
 pub fn prefs_set_auto_resume(projects: State<'_, Projects>, on: bool) -> Settings {
     projects.prefs.lock().unwrap().auto_resume = on;
+    projects.save_prefs();
+    projects.prefs.lock().unwrap().clone()
+}
+
+/// The start-up clock-in after a restart is done: forget why the app last closed.
+#[tauri::command]
+pub fn prefs_clear_restart(projects: State<'_, Projects>) -> Settings {
+    projects.prefs.lock().unwrap().restart = None;
     projects.save_prefs();
     projects.prefs.lock().unwrap().clone()
 }

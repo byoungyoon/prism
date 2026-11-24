@@ -3,6 +3,7 @@
 // summary — and open on tap. Also the chat's "대화만 / 보고만 / 전체" filter.
 import { useState, type ReactNode } from "react";
 import { ChevronDown } from "./icons";
+import { Markdown } from "./Markdown";
 
 export const REPORT_PREFIX = "[Prism 보고]";
 export const isReport = (text: string) => text.startsWith(REPORT_PREFIX);
@@ -57,7 +58,7 @@ export function FoldCard({ id, who, failed, line, text, pill }: { id?: string; w
         {!open && <span className="min-w-0 flex-auto truncate text-ink-2">{line}</span>}
         <ChevronDown size={14} className="ml-auto shrink-0 text-ink-2" style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }} />
       </button>
-      {open && <p className="m-0 px-3 pt-0 pb-3 text-[13px] leading-relaxed whitespace-pre-wrap select-text">{text}</p>}
+      {open && <div className="m-0 px-3 pt-0 pb-3 text-[13px] leading-relaxed select-text"><Markdown text={text} /></div>}
     </div>
   );
 }
@@ -66,7 +67,7 @@ export function FoldCard({ id, who, failed, line, text, pill }: { id?: string; w
 export function ReportFold({ text }: { text: string }) {
   const r = parseReport(text);
   if (!r)
-    return <div className="glass-soft rounded-[14px] px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap select-text">{text}</div>;
+    return <div className="glass-soft rounded-[14px] px-3.5 py-2.5 text-[13px] leading-relaxed select-text"><Markdown text={text} /></div>;
   return <FoldCard id={r.id} who={r.who} failed={r.failed} line={firstLine(r.summary)} text={text} />;
 }
 

@@ -4,6 +4,7 @@
 import type { Batch, ChatMsg } from "../lib/api";
 import { ATTACH_MARK } from "./LeadChat";
 import { FailPill, FoldCard, firstLine } from "./ReportFold";
+import { Markdown } from "./Markdown";
 
 /** how far apart the order in a team's chat and the batch's start can be (ms) */
 const MATCH_WINDOW = 10_000;
@@ -105,9 +106,9 @@ export function BatchCard({ batch, replies, names }: BatchItem & { names: Record
         })}
 
         {batch.summary && (
-          <div className="rounded-xl px-3 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap select-text" style={{ background: "var(--chip)" }}>
+          <div className="rounded-xl px-3 py-2.5 text-[13px] leading-relaxed select-text" style={{ background: "var(--chip)" }}>
             <b className="mb-1 block text-[12px] font-semibold text-ink-2">종합 결과</b>
-            {batch.summary}
+            <Markdown text={batch.summary} />
           </div>
         )}
       </div>

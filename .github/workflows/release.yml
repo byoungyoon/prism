@@ -1,5 +1,6 @@
-# Push a tag like v0.1.1 → build macOS (Apple Silicon + Intel) and Windows, publish a GitHub
-# Release with the installers, update signatures and latest.json (what installed apps check).
+# Push a tag like v0.1.1 → build the two outside editors' web builds (figcraft, deckcraft) once,
+# then build macOS (Apple Silicon + Intel) and Windows with those builds inside the app, publish a
+# GitHub Release with the installers, update signatures and latest.json (what installed apps check).
 name: release
 
 on:
@@ -10,8 +11,110 @@ on:
 permissions:
   contents: write
 
+env:
+  # Engine sources (public repositories). "main" = whatever is latest when the tag is built.
+  # For a reproducible release, pin to a full commit SHA instead, e.g. FIGCRAFT_REF: 1a2b3c4...
+  FIGCRAFT_REF: main
+  DECKCRAFT_REF: main
+
 jobs:
+  # Builds the web versions of both engines (wasm, OS-independent) once. The three app builds
+  # below download the result, so each platform does not compile the engines again.
+  engines:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: byoungyoon/figcraft
+          ref: ${{ env.FIGCRAFT_REF }}
+          path: engine-src/figcraft
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: storytold/deckcraft
+          ref: ${{ env.DECKCRAFT_REF }}
+          path: engine-src/deckcraft
+          persist-credentials: false
+
+      # The exact commits we built. They key the engine output cache, so a new commit in an engine
+      # repo always rebuilds it.
+      - id: sha
+        run: |
+          echo "figcraft=$(git -C engine-src/figcraft rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "deckcraft=$(git -C engine-src/deckcraft rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      # trunk is cached as one binary. Its version is fixed by the key (bump "v1" to update it).
+      - id: trunk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/trunk
+          key: trunk-${{ runner.os }}-v1
+
+      - uses: cargo-bins/cargo-binstall@main
+        if: steps.trunk-cache.outputs.cache-hit != 'true'
+
+      # Prebuilt binary first (seconds); cargo install from source only if that fails.
+      - name: Install trunk
+        if: steps.trunk-cache.outputs.cache-hit != 'true'
+        run: cargo binstall --no-confirm trunk || cargo install --locked trunk
+
+      # Cargo registry and dependency builds. Keyed by Cargo.lock (the default), so a new engine
+      # commit that keeps the same dependencies reuses them.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: engine-src/figcraft
+          cache-directories: ${{ runner.temp }}/figcraft-target
+          cache-on-failure: true
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: engine-src/deckcraft
+          cache-directories: ${{ runner.temp }}/deckcraft-target
+          cache-on-failure: true
+
+      # Finished engine output. A hit skips the build; the key holds the commit and the script.
+      - id: figcraft-out
+        uses: actions/cache@v4
+        with:
+          path: public/engines/figcraft
+          key: engine-figcraft-${{ steps.sha.outputs.figcraft }}-${{ hashFiles('scripts/build-engine-figcraft.sh') }}
+
+      - name: Build figcraft
+        if: steps.figcraft-out.outputs.cache-hit != 'true'
+        env:
+          FIGCRAFT_DIR: ${{ github.workspace }}/engine-src/figcraft
+          CARGO_TARGET_DIR: ${{ runner.temp }}/figcraft-target
+        run: scripts/build-engine-figcraft.sh
+
+      - id: deckcraft-out
+        uses: actions/cache@v4
+        with:
+          path: public/engines/deckcraft
+          key: engine-deckcraft-${{ steps.sha.outputs.deckcraft }}-${{ hashFiles('scripts/build-engine-deckcraft.sh') }}
+
+      - name: Build deckcraft
+        if: steps.deckcraft-out.outputs.cache-hit != 'true'
+        env:
+          DECKCRAFT_DIR: ${{ github.workspace }}/engine-src/deckcraft
+          CARGO_TARGET_DIR: ${{ runner.temp }}/deckcraft-target
+        run: scripts/build-engine-deckcraft.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engines
+          path: public/engines
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: engines
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +147,12 @@ jobs:
           workspaces: src-tauri -> target
 
       - run: pnpm install --frozen-lockfile
+
+      # Engine web builds go into public/engines; vite copies public/ into dist, so the app ships them.
+      - uses: actions/download-artifact@v4
+        with:
+          name: engines
+          path: public/engines
 
       - uses: tauri-apps/tauri-action@v0
         env:

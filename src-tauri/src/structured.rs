@@ -44,16 +44,25 @@ pub trait Driver: Send + Sync {
     fn cancel(&self) {}
 }
 
+/// The last few KB of a child's stderr, plus a signal for when the drain has seen its end.
+struct StderrTail {
+    text: Arc<Mutex<String>>,
+    /// disconnects (returns at once) when the drain thread has finished reading stderr
+    done: std::sync::mpsc::Receiver<()>,
+}
+
 /// Keeps the last few KB of a child's stderr. Every piped stderr must be drained: a CLI that
 /// logs more than the pipe holds (~64 KB) otherwise blocks on its next write and goes silent
 /// mid-turn — no output, no exit, a turn that never ends.
-fn drain_stderr(err: Option<std::process::ChildStderr>) -> Arc<Mutex<String>> {
-    let tail = Arc::new(Mutex::new(String::new()));
+fn drain_stderr(err: Option<std::process::ChildStderr>) -> StderrTail {
+    let text = Arc::new(Mutex::new(String::new()));
+    let (done_tx, done) = std::sync::mpsc::channel::<()>();
     if let Some(err) = err {
-        let tail = tail.clone();
+        let text = text.clone();
         std::thread::spawn(move || {
+            let _done_tx = done_tx; // dropped when the stream ends
             for line in BufReader::new(err).lines().map_while(Result::ok) {
-                let mut t = tail.lock().unwrap();
+                let mut t = text.lock().unwrap();
                 t.push_str(&line);
                 t.push('\n');
                 if t.len() > 4000 {
@@ -66,16 +75,22 @@ fn drain_stderr(err: Option<std::process::ChildStderr>) -> Arc<Mutex<String>> {
             }
         });
     }
-    tail
+    StderrTail { text, done }
 }
 
-/// The last non-empty stderr line, for "why did it stop".
-fn last_line(tail: &Mutex<String>) -> Option<String> {
-    tail.lock().unwrap().lines().rev().map(str::trim).find(|l| !l.is_empty()).map(String::from)
+/// How long to wait for a child's stderr to finish before giving up on its last words
+/// (a grandchild holding the pipe open must not hold up the turn's end).
+const STDERR_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The last non-empty stderr line, for "why did it stop". Call only once the process has ended:
+/// it first waits (briefly) for stderr to be fully read, so the final message isn't missing.
+fn last_line(tail: &StderrTail) -> Option<String> {
+    let _ = tail.done.recv_timeout(STDERR_SETTLE);
+    tail.text.lock().unwrap().lines().rev().map(str::trim).find(|l| !l.is_empty()).map(String::from)
 }
 
 /// Why a process ended mid-turn, in plain words.
-fn exit_reason(who: &str, code: Option<i32>, tail: &Mutex<String>) -> String {
+fn exit_reason(who: &str, code: Option<i32>, tail: &StderrTail) -> String {
     let mut msg = match code {
         Some(c) => format!("{who} 프로그램이 일하던 중에 끝났어요 (코드 {c})"),
         None => format!("{who} 프로그램이 일하던 중에 끝났어요"),

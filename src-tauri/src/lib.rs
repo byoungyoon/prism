@@ -21,6 +21,33 @@ use tauri::Manager;
 /// Set once the app starts closing, so the shutdown (everyone clocking out) isn't recorded as "last teams".
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// Set once the teams were put away for a restart (`app_prepare_restart`), so the exit that follows
+/// doesn't record the now-empty team list over the one saved for the restart.
+static PREPARED: AtomicBool = AtomicBool::new(false);
+
+/// Note what every team is doing, stop them and save — the start after this brings them back the
+/// same way. `why`: "update" | "quit".
+fn put_teams_away(app: &tauri::AppHandle, why: &str) {
+    QUITTING.store(true, Ordering::SeqCst);
+    let Some(teams) = app.try_state::<Arc<team::TeamManager>>() else { return };
+    if let Some(projects) = app.try_state::<projects::Projects>() {
+        projects.set_closing(teams.live_ids(), why);
+    }
+    teams.suspend_all(why);
+    teams.flush();
+}
+
+/// Called right before the app restarts itself (to install an update): every team and member's
+/// session is saved with a "restarted for an update" mark, and they all come back on the next start.
+#[tauri::command]
+fn app_prepare_restart(app: tauri::AppHandle, reason: Option<String>) {
+    if PREPARED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let why = if reason.as_deref() == Some("quit") { "quit" } else { "update" };
+    put_teams_away(&app, why);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // helper mode: stdio MCP bridge for agents that only speak stdio MCP (Antigravity)
@@ -115,6 +142,8 @@ pub fn run() {
             projects::prefs_get,
             projects::prefs_set,
             projects::prefs_set_auto_resume,
+            projects::prefs_clear_restart,
+            app_prepare_restart,
             projects::project_set_team,
             projects::project_set_preset,
             projects::project_set_knowledge,
@@ -145,6 +174,9 @@ pub fn run() {
             team::task_files,
             team::task_diff,
             team::task_file,
+            team::task_file_bytes,
+            team::task_file_stamp,
+            team::task_file_save,
             team::agent_message,
             team::agent_set_model,
             team::agent_kill,
@@ -156,14 +188,10 @@ pub fn run() {
         .run(|app, event| {
             // don't leave agents running after the window closes
             if let tauri::RunEvent::Exit = event {
-                if let Some(teams) = app.try_state::<Arc<team::TeamManager>>() {
-                    QUITTING.store(true, Ordering::SeqCst);
-                    // who was in when the app closed (an empty list too: the user had clocked everyone out)
-                    if let Some(projects) = app.try_state::<projects::Projects>() {
-                        projects.set_last_teams(teams.live_ids());
-                    }
-                    teams.stop_all();
-                    teams.flush();
+                // who was in when the app closed (an empty list too: the user had clocked everyone out),
+                // and what each member was doing — unless that was already done for a restart
+                if !PREPARED.swap(true, Ordering::SeqCst) {
+                    put_teams_away(app, "quit");
                 }
             }
         });

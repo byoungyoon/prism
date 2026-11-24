@@ -1,18 +1,39 @@
 // Prism's own updates: check GitHub Releases at launch and every 6 hours; when there's a new
-// version, offer it in one click — download (signature-verified), install, restart.
-import { useEffect, useState } from "react";
+// version, offer it in one click — download (signature-verified), install, restart. Teams keep
+// going across the restart: right before it every team and member's session is saved with a
+// "restarted for an update" mark, and on the next start they all come back to the same
+// conversations (the ones mid-work are told to carry on). Or the update waits until every team
+// is idle, and then installs itself.
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { isRemote } from "../lib/transport";
+import { api } from "../lib/api";
+import { isBusy, useApp } from "../store";
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
+/** how long every team must stay idle before a waiting update installs (a gap between turns isn't "done") */
+const IDLE_FOR = 20_000;
+
+/** Save every team for the restart, then restart the app. */
+async function restartKeepingTeams() {
+  await api.prepareRestart("update").catch(() => {});
+  await relaunch();
+}
+
+// dev builds: the restart path can be tried by hand from the console — `await __prismRestart()`
+if (import.meta.env.DEV && !isRemote) (window as unknown as { __prismRestart: () => Promise<void> }).__prismRestart = restartKeepingTeams;
 
 export function UpdateBanner() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [later, setLater] = useState(false);
+  // "일이 끝나면 업데이트": waiting for every team to go idle
+  const [whenIdle, setWhenIdle] = useState(false);
+  const busy = useApp((s) => Object.values(s.teams).filter((t) => isBusy(t)).length);
+  const installing = useRef(false);
 
   useEffect(() => {
     if (import.meta.env.DEV || isRemote) return; // dev builds aren't released; remote viewers update via the Mac
@@ -26,7 +47,9 @@ export function UpdateBanner() {
   }, []);
 
   const install = async () => {
-    if (!update) return;
+    if (!update || installing.current) return;
+    installing.current = true;
+    setWhenIdle(false);
     setFailed(false);
     setProgress(0);
     let total = 0;
@@ -40,12 +63,21 @@ export function UpdateBanner() {
         }
       });
       setProgress(100);
-      await relaunch();
+      await restartKeepingTeams();
     } catch {
       setFailed(true);
       setProgress(null);
     }
+    installing.current = false;
   };
+
+  // waiting for the teams: install once nobody has been working for a while
+  useEffect(() => {
+    if (!whenIdle || busy > 0) return;
+    const t = setTimeout(() => void install(), IDLE_FOR);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [whenIdle, busy]);
 
   const show = update && !later;
   return (
@@ -72,16 +104,34 @@ export function UpdateBanner() {
               </span>
               <span className="font-mono text-[11.5px] text-ink-2">{progress}%</span>
             </div>
-          ) : (
+          ) : whenIdle ? (
             <div className="flex items-center gap-2">
-              {failed && <span className="flex-auto text-[11.5px]" style={{ color: "var(--block-ink)" }}>업데이트에 실패했어요. 다시 해볼까요?</span>}
-              {!failed && <span className="flex-auto text-[11.5px] text-ink-2">설치하면 앱이 잠깐 다시 켜져요.</span>}
-              <button onClick={() => setLater(true)} className="min-h-8 rounded-full px-3 text-[12.5px] text-ink-2">
-                나중에
+              <span className="flex-auto text-[11.5px] text-ink-2">
+                {busy > 0 ? `지금 ${busy}팀이 일하는 중이에요. 일이 끝나면 업데이트할게요.` : "곧 업데이트해요. 팀은 다시 켜진 뒤 이어서 일해요."}
+              </span>
+              <button onClick={() => setWhenIdle(false)} className="min-h-8 rounded-full px-3 text-[12.5px] text-ink-2">
+                취소
               </button>
-              <button onClick={() => void install()} className="min-h-8 rounded-full border-0 px-4 text-[12.5px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
-                업데이트
-              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {failed && <span className="text-[11.5px]" style={{ color: "var(--block-ink)" }}>업데이트에 실패했어요. 다시 해볼까요?</span>}
+              {!failed && (
+                <span className="text-[11.5px] text-ink-2">
+                  {busy > 0 ? `지금 ${busy}팀이 일하는 중이에요. ` : ""}설치하면 앱이 잠깐 다시 켜지고, 팀은 하던 대화 그대로 이어서 일해요.
+                </span>
+              )}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button onClick={() => setLater(true)} className="min-h-8 rounded-full px-3 text-[12.5px] text-ink-2">
+                  나중에
+                </button>
+                <button onClick={() => setWhenIdle(true)} className="min-h-8 rounded-full px-3 text-[12.5px]" style={{ border: "1px solid var(--amber)" }}>
+                  일이 끝나면 업데이트
+                </button>
+                <button onClick={() => void install()} className="min-h-8 rounded-full border-0 px-4 text-[12.5px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
+                  지금 업데이트 (하던 일은 이어서 해요)
+                </button>
+              </div>
             </div>
           )}
         </motion.div>

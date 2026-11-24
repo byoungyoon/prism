@@ -51,6 +51,20 @@ export interface WorktreeInfo {
   isMain: boolean;
 }
 
+/** a call to an outside editor's MCP tool, with its small arguments (ids, slide numbers…);
+ * an object argument comes as `{ keys: [...] }` (which properties it touches) */
+export interface EngineCall {
+  engine: "figcraft" | "deckcraft";
+  tool: string;
+  input: Record<string, unknown>;
+}
+
+export interface Activity {
+  at: number;
+  text: string;
+  engine?: EngineCall;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -72,7 +86,7 @@ export interface Agent {
   /** runs without a terminal: show its conversation (agentTranscript) instead */
   structured: boolean;
   /** recent tool activity, newest last */
-  activity: { at: number; text: string }[];
+  activity: Activity[];
   /** what it's thinking right now (tail of its streamed reasoning), while a turn runs */
   thought?: string | null;
   /** when it last showed any sign of life — tells "slow" from "stuck" */
@@ -244,6 +258,8 @@ export interface Prefs {
   lastTeams: string[];
   /** clock them back in when the app starts */
   autoResume: boolean;
+  /** the app closed with teams at work: "update" (they come back regardless of autoResume) | "quit" */
+  restart?: "update" | "quit" | null;
 }
 
 export interface RemoteStatus {
@@ -272,6 +288,9 @@ export const api = {
   remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
+  clearRestart: () => call<Prefs>("prefs_clear_restart"),
+  /** save every team and member's session (marked "restarted") right before the app restarts itself */
+  prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
 
   // agent CLIs
@@ -342,6 +361,14 @@ export const api = {
   taskFiles: (projectId: string, taskId: string) => call<FileStat[]>("task_files", { projectId, taskId }),
   taskDiff: (projectId: string, taskId: string, path: string) => call<string>("task_diff", { projectId, taskId, path }),
   taskFile: (projectId: string, taskId: string, path: string) => call<string>("task_file", { projectId, taskId, path }),
+  /** raw bytes (base64) + stamp; the work copy's version if it exists, else the branch's */
+  taskFileBytes: (projectId: string, taskId: string, path: string) =>
+    call<{ b64: string; stamp: string }>("task_file_bytes", { projectId, taskId, path }),
+  /** "mtimeNs:size" | "git:<sha>" | "missing" */
+  taskFileStamp: (projectId: string, taskId: string, path: string) => call<string>("task_file_stamp", { projectId, taskId, path }),
+  /** writes into the task's work copy; returns the new stamp */
+  taskFileSave: (projectId: string, taskId: string, path: string, b64: string) =>
+    call<string>("task_file_save", { projectId, taskId, path, b64 }),
   messageAgent: (projectId: string, agentId: string, text: string) =>
     call<void>("agent_message", { projectId, agentId, text }),
   setAgentModel: (projectId: string, agentId: string, model: string) =>

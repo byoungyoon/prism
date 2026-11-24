@@ -48,6 +48,8 @@ interface AppState {
   startFailures: { id: string; name: string; reason: string }[];
   /** a group clock-in is running */
   clockingIn: boolean;
+  /** show the teammate characters (board, live work, 작업장 띠); kept on this device */
+  critters: boolean;
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -78,6 +80,7 @@ interface AppState {
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
   dismissFailures(): void;
+  setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
   stopTeam(projectId?: string): Promise<void>;
   setPreset(preset: PresetName, projectId?: string): Promise<void>;
@@ -105,6 +108,15 @@ const plainReason = (m: string) => {
   if (m.includes("no such project")) return "프로젝트를 찾을 수 없어요";
   if (m.includes("git 준비 실패")) return "폴더를 준비하지 못했어요";
   return m;
+};
+
+const CRITTERS_KEY = "prism.critters";
+const savedCritters = () => {
+  try {
+    return localStorage.getItem(CRITTERS_KEY) !== "off";
+  } catch {
+    return true;
+  }
 };
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -152,6 +164,7 @@ export const useApp = create<AppState>((set, get) => {
     autoResume: true,
     startFailures: [],
     clockingIn: false,
+    critters: savedCritters(),
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -201,7 +214,9 @@ export const useApp = create<AppState>((set, get) => {
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
           set({ lastTeams: known, autoResume: prefs.autoResume });
-          if (prefs.autoResume && !autoResumed) {
+          // restarted for an update: everyone comes back, whatever the setting says
+          const updated = prefs.restart === "update";
+          if ((prefs.autoResume || updated) && !autoResumed) {
             autoResumed = true;
             const todo = known.filter((id) => !isLive(get().teams[id]));
             if (todo.length) {
@@ -210,6 +225,7 @@ export const useApp = create<AppState>((set, get) => {
               if (failed.length) set({ error: failed.map((f) => `${f.name}: ${f.reason}`).join(" / ") });
             }
           }
+          if (prefs.restart) void api.clearRestart().catch(() => {});
         }
       }
       // opened on a phone (remote): go straight to the 관제탑 when teams are at work
@@ -312,6 +328,14 @@ export const useApp = create<AppState>((set, get) => {
       }
     },
     dismissFailures: () => set({ startFailures: [] }),
+    setCritters: (on) => {
+      set({ critters: on });
+      try {
+        localStorage.setItem(CRITTERS_KEY, on ? "on" : "off");
+      } catch {
+        // private mode: the choice lasts for this session only
+      }
+    },
 
     stopTeam: guard(async (id?: string) => {
       const target = id ?? pid();
@@ -344,6 +368,8 @@ export const useApp = create<AppState>((set, get) => {
 });
 
 export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status !== "off");
+/** someone on the team is in the middle of a turn */
+export const isBusy = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status === "work");
 
 
 /** Waiting for the user: an open question, or a permission request no boss is deciding. */

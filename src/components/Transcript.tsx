@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type TranscriptEntry } from "../lib/api";
 import { ReportFold, isReport } from "./ReportFold";
+import { Markdown } from "./Markdown";
 
 /** Loads an agent's conversation and keeps it live. */
 export function useTranscript(projectId: string | null, agentId: string) {
@@ -52,8 +53,8 @@ function Row({ e }: { e: TranscriptEntry }) {
       </div>
     );
   return (
-    <div className="glass-soft max-w-[92%] self-start rounded-[14px_14px_14px_4px] px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap select-text">
-      {e.text}
+    <div className="glass-soft max-w-[92%] self-start rounded-[14px_14px_14px_4px] px-3.5 py-2.5 text-[13px] leading-relaxed select-text">
+      <Markdown text={e.text} />
     </div>
   );
 }
