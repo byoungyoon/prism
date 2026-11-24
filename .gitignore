@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 엔진 웹판 빌드 산출물 (scripts/build-engine-figcraft.sh, 용량이 커서 커밋하지 않음)
+/public/engines/figcraft/
