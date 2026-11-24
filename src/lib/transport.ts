@@ -36,6 +36,26 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
   return body as T;
 }
 
+/** Remote only: send a file as raw bytes (not a JSON number array) and get back the saved path. */
+export async function uploadFile(projectId: string, name: string, blob: Blob): Promise<string> {
+  const MAX = 50 * 1024 * 1024;
+  if (blob.size > MAX) throw new Error(`"${name}" 파일이 너무 커요 (최대 50MB)`);
+  let res: Response;
+  try {
+    res = await fetch(`/api/upload?projectId=${encodeURIComponent(projectId)}&name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "x-prism-key": remoteKey },
+      body: blob,
+    });
+  } catch {
+    throw new Error(`"${name}" 파일을 보내지 못했어요. 연결을 확인해 주세요`);
+  }
+  const body = await res.json().catch(() => null);
+  if (res.status === 413) throw new Error(`"${name}" 파일이 너무 커요 (최대 50MB)`);
+  if (!res.ok) throw new Error(`"${name}" 파일을 보내지 못했어요${typeof body === "string" ? `: ${body}` : ` (${res.status})`}`);
+  return body as string;
+}
+
 // ── events ────────────────────────────────────────────
 
 type Handler = (payload: unknown) => void;

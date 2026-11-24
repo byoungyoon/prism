@@ -1,7 +1,7 @@
 // Typed wrapper over the Rust backend (src-tauri). Field names mirror the serde camelCase structs.
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { call, on } from "./transport";
+import { call, on, isRemote, uploadFile } from "./transport";
 
 export type Role = "lead" | "mgr" | "worker";
 export type AgentStatus = "work" | "wait" | "block" | "done" | "off";
@@ -295,7 +295,11 @@ export const api = {
   onUsage: (fn: (u: Usage[]) => void): Promise<UnlistenFn> => on<Usage[]>("usage://update", fn),
   models: (provider: Provider, home?: string | null) => call<ModelInfo[]>("models_list", { provider, home: home ?? null }),
   attachFiles: (projectId: string, paths: string[]) => call<string[]>("attach_files", { projectId, paths }),
-  attachBytes: (projectId: string, name: string, data: number[]) => call<string>("attach_bytes", { projectId, name, data }),
+  /** Attach a file/Blob: remote uploads raw bytes; desktop passes bytes to the app. */
+  attachBlob: async (projectId: string, name: string, blob: Blob) =>
+    isRemote
+      ? uploadFile(projectId, name, blob)
+      : call<string>("attach_bytes", { projectId, name, data: Array.from(new Uint8Array(await blob.arrayBuffer())) }),
 
   // projects
   projects: () => call<Project[]>("projects_list"),

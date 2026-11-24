@@ -463,8 +463,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
     if (!projectId) return;
     for (const f of [...list]) {
       try {
-        const bytes = Array.from(new Uint8Array(await f.arrayBuffer()));
-        const path = await api.attachBytes(projectId, f.name || "첨부파일", bytes);
+        const path = await api.attachBlob(projectId, f.name || `파일-${Date.now()}`, f);
         setFiles((x) => [...x, path]);
       } catch (err) {
         setError(err);
@@ -485,9 +484,8 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
     e.preventDefault();
     for (const f of items) {
       try {
-        const bytes = Array.from(new Uint8Array(await f.arrayBuffer()));
         const ext = f.type.split("/")[1] || "bin";
-        const path = await api.attachBytes(projectId, f.name && f.name !== "image.png" ? f.name : `붙여넣기.${ext}`, bytes);
+        const path = await api.attachBlob(projectId, f.name && f.name !== "image.png" ? f.name : `붙여넣기.${ext}`, f);
         setFiles((x) => [...x, path]);
       } catch (err) {
         setError(err);
