@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isRemote, onConnection } from "./lib/transport";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, useShownTeams, waitsForMe, type View } from "./store";
 import { TopBar } from "./components/TopBar";
@@ -168,6 +169,22 @@ function ErrorToast() {
   );
 }
 
+/** Phone only: a small pill while the live connection is down and being re-established. */
+function ReconnectBadge() {
+  const [up, setUp] = useState(true);
+  useEffect(() => (isRemote ? onConnection(setUp) : undefined), []);
+  if (up) return null;
+  return (
+    <div
+      role="status"
+      className="pointer-events-none absolute left-1/2 top-2 z-50 -translate-x-1/2 rounded-full px-3 py-1 text-xs"
+      style={{ background: "var(--text)", color: "var(--bg1)", opacity: 0.9 }}
+    >
+      다시 연결 중…
+    </div>
+  );
+}
+
 export default function App() {
   const { dark, view, init, go } = useApp(useShallow((s) => ({ dark: s.dark, view: s.view, init: s.init, go: s.go })));
   // only whether there is a team: subscribing to the snapshot would re-render the whole app on every update
@@ -212,6 +229,7 @@ export default function App() {
       <AccountSheet />
       <Onboarding />
       <UpdateBanner />
+      <ReconnectBadge />
       <ErrorToast />
     </div>
   );

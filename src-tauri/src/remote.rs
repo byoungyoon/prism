@@ -248,12 +248,20 @@ async fn events(State(ctx): State<Ctx>, headers: HeaderMap, q: Q, ws: WebSocketU
 }
 
 async fn pump_events(mut socket: WebSocket, mut rx: tokio::sync::broadcast::Receiver<String>) {
+    // a ping every 20s keeps the client's "last heard" clock fresh and lets it spot a dead link
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(20));
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
                 Ok(text) => if socket.send(Message::Text(text.into())).await.is_err() { break },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // we dropped some updates: tell the client to reload everything
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    if socket.send(Message::Text(r#"{"event":"resync","payload":null}"#.into())).await.is_err() { break }
+                }
                 Err(_) => break,
+            },
+            _ = ping.tick() => {
+                if socket.send(Message::Text(r#"{"event":"ping","payload":null}"#.into())).await.is_err() { break }
             },
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,

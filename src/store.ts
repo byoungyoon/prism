@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import { isRemote } from "./lib/transport";
+import { isRemote, onResync } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
@@ -142,19 +142,25 @@ export const useApp = create<AppState>((set, get) => {
       });
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
-      await get().loadProjects();
-      void get().loadAccounts();
-      void api
-        .batchList()
-        .then((list) => {
-          batchesListed = true;
-          set((s) => ({ batches: [...list, ...s.batches.filter((b) => !list.some((x) => x.id === b.id))] }));
-        })
-        .catch(() => {});
-      // every team's current state up front, so teams at work show without waiting for their next update
+      const reload = async () => {
+        await get().loadProjects();
+        void get().loadAccounts();
+        void api
+          .batchList()
+          .then((list) => {
+            batchesListed = true;
+            set((s) => ({ batches: [...list, ...s.batches.filter((b) => !list.some((x) => x.id === b.id))] }));
+          })
+          .catch(() => {});
+        // every team's current state up front, so teams at work show without waiting for their next update
+        const projects = get().projects;
+        const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
+        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+      };
+      await reload();
+      // remote: after a reconnect (or dropped updates) fetch everything again
+      if (isRemote) onResync(() => void reload());
       const projects = get().projects;
-      const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
-      set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
       // opened on a phone (remote): go straight to the 관제탑 when teams are at work
       if (isRemote && get().view.name === "home") {
         const { teams } = get();
