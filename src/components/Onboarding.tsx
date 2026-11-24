@@ -156,7 +156,7 @@ export function Onboarding() {
             initial={{ opacity: 0, y: 16, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={spring}
-            className="glass relative flex w-[min(600px,calc(100%-32px))] flex-col gap-6 rounded-[26px] p-8"
+            className="glass relative flex w-[min(600px,calc(100%-32px))] flex-col gap-6 rounded-[26px] p-8 max-[820px]:w-[calc(100%-24px)] max-[820px]:gap-4 max-[820px]:p-5"
           >
             {/* progress */}
             <ol className="m-0 flex list-none items-center gap-2 p-0">

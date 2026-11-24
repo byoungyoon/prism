@@ -80,7 +80,7 @@ export function AgentScreen({ id }: { id: string }) {
 
   return (
     <div className="flex min-h-0 flex-auto flex-col" style={{ color: "var(--text)" }}>
-      <header className="flex flex-wrap items-center gap-3 px-3 pb-1" style={{ minHeight: 46 }}>
+      <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 pb-1 max-[820px]:gap-x-2" style={{ minHeight: 46 }}>
         <button onClick={() => go({ name: "main" })} aria-label="뒤로" title="관제탑으로 돌아가기" className="flex size-[34px] items-center justify-center rounded-[10px] border-0 bg-transparent text-ink-2 hover:bg-[var(--chip)]">
           <ChevronLeft size={18} />
         </button>
@@ -147,7 +147,7 @@ export function AgentScreen({ id }: { id: string }) {
           >
             <span className="truncate font-mono">claude · {agent.model} · {agent.cwd}</span>
             <span className="flex-auto" />
-            <span>{live ? "실시간 화면" : "작업 종료"}</span>
+            <span className="shrink-0 whitespace-nowrap">{live ? "실시간 화면" : "작업 종료"}</span>
           </div>
           <div className={`min-h-0 flex-auto ${agent.structured ? "flex flex-col" : "p-3"}`}>
             {agent.structured ? (

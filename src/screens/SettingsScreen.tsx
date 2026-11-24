@@ -364,7 +364,7 @@ export function SettingsScreen() {
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 80, opacity: 0 }}
             transition={spring}
-            className="glass fixed bottom-5 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full py-2 pr-2 pl-5"
+            className="glass fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100%-24px)] -translate-x-1/2 max-[820px]:bottom-[max(0.75rem,env(safe-area-inset-bottom))] items-center gap-3 rounded-full py-2 pr-2 pl-5"
           >
             <span className="size-2 rounded-full" style={{ background: "var(--amber)" }} />
             <span className="text-[13px] whitespace-nowrap">저장하지 않은 변경이 있어요</span>

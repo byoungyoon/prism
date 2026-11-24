@@ -428,7 +428,7 @@ export function UnifiedChat() {
             onKeyDown={onKey}
             onPaste={onPaste}
             onBlur={() => setTimeout(() => setMenu(null), 100)}
-            placeholder="@팀이름 으로 받을 팀을 지정하고 지시하기"
+            placeholder="@팀이름 으로 지시하기"
             className="min-h-[34px] min-w-0 flex-auto border-0 bg-transparent text-[13.5px] outline-none"
           />
           <button

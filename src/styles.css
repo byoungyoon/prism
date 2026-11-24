@@ -203,7 +203,8 @@ textarea {
   pre {
     overflow-x: auto;
   }
-  button:where(:not(.xterm *)) {
+  /* text-link style buttons (p-0) stay inline-sized so they do not open gaps in cards */
+  button:where(:not(.xterm *, [class*="p-0"])) {
     min-height: 40px;
   }
   /* small icon buttons: a 40px target without moving the layout much */
