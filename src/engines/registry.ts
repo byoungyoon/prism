@@ -5,6 +5,9 @@ import type { EngineDef } from "./types";
 
 export const ENGINES: EngineDef[] = [figcraft, deckcraft];
 
+/** every extension an engine opens: the teammate's folder is asked for these */
+export const ENGINE_EXTS = ENGINES.flatMap((e) => e.exts);
+
 export function engineById(id: string): EngineDef | undefined {
   return ENGINES.find((e) => e.id === id);
 }
