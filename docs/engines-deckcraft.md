@@ -118,3 +118,7 @@ MCP 서버 실행 (stdio, 줄 단위 JSON-RPC). 읽기·쓰기 폴더를 지정�
 시험 실행: `node scripts/deckcraft-mcp-smoke.mjs CLI IN.pptx OUT_DIR`. 종료 코드 0이면 통과.
 
 `open_presentation`과 `save_presentation`은 내부에서 `file.open`, `file.save` 명령으로 연결된다(`crates/mcp/src/tools.rs`). 웹판 경로는 별도로 시험했다. 3-1에서 `file.openBytes`로 열고, 도형을 넣고, `file.saveBytes`로 받은 파일을 CLI로 읽어 `Hello T23` 문자열이 들어간 것을 확인했다.
+
+## 7. 팀원이 deckcraft를 쓰는 설정
+
+Prism은 `deckcraft-cli`를 `PRISM_DECKCRAFT_CLI`(있을 때) 또는 `~/.prism/engines/deckcraft/deckcraft-cli`에서 찾고, 파일이 실제로 있을 때만 에이전트에 `deckcraft` MCP 서버를 연결한다. Claude는 `--mcp-config`, Codex는 `-c mcp_servers.deckcraft.*` 설정으로 같은 명령(`deckcraft-cli mcp --automation-read-root <작업폴더> --automation-write-root <작업폴더>`)을 받는다. 읽기·쓰기 폴더는 에이전트의 작업 폴더 하나로 제한된다. 이 서버는 쓰기 도구라 자동 허용 목록(`SAFE_TOOLS`)에는 넣지 않았으므로, 도구를 쓸 때마다 Prism의 허가 흐름을 거친다. CLI가 없으면 연결이 생기지 않고 기존 동작과 같다. 설치는 `scripts/install-deckcraft-cli.sh`로 한다.
