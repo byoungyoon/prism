@@ -1318,6 +1318,12 @@ impl TeamManager {
         if let (Some(home), Some(work), "lead") = (team.home.as_deref(), team.branch.as_deref(), a.role.as_str()) {
             system += &prompts::workspace(home, work);
         }
+        // 총괄 and 팀장 may read every worker's folder (never write it): the workers' files live there
+        let workers_dir = worktrees_dir(&team.project.path);
+        let reads_workers = matches!(a.role.as_str(), "lead" | "mgr");
+        if reads_workers {
+            system += &prompts::team_files(&workers_dir.to_string_lossy(), &team.run);
+        }
         let pid = team.project.id.clone();
         // a Claude session that never got a message has nothing saved to resume: start it fresh
         let home = team.homes.get(&a.kind).cloned().flatten();
@@ -1344,6 +1350,7 @@ impl TeamManager {
             session_id: &session_id,
             resume: resume.clone(),
             cwd: &a.cwd,
+            extra_read_roots: if reads_workers { vec![workers_dir.to_string_lossy().into_owned()] } else { vec![] },
             attach_dir: Some(attachments_dir(&team.project.path).to_string_lossy().into_owned()),
             home,
         })?;
@@ -2681,10 +2688,15 @@ impl TeamManager {
         let worktree = agent
             .map(|a| PathBuf::from(&a.cwd))
             .filter(|p| p.to_string_lossy().contains("/.prism/worktrees/"))
-            .or_else(|| Some(PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{}", team.run, t.id.to_lowercase()))))
+            .or_else(|| Some(worktrees_dir(&team.project.path).join(format!("{}-{}", team.run, t.id.to_lowercase()))))
             .filter(|p| p.is_dir());
         Ok(TaskSpot { repo: team.project.path.clone(), worktree, branch })
     }
+}
+
+/// The folder holding every team member's work copy: `<project>/.prism/worktrees`.
+fn worktrees_dir(project: &str) -> PathBuf {
+    PathBuf::from(project).join(".prism").join("worktrees")
 }
 
 /// Where a task's files can be read or written.
@@ -2762,6 +2774,69 @@ pub fn task_file_save(teams: Teams<'_>, project_id: String, task_id: String, pat
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64.trim())
         .map_err(|_| "저장할 파일 내용을 읽을 수 없어요".to_string())?;
     write_atomic(&wt, &rel, &bytes)
+}
+
+/// A file found in a task's work copy that an engine can open.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineFile {
+    /// relative to the work copy, "/"-separated
+    pub path: String,
+    pub size: u64,
+}
+
+/// The most files `task_engine_files` lists.
+const ENGINE_FILES_MAX: usize = 200;
+/// How many folders deep `task_engine_files` looks under the work copy.
+const ENGINE_FILES_DEPTH: usize = 8;
+/// Folders never searched: version control, dependencies, build output, Prism's own state.
+const ENGINE_FILES_SKIP: &[&str] = &[".git", "node_modules", "target", ".prism", "dist"];
+
+/// The files of a task's work copy (uncommitted ones included) whose name ends with one of `exts`
+/// (".figcraft", ".pptx", …; case ignored). Empty when the task has no work copy.
+#[tauri::command]
+pub fn task_engine_files(teams: Teams<'_>, project_id: String, task_id: String, exts: Vec<String>) -> Result<Vec<EngineFile>, String> {
+    let spot = teams.task_spot(&project_id, &task_id)?;
+    Ok(engine_files_of(spot.worktree.as_deref(), &exts))
+}
+
+fn engine_files_of(wt: Option<&std::path::Path>, exts: &[String]) -> Vec<EngineFile> {
+    let Some(root) = wt else { return vec![] };
+    // "figcraft" / ".Figcraft" → ".figcraft"
+    let exts: Vec<String> = exts
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_lowercase())
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .collect();
+    let mut out = vec![];
+    engine_files_in(root, root, 0, &exts, &mut out);
+    out
+}
+
+/// Collects matching files under `dir` (depth = folders below `root`). Symlinks are never followed,
+/// so nothing outside the work copy is listed.
+fn engine_files_in(root: &std::path::Path, dir: &std::path::Path, depth: usize, exts: &[String], out: &mut Vec<EngineFile>) {
+    let Ok(read) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<std::fs::DirEntry> = read.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        if out.len() >= ENGINE_FILES_MAX {
+            return;
+        }
+        let Ok(kind) = e.file_type() else { continue };
+        let name = e.file_name().to_string_lossy().into_owned();
+        if kind.is_symlink() {
+            continue;
+        } else if kind.is_dir() {
+            if depth < ENGINE_FILES_DEPTH && !ENGINE_FILES_SKIP.contains(&name.as_str()) {
+                engine_files_in(root, &e.path(), depth + 1, exts, out);
+            }
+        } else if kind.is_file() && exts.iter().any(|x| name.to_lowercase().ends_with(x)) {
+            let Ok(rel) = e.path().strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/")) else { continue };
+            out.push(EngineFile { path: rel, size: e.metadata().map(|m| m.len()).unwrap_or(0) });
+        }
+    }
 }
 
 /// A path written relative to the work copy: no `..`, no absolute parts, no `.git`.
@@ -3129,5 +3204,90 @@ mod restart_tests {
     fn the_nudge_says_why() {
         assert!(restart_nudge(Some("update")).contains("업데이트로 다시 시작됐어요. 하던 작업을 이어서 하세요"));
         assert!(restart_nudge(Some("quit")).contains("다시 켜졌어요"));
+    }
+}
+
+#[cfg(test)]
+mod engine_file_tests {
+    use super::*;
+
+    /// a fresh folder under the temp dir, unique per test
+    fn tmp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("prism-t35-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn touch(p: &std::path::Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    }
+
+    fn list(root: &std::path::Path, exts: &[&str]) -> Vec<String> {
+        let exts: Vec<String> = exts.iter().map(|s| s.to_string()).collect();
+        engine_files_of(Some(root), &exts).into_iter().map(|f| f.path).collect()
+    }
+
+    #[test]
+    fn extensions_match_case_insensitively_with_or_without_the_dot() {
+        let wt = tmp_dir("ext");
+        touch(&wt.join("pic.figcraft"));
+        touch(&wt.join("DECK.PPTX"));
+        touch(&wt.join("notes.txt"));
+        touch(&wt.join("art/logo.FigCraft"));
+        assert_eq!(list(&wt, &["figcraft", ".pptx"]), ["DECK.PPTX", "art/logo.FigCraft", "pic.figcraft"]);
+        assert!(list(&wt, &[]).is_empty());
+    }
+
+    #[test]
+    fn reports_size_and_skips_vcs_dependency_build_and_prism_folders() {
+        let wt = tmp_dir("skip");
+        std::fs::create_dir_all(wt.join("node_modules/x")).unwrap();
+        std::fs::write(wt.join("a.pptx"), [1u8, 2, 3]).unwrap();
+        touch(&wt.join(".git/config.figcraft"));
+        touch(&wt.join("node_modules/x/a.pptx"));
+        touch(&wt.join("target/b.figcraft"));
+        touch(&wt.join(".prism/c.figcraft"));
+        touch(&wt.join("dist/d.pptx"));
+        touch(&wt.join("src/ok.pptx"));
+        let found = engine_files_of(Some(&wt), &[".pptx".to_string()]);
+        let got: Vec<(String, u64)> = found.into_iter().map(|f| (f.path, f.size)).collect();
+        assert_eq!(got, [("a.pptx".to_string(), 3), ("src/ok.pptx".to_string(), 1)]);
+    }
+
+    #[test]
+    fn looks_at_most_eight_folders_deep() {
+        let wt = tmp_dir("depth");
+        touch(&wt.join("a/b/c/d/e/f/g/h/in.figcraft"));
+        touch(&wt.join("a/b/c/d/e/f/g/h/i/out.figcraft"));
+        assert_eq!(list(&wt, &[".figcraft"]), ["a/b/c/d/e/f/g/h/in.figcraft"]);
+    }
+
+    #[test]
+    fn lists_at_most_200_files() {
+        let wt = tmp_dir("cap");
+        for i in 0..205 {
+            touch(&wt.join("many").join(format!("f{i:03}.figcraft")));
+        }
+        assert_eq!(list(&wt, &[".figcraft"]).len(), 200);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_never_followed_so_nothing_outside_the_copy_is_listed() {
+        let outside = tmp_dir("outside");
+        touch(&outside.join("secret.figcraft"));
+        touch(&outside.join("dir/more.figcraft"));
+        let wt = tmp_dir("links");
+        touch(&wt.join("own.figcraft"));
+        std::os::unix::fs::symlink(outside.join("secret.figcraft"), wt.join("link.figcraft")).unwrap();
+        std::os::unix::fs::symlink(&outside, wt.join("linkdir")).unwrap();
+        assert_eq!(list(&wt, &[".figcraft"]), ["own.figcraft"]);
+    }
+
+    #[test]
+    fn a_task_without_a_work_copy_lists_nothing() {
+        assert!(engine_files_of(None, &[".figcraft".to_string()]).is_empty());
     }
 }

@@ -177,6 +177,7 @@ pub fn run() {
             team::task_file_bytes,
             team::task_file_stamp,
             team::task_file_save,
+            team::task_engine_files,
             team::agent_message,
             team::agent_set_model,
             team::agent_kill,
