@@ -10,6 +10,8 @@ import { ReportFeed } from "./components/ReportFeed";
 import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { EngineStage } from "./engines/EngineStage";
+import { useEngineEdit } from "./engines/editing";
 import { HomeScreen } from "./screens/HomeScreen";
 import { AgentScreen } from "./screens/AgentScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
@@ -189,6 +191,9 @@ export default function App() {
   const { dark, view, init, go } = useApp(useShallow((s) => ({ dark: s.dark, view: s.view, init: s.init, go: s.go })));
   // only whether there is a team: subscribing to the snapshot would re-render the whole app on every update
   const hasTeam = useApp((s) => !!(s.projectId && s.teams[s.projectId]));
+  // an outside editor (figcraft…) open on a team's file: it takes the main area while the main view shows
+  const editTarget = useEngineEdit((s) => s.target);
+  const editing = !!editTarget && view.name === "main";
 
   useVisibleHeight();
 
@@ -221,10 +226,13 @@ export default function App() {
       <TopBar />
 
       <AnimatePresence mode="wait">
-        <motion.div key={viewKey(view)} {...page} className="relative flex min-h-0 flex-auto flex-col">
+        {/* hidden, not unmounted, while editing: chat drafts and open panels keep their state */}
+        <motion.div key={viewKey(view)} {...page} hidden={editing} className="relative flex min-h-0 flex-auto flex-col">
           <Screen view={view} />
         </motion.div>
       </AnimatePresence>
+      {/* kept mounted while a file is open, so the editor's unsaved edits survive a trip to another screen */}
+      {editTarget && <EngineStage target={editTarget} hidden={!editing} />}
 
       <AccountSheet />
       <Onboarding />
