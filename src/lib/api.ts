@@ -244,6 +244,8 @@ export interface Prefs {
   lastTeams: string[];
   /** clock them back in when the app starts */
   autoResume: boolean;
+  /** the app closed with teams at work: "update" (they come back regardless of autoResume) | "quit" */
+  restart?: "update" | "quit" | null;
 }
 
 export interface RemoteStatus {
@@ -272,6 +274,9 @@ export const api = {
   remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
+  clearRestart: () => call<Prefs>("prefs_clear_restart"),
+  /** save every team and member's session (marked "restarted") right before the app restarts itself */
+  prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
 
   // agent CLIs

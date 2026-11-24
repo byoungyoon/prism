@@ -55,6 +55,10 @@ pub struct Agent {
     /// the UI offers "멈추고 다시" while this is set
     #[serde(default)]
     pub stuck: Option<String>,
+    /// what it was doing when the app closed or restarted ("work" | "wait" | "block"); set while it's
+    /// off because of that, so the next clock-in brings it back the way it was (see `restore_plan`)
+    #[serde(default)]
+    pub resume_as: Option<String>,
     #[serde(skip)]
     ready: bool,
     #[serde(skip)]
@@ -430,6 +434,9 @@ pub struct LogEvent {
 
 struct Team {
     project: Project,
+    /// why the team is off because the app went away: "update" (restarted to update) | "quit";
+    /// None = clocked out by the user, or at work
+    restarted: Option<String>,
     /// account home dir per agent kind ("claude" → CLAUDE_CONFIG_DIR, "codex" → CODEX_HOME …); None = inherited
     homes: HashMap<String, Option<String>>,
     run: String,
@@ -485,6 +492,8 @@ struct SavedTeam {
     next_lone: u32,
     always_allow: Vec<String>,
     transcripts: HashMap<String, Vec<crate::structured::Entry>>,
+    #[serde(default)]
+    restarted: Option<String>,
 }
 
 pub struct TeamManager {
@@ -514,6 +523,67 @@ pub struct TeamManager {
     /// was stopped and replaced) are dropped, so its late exit can't knock out the new one
     launches: Mutex<HashMap<String, u64>>,
     watchdog: std::sync::Once,
+}
+
+/// What's said to a member that was mid-work when the app went away.
+fn restart_nudge(why: Option<&str>) -> &'static str {
+    match why {
+        Some("update") => "[Prism 알림] 앱이 업데이트로 다시 시작됐어요. 하던 작업을 이어서 하세요.",
+        _ => "[Prism 알림] 앱이 다시 켜졌어요. 하던 작업을 이어서 하세요.",
+    }
+}
+
+/// After a member reattaches to its session: tell it to carry on, put it back to waiting on its
+/// question, or just leave it waiting.
+#[derive(Debug, PartialEq)]
+enum Then {
+    Nudge,
+    Block,
+    Quiet,
+}
+
+#[derive(Debug)]
+struct Restore {
+    id: String,
+    session: String,
+    then: Then,
+}
+
+/// Who comes back when a stopped team clocks in. Everyone who was in when the app closed or
+/// restarted (`resume_as`) — 총괄, 팀장, 작업자 alike; otherwise (the user clocked the team out) the
+/// 총괄 and whoever has a card still running. The 총괄 first, so it's there when reports arrive.
+fn restore_plan(agents: &[Agent], tasks: &[Task]) -> Vec<Restore> {
+    let running = |a: &Agent| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "running");
+    let mut out: Vec<Restore> = agents
+        .iter()
+        .filter(|a| a.status == "off")
+        .filter(|a| a.resume_as.is_some() || a.role == "lead" || running(a))
+        .map(|a| Restore {
+            id: a.id.clone(),
+            session: a.session_id.clone(),
+            then: match a.resume_as.as_deref() {
+                Some("work") => Then::Nudge,
+                Some("block") => Then::Block,
+                _ => Then::Quiet,
+            },
+        })
+        .collect();
+    out.sort_by_key(|r| agents.iter().find(|a| a.id == r.id).map_or(1, |a| (a.role != "lead") as u8));
+    out
+}
+
+/// Note what each member in the team was doing as the app goes away (`why`). False when nobody
+/// was in (nothing to bring back; the team is left as it is).
+fn mark_suspended(agents: &mut [Agent], restarted: &mut Option<String>, why: &str) -> bool {
+    let mut any = false;
+    for a in agents.iter_mut().filter(|a| a.status != "off" && a.status != "done") {
+        a.resume_as = Some(a.status.clone());
+        any = true;
+    }
+    if any {
+        *restarted = Some(why.into());
+    }
+    any
 }
 
 /// A failed turn's reason as the person reads it.
@@ -728,6 +798,7 @@ impl TeamManager {
                     next_lone: t.next_lone,
                     always_allow: t.always_allow.iter().cloned().collect(),
                     transcripts,
+                    restarted: t.restarted.clone(),
                 }
             };
             let path = self.saved_path(&pid);
@@ -776,6 +847,7 @@ impl TeamManager {
                 pid.clone(),
                 Team {
                     project,
+                    restarted: saved.restarted,
                     homes: HashMap::new(),
                     run: saved.run,
                     cwd: saved.cwd,
@@ -795,23 +867,39 @@ impl TeamManager {
         }
     }
 
-    /// A stopped team clocks back in: the lead and anyone mid-task continue their sessions.
+    /// A stopped team clocks back in. Members continue their own sessions (see `restore_plan`); the
+    /// ones that were mid-work when the app went away are told to carry on, the rest just reattach.
     fn resume_team(&self, team: &mut Team) {
-        let ids: Vec<(String, String)> = team
-            .agents
-            .iter()
-            .filter(|a| a.status == "off")
-            .filter(|a| a.role == "lead" || a.task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "running"))
-            .map(|a| (a.id.clone(), a.session_id.clone()))
-            .collect();
-        for (aid, sid) in ids {
-            let resume = (!sid.is_empty()).then_some(sid);
-            if self.launch_agent(team, &aid, resume).is_err() {
+        let why = team.restarted.take();
+        for step in restore_plan(&team.agents, &team.tasks) {
+            let resume = (!step.session.is_empty()).then(|| step.session.clone());
+            if self.launch_agent(team, &step.id, resume).is_err() {
                 // the old session can't be found: start this member fresh
-                let _ = self.launch_agent(team, &aid, None);
+                let _ = self.launch_agent(team, &step.id, None);
+            }
+            let continued = !step.session.is_empty() && team.agent(&step.id).is_some_and(|a| a.session_id == step.session);
+            if !continued {
+                continue; // a fresh session got its task card already
+            }
+            match step.then {
+                Then::Nudge => {
+                    self.inject(team, &step.id, restart_nudge(why.as_deref()).into());
+                }
+                Then::Block => team.set_status(&step.id, "block"),
+                Then::Quiet => {}
             }
         }
-        team.log("팀이 다시 출근했다. 하던 일을 이어서 한다.", None);
+        for a in &mut team.agents {
+            a.resume_as = None;
+        }
+        team.log(
+            match why.as_deref() {
+                Some("update") => "앱이 업데이트로 다시 시작됐다. 팀이 하던 일을 이어서 한다.",
+                Some(_) => "앱이 다시 켜졌다. 팀이 하던 일을 이어서 한다.",
+                None => "팀이 다시 출근했다. 하던 일을 이어서 한다.",
+            },
+            None,
+        );
     }
 
     pub fn pause_agent(&self, pid: &str, aid: &str) -> Result<(), String> {
@@ -894,6 +982,7 @@ impl TeamManager {
             sys::exclude_prism_dir(&project.path);
         }
         let mut team = Team {
+            restarted: None,
             branch: if project.is_git { sys::current_branch(&cwd) } else { None },
             project,
             homes: HashMap::new(),
@@ -1080,11 +1169,37 @@ impl TeamManager {
         ids
     }
 
-    pub fn stop_all(&self) {
-        let ids: Vec<String> = self.teams.lock().unwrap().keys().cloned().collect();
-        for id in ids {
-            self.stop(&id);
+    /// The app is going away (`why`: "update" | "quit"): note what everyone was doing, so the next
+    /// start brings them back that way, then stop them and save. Teams nobody was in are left as
+    /// they are; calling it again (restart, then the exit that follows) changes nothing.
+    pub fn suspend_all(&self, why: &str) {
+        let ids: Vec<String> = {
+            let mut teams = self.teams.lock().unwrap();
+            let mut ids = vec![];
+            for (pid, team) in teams.iter_mut() {
+                if !mark_suspended(&mut team.agents, &mut team.restarted, why) {
+                    continue;
+                }
+                for a in &mut team.agents {
+                    if let Some(id) = a.pty_id.take() {
+                        self.pty.kill(id);
+                    }
+                    if a.status != "done" {
+                        a.status = "off".into();
+                    }
+                }
+                team.log(if why == "update" { "업데이트를 위해 앱이 다시 시작된다. 하던 일은 다시 켜지면 이어서 한다." } else { "앱이 꺼졌다. 다시 켜지면 하던 일을 이어서 한다." }, None);
+                self.emit(team);
+                ids.push((pid.clone(), team.agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>()));
+            }
+            ids.into_iter().flat_map(|(p, a)| a.into_iter().map(move |a| format!("{p}/{a}"))).collect()
+        };
+        for key in ids {
+            if let Some((pid, aid)) = key.split_once('/') {
+                self.kill_driver(pid, aid);
+            }
         }
+        self.flush();
     }
 
     /// Create a team member (name, worktree, record) and start it.
@@ -1163,6 +1278,7 @@ impl TeamManager {
             thought: None,
             last_active: now,
             stuck: None,
+            resume_as: None,
             ready: true,
             pending: vec![],
             children: 0,
@@ -2802,4 +2918,137 @@ pub fn agent_set_model(teams: Teams<'_>, project_id: String, agent_id: String, m
 #[tauri::command]
 pub fn agent_kill(teams: Teams<'_>, project_id: String, agent_id: String) {
     teams.kill_agent(&project_id, &agent_id)
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    fn agent(id: &str, role: &str, status: &str, task: Option<&str>, session: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            name: id.into(),
+            role: role.into(),
+            kind: "claude".into(),
+            model: String::new(),
+            effort: String::new(),
+            status: status.into(),
+            task_id: task.map(String::from),
+            parent_id: None,
+            pty_id: None,
+            cwd: "/tmp".into(),
+            branch: None,
+            session_id: session.into(),
+            cost_usd: 0.0,
+            started_at: 0,
+            status_since: 0,
+            last_note: None,
+            structured: true,
+            activity: vec![],
+            thought: None,
+            last_active: 0,
+            stuck: None,
+            resume_as: None,
+            ready: true,
+            pending: vec![],
+            children: 0,
+        }
+    }
+
+    fn task(id: &str, stage: &str) -> Task {
+        Task {
+            id: id.into(),
+            title: String::new(),
+            goal: String::new(),
+            files: vec![],
+            done_when: vec![],
+            requested_by: "lead".into(),
+            assignee: None,
+            role: "worker".into(),
+            model: None,
+            stage: stage.into(),
+            summary: None,
+            branch: None,
+            base: None,
+            created_at: 0,
+            updated_at: 0,
+            follow_of: None,
+        }
+    }
+
+    /// The app goes away mid-work, comes back: everyone who was in returns to the same session.
+    #[test]
+    fn everyone_in_at_restart_comes_back_and_workers_carry_on() {
+        let mut agents = vec![
+            agent("w1", "worker", "work", Some("T-1"), "s-w1"),
+            agent("lead", "lead", "wait", None, "s-lead"),
+            agent("mgr-a", "mgr", "wait", Some("T-0"), "s-mgr"),
+            agent("w2", "worker", "block", Some("T-2"), "s-w2"),
+            agent("w3", "worker", "done", Some("T-3"), "s-w3"),
+            agent("w4", "worker", "off", Some("T-4"), "s-w4"),
+        ];
+        let tasks = vec![task("T-0", "review"), task("T-1", "running"), task("T-2", "running"), task("T-3", "done"), task("T-4", "review")];
+        let mut restarted = None;
+        assert!(mark_suspended(&mut agents, &mut restarted, "update"));
+        assert_eq!(restarted.as_deref(), Some("update"));
+        // what stop does, then what load_saved does
+        for a in &mut agents {
+            if a.status != "done" {
+                a.status = "off".into();
+            }
+        }
+        // survives the save file
+        let saved = serde_json::to_string(&agents).unwrap();
+        let agents: Vec<Agent> = serde_json::from_str(&saved).unwrap();
+
+        let plan = restore_plan(&agents, &tasks);
+        let got: Vec<(&str, &str, &Then)> = plan.iter().map(|r| (r.id.as_str(), r.session.as_str(), &r.then)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("lead", "s-lead", &Then::Quiet),
+                ("w1", "s-w1", &Then::Nudge),
+                ("mgr-a", "s-mgr", &Then::Quiet),
+                ("w2", "s-w2", &Then::Block),
+            ]
+        );
+    }
+
+    /// Restart then the exit that follows: the second pass must not wipe what the first noted.
+    #[test]
+    fn suspending_twice_keeps_the_first_note() {
+        let mut agents = vec![agent("lead", "lead", "work", None, "s")];
+        let mut restarted = None;
+        assert!(mark_suspended(&mut agents, &mut restarted, "update"));
+        agents[0].status = "off".into();
+        assert!(!mark_suspended(&mut agents, &mut restarted, "quit"));
+        assert_eq!(restarted.as_deref(), Some("update"));
+        assert_eq!(agents[0].resume_as.as_deref(), Some("work"));
+    }
+
+    /// Clocked out by the user (no restart note): the old rule — 총괄 and running cards, quietly.
+    #[test]
+    fn a_team_the_user_clocked_out_comes_back_as_before() {
+        let agents = vec![
+            agent("lead", "lead", "off", None, "s-lead"),
+            agent("w1", "worker", "off", Some("T-1"), "s-w1"),
+            agent("w2", "worker", "off", Some("T-2"), "s-w2"),
+        ];
+        let tasks = vec![task("T-1", "running"), task("T-2", "review")];
+        let plan = restore_plan(&agents, &tasks);
+        assert_eq!(plan.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["lead", "w1"]);
+        assert!(plan.iter().all(|r| r.then == Then::Quiet));
+    }
+
+    #[test]
+    fn old_save_files_still_load() {
+        let t: SavedTeam = serde_json::from_str(r#"{"run":"ab12","cwd":"/x","branch":null,"agents":[],"tasks":[],"chat":[],"events":[],"nextTask":0,"nextMsg":0,"nextMgr":0,"nextLone":0,"alwaysAllow":[],"transcripts":{}}"#).unwrap();
+        assert!(t.restarted.is_none());
+    }
+
+    #[test]
+    fn the_nudge_says_why() {
+        assert!(restart_nudge(Some("update")).contains("업데이트로 다시 시작됐어요. 하던 작업을 이어서 하세요"));
+        assert!(restart_nudge(Some("quit")).contains("다시 켜졌어요"));
+    }
 }
