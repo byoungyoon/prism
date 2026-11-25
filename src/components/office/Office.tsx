@@ -335,6 +335,15 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   for (const k of Object.keys(cameIn.current)) if (!lounging.some((m) => m.key === k)) delete cameIn.current[k];
   for (const m of lounging) cameIn.current[m.key] ??= Date.now();
   const settled = (k: string) => Date.now() - (cameIn.current[k] ?? 0) > 6000;
+  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a neighbour
+  // asks and makes room above its desk, a desk joins the row) moves with the desk, instantly —
+  // walking there would leave the cat behind, under the desk, for a moment
+  const wasAtDesk = useRef<Set<string>>(new Set());
+  const prevDesk = wasAtDesk.current;
+  const deskKeys = deskMembers.map((m) => m.key).join("|");
+  useEffect(() => {
+    wasAtDesk.current = new Set(deskKeys ? deskKeys.split("|") : []);
+  }, [deskKeys]);
   const items: PlacedCritter[] = [];
   for (const m of members) {
     const seat = room?.seats[m.key];
@@ -358,6 +367,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
       speed: desk || !settled(m.key) ? undefined : narrow ? 38 : 52,
       fidget: desk && !asks[m.key]?.length,
+      snap: desk && prevDesk.has(m.key),
       say: asks[m.key]?.length ? "" : (chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
     });
   }
