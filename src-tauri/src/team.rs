@@ -1220,6 +1220,9 @@ pub struct TeamManager {
     /// "project/agent" whose next turn was started by a worker's report → that card's id. Its reply
     /// goes to the chat as a 'report' entry, not a plain 'lead' line (see `say_reply`)
     report_turns: Mutex<HashMap<String, String>>,
+    /// "project/agent" that was sent a message (`deliver`) → when. Cleared by any sign of life from
+    /// it; if none comes for `NO_REPLY_AFTER_MS`, the 총괄 is told (see `check_no_reply`)
+    delivered: Mutex<HashMap<String, u64>>,
     /// launch number per "project/agent": events from an older process of the same member (one that
     /// was stopped and replaced) are dropped, so its late exit can't knock out the new one
     launches: Mutex<HashMap<String, u64>>,
@@ -1363,6 +1366,55 @@ fn rest_agent(a: &mut Agent, now: u64) {
     a.pending.clear();
     a.resume_as = None;
     a.ready = true;
+}
+
+/// How a message to a 팀원 gets there (see `TeamManager::deliver`).
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Delivery {
+    /// its session is running: the message goes straight in
+    Live,
+    /// its session ended but its card is still open (reported, not closed): the card goes back to
+    /// 진행 중 and the member starts a new turn with the message
+    Reopen,
+}
+
+/// Said to the 총괄 when a message can't reach a finished 작업자 (its card is closed, no session).
+const GONE_MSG: &str = "이 팀원은 이미 끝났어요. delegate follow_up으로 맡기세요";
+
+/// `None`: nothing can take the message.
+fn plan_delivery(live: bool, card_open: bool) -> Option<Delivery> {
+    if live {
+        Some(Delivery::Live)
+    } else if card_open {
+        Some(Delivery::Reopen)
+    } else {
+        None
+    }
+}
+
+/// A card that still needs its member: a reported one waits for review, and goes back to running
+/// when a message reopens it.
+fn card_open(stage: &str) -> bool {
+    matches!(stage, "running" | "review")
+}
+
+/// A reopened card: running again, its member working on it again. Its conversation (`session_id`)
+/// is kept so a resumed session continues where it stopped.
+fn reopen_on_card(a: &mut Agent, t: &mut Task, now: u64) {
+    t.stage = "running".into();
+    t.updated_at = now;
+    a.status = "work".into();
+    a.status_since = now;
+    a.last_active = now;
+    a.stuck = None;
+    a.rest_since = None;
+}
+
+/// A message that got no sign of life back for this long is reported to the 총괄 (once).
+const NO_REPLY_AFTER_MS: u64 = 5 * 60 * 1000;
+
+fn no_reply_due(sent_at: u64, now: u64) -> bool {
+    now.saturating_sub(sent_at) > NO_REPLY_AFTER_MS
 }
 
 /// A resting 작업자 that can take a new card from `parent` (the one resting the shortest: its
@@ -1628,7 +1680,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), watchdog: std::sync::Once::new() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -2410,6 +2462,8 @@ impl TeamManager {
             }
             _ => {}
         }
+        // any sign of life answers a message sent to it (see `check_no_reply`)
+        self.delivered.lock().unwrap().remove(&format!("{pid}/{aid}"));
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
         // any sign of life clears "응답이 없어요"
@@ -2840,11 +2894,107 @@ impl TeamManager {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("no team")?;
         let name = team.name_of(aid);
+        self.deliver(team, aid, &text)?;
         team.log(format!("사용자가 {name}에게 직접 지시했다: {}", short(&text, 40)), None);
-        team.set_status(aid, "work");
-        self.inject(team, aid, text);
         self.emit(team);
         Ok(())
+    }
+
+    /// Hands `text` to 팀원 `aid` whatever state it's in — the 총괄's `message_agent` and the user's
+    /// 직접 지시 both come here. A member whose session ended while its card is still open is woken
+    /// on that card. Nothing able to take the message is an error, never a silent "전달했어요".
+    fn deliver(&self, team: &mut Team, aid: &str, text: &str) -> Result<Delivery, String> {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let name = team.name_of(aid);
+        let worker = team.agent(aid).is_some_and(|a| a.role == "worker");
+        let live = self.drivers.lock().unwrap().contains_key(&key) || team.agent(aid).is_some_and(|a| a.pty_id.is_some());
+        let open = team.agent(aid).and_then(|a| a.task_id.clone()).and_then(|t| team.tasks.iter().find(|x| x.id == t)).is_some_and(|t| card_open(&t.stage));
+        let nothing = if worker { GONE_MSG.to_string() } else { format!("{name}의 세션이 꺼져 있어서 지시를 전달하지 못했어요.") };
+        let first = plan_delivery(live, open).ok_or_else(|| nothing.clone())?;
+        if first == Delivery::Live && self.inject(team, aid, text.to_string()) {
+            team.set_status(aid, "work");
+            self.delivered.lock().unwrap().insert(key, now_ms());
+            return Ok(Delivery::Live);
+        }
+        // no session (or its input is gone): wake it on its open card, in its own conversation
+        if !open {
+            return Err(nothing);
+        }
+        if live {
+            self.kill_driver(&pid, aid);
+        }
+        self.reopen_card(team, aid)?;
+        if !self.inject(team, aid, text.to_string()) {
+            return Err(nothing);
+        }
+        team.set_status(aid, "work");
+        self.delivered.lock().unwrap().insert(key, now_ms());
+        Ok(Delivery::Reopen)
+    }
+
+    /// Starts 작업자 `aid`'s session again on its open card: the card goes back to 진행 중, the
+    /// conversation resumes when it's small enough (see `follow_up`), else a fresh one gets the card.
+    fn reopen_card(&self, team: &mut Team, aid: &str) -> Result<(), String> {
+        let tid = team.agent(aid).and_then(|a| a.task_id.clone()).ok_or("맡은 작업 카드가 없어요")?;
+        let resume = team.agent(aid).filter(|a| !a.session_id.is_empty() && a.context < FRESH_CONTEXT).map(|a| a.session_id.clone());
+        let now = now_ms();
+        let (Some(a), Some(t)) = (team.agents.iter_mut().find(|a| a.id == aid), team.tasks.iter_mut().find(|t| t.id == tid)) else {
+            return Err("담당 카드나 팀원을 찾을 수 없어요".into());
+        };
+        let before = (a.status.clone(), a.status_since, t.stage.clone());
+        reopen_on_card(a, t, now);
+        let launched = match resume {
+            Some(sid) => self.launch_agent(team, aid, Some(sid)).or_else(|_| self.launch_agent(team, aid, None)),
+            None => self.launch_agent(team, aid, None),
+        };
+        if let Err(e) = launched {
+            // could not start it: the card waits for review again
+            if let Some(t) = team.task_mut(&tid) {
+                t.stage = before.2;
+            }
+            if let Some(a) = team.agent_mut(aid) {
+                a.status = before.0;
+                a.status_since = before.1;
+            }
+            return Err(e);
+        }
+        let name = team.name_of(aid);
+        team.log(format!("{name}이(가) 끝났던 {tid}를 다시 시작했다 (추가 지시)."), None);
+        Ok(())
+    }
+
+    /// Messages that got no sign of life for `NO_REPLY_AFTER_MS`: the 총괄 hears about it once.
+    fn check_no_reply(&self, now: u64) {
+        let overdue: Vec<String> = {
+            let mut sent = self.delivered.lock().unwrap();
+            let due: Vec<String> = sent.iter().filter(|(_, at)| no_reply_due(**at, now)).map(|(k, _)| k.clone()).collect();
+            for k in &due {
+                sent.remove(k);
+            }
+            due
+        };
+        if overdue.is_empty() {
+            return;
+        }
+        let mut teams = self.teams.lock().unwrap();
+        for key in overdue {
+            let Some((pid, aid)) = key.split_once('/') else { continue };
+            let Some(team) = teams.get_mut(pid) else { continue };
+            // a member that has finished or clocked out is not expected to answer
+            if !team.agent(aid).is_some_and(|a| a.status != "done" && a.status != "off") {
+                continue;
+            }
+            let name = team.name_of(aid);
+            let mins = NO_REPLY_AFTER_MS / 60_000;
+            let msg = format!("{name}에게 보낸 추가 지시에 {mins}분째 반응이 없어요. 아직 하는 중일 수도 있지만, 지시를 놓쳤을 수 있어요. 멈춘 것 같으면 '멈추고 다시'를 눌러 주세요.");
+            if aid == "lead" {
+                team.log(msg, Some("block"));
+            } else {
+                team.say("lead", msg, None);
+            }
+            self.emit(team);
+        }
     }
 
     pub fn set_model(&self, pid: &str, aid: &str, model: String) -> Result<(), String> {
@@ -2889,6 +3039,7 @@ impl TeamManager {
     fn check_stalls(&self) {
         let now = now_ms();
         self.retire_rested(now);
+        self.check_no_reply(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -3182,7 +3333,7 @@ impl TeamManager {
         });
         let list = json!({ "name": "list_tasks", "description": "팀의 작업 카드와 에이전트 상태를 본다.", "inputSchema": { "type": "object", "properties": {} } });
         let message = json!({
-            "name": "message_agent", "description": "하위 에이전트에게 추가 지시를 보낸다.",
+            "name": "message_agent", "description": "하위 에이전트에게 추가 지시를 보낸다. 이미 보고를 마친 작업자라도 카드가 열려 있으면 다시 깨워 처리한다. 끝난 팀원이면 실패를 알려 주니 그때는 delegate의 follow_up을 쓴다.",
             "inputSchema": { "type": "object", "properties": { "agent": { "type": "string" }, "message": { "type": "string" } }, "required": ["agent", "message"] }
         });
         let complete = json!({
@@ -3315,13 +3466,12 @@ impl TeamManager {
                     .or_else(|| team.agents.iter().find(|a| a.name == target))
                     .map(|a| a.id.clone())
                     .ok_or("그런 에이전트가 없어요")?;
-                // a resting 작업자 has no session: nothing is sent (it would cost tokens to wake it)
-                if team.agent(&target).is_some_and(|a| a.rest_since.is_some()) {
-                    return Ok(format!("{}은(는) 쉬는 중이에요. 새 카드를 delegate하면 그 작업자가 다시 맡아요.", team.name_of(&target)));
+                let name = team.name_of(&target);
+                let text = format!("[Prism {}] {}", me.name, s("message").unwrap_or_default());
+                match self.deliver(team, &target, &text)? {
+                    Delivery::Live => format!("{name}에게 전달했어요."),
+                    Delivery::Reopen => format!("{name}에게 전달했어요. 끝났던 카드를 다시 진행하게 했어요. 끝나면 '[Prism 보고]'가 와요."),
                 }
-                self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default()));
-                team.set_status(&target, "work");
-                format!("{}에게 전달했어요.", team.name_of(&target))
             }
             "complete_task" => {
                 let tid = s("task_id").ok_or("task_id 필요")?;
@@ -4459,6 +4609,45 @@ mod rest_tests {
         assert!(agents.iter().any(|a| a.id == "W8" && a.rest_since.is_some()), "a short rest stays");
         assert!(agents.iter().any(|a| a.id == "W9" && a.status == "work"), "working members untouched");
         assert_eq!(tasks[0].who.as_deref(), Some("W1"), "its card keeps the name");
+    }
+
+    #[test]
+    fn a_message_to_a_live_member_goes_straight_in() {
+        assert_eq!(plan_delivery(true, false), Some(Delivery::Live));
+        assert_eq!(plan_delivery(true, true), Some(Delivery::Live));
+    }
+
+    #[test]
+    fn a_reported_member_whose_session_ended_is_woken_on_its_card() {
+        // reported (card in review), its process gone: the message reopens the card
+        assert_eq!(plan_delivery(false, true), Some(Delivery::Reopen));
+        assert!(card_open("review") && card_open("running"));
+        assert!(!card_open("done") && !card_open("failed"));
+    }
+
+    #[test]
+    fn a_finished_worker_cannot_take_a_message_and_the_lead_is_told_to_use_follow_up() {
+        assert_eq!(plan_delivery(false, false), None, "no session and no open card: nothing takes it");
+        assert!(GONE_MSG.contains("이 팀원은 이미 끝났어요") && GONE_MSG.contains("delegate follow_up"), "{GONE_MSG}");
+    }
+
+    #[test]
+    fn reopening_puts_the_card_back_in_progress_and_keeps_the_conversation() {
+        let mut a = worker("W7", "W1", "T-1");
+        a.status = "done".into();
+        let mut t = card("T-1", "표 만들기", "review", "W7", Some("끝냈어요."));
+        reopen_on_card(&mut a, &mut t, 5_000);
+        assert_eq!(t.stage, "running");
+        assert_eq!(t.updated_at, 5_000);
+        assert_eq!(a.status, "work");
+        assert!(a.rest_since.is_none() && a.stuck.is_none());
+        assert_eq!(a.session_id, "old-session", "the same conversation carries on");
+    }
+
+    #[test]
+    fn a_message_with_no_reply_is_reported_after_five_minutes() {
+        assert!(!no_reply_due(0, 4 * 60_000), "a short wait is normal");
+        assert!(no_reply_due(0, 6 * 60_000), "silence for five minutes is worth a word to the 총괄");
     }
 }
 
