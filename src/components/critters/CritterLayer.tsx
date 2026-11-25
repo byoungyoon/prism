@@ -3,7 +3,7 @@
 // Spots and states can also be changed from outside through `critters` (critterStore.ts).
 import { memo, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { Agent, Task } from "../../lib/api";
-import { Critter, type CritterLook } from "./Critter";
+import { Critter, type CritterLook, type WalkDir } from "./Critter";
 import { useOverride } from "./critterStore";
 import { critterLine, critterState, type CritterState, type Pose } from "./state";
 
@@ -63,7 +63,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
   // DOM together. (Set from an effect, the transform landed one paint before the duration: the
   // cat jumped instead of walking.) `walk.to` is the spot it is heading for; `walk.until` when it
   // arrives. Re-rendering with the same spot changes nothing (also under StrictMode's double render).
-  const walk = useRef<{ to: { x: number; y: number } | null; ms: number; flip: boolean; until: number }>({ to: null, ms: 0, flip: false, until: 0 });
+  const walk = useRef<{ to: { x: number; y: number } | null; ms: number; flip: boolean; dir: WalkDir; until: number }>({ to: null, ms: 0, flip: false, dir: "side", until: 0 });
   const w = walk.current;
   if (!w.to || w.to.x !== x || w.to.y !== y) {
     const prev = w.to;
@@ -77,9 +77,12 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
       w.ms = 0;
       if (Math.abs(dx) > 0.6) w.flip = dx < 0;
     } else {
-      // a time in proportion to the distance, facing the way it goes
+      // a time in proportion to the distance, facing the way it goes: mostly down = toward you,
+      // mostly up = away, otherwise sideways
       w.ms = Math.min(12000, Math.max(200, (dist / pace) * 1000));
       if (Math.abs(dx) > 2) w.flip = dx < 0;
+      const dy = y - prev.y;
+      w.dir = Math.abs(dy) > Math.abs(dx) * 1.3 ? (dy > 0 ? "front" : "back") : "side";
       w.until = Date.now() + w.ms;
     }
   }
@@ -113,7 +116,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
           </span>
         )}
         <span className="cr-in">
-          <Critter agent={item.agent} task={item.task} look={item.look} colorKey={item.colorKey} state={state} pose={state === "walk" ? undefined : item.pose} size={size} flip={w.flip} labelled />
+          <Critter agent={item.agent} task={item.task} look={item.look} colorKey={item.colorKey} state={state} pose={state === "walk" ? undefined : item.pose} size={size} flip={w.flip} dir={w.dir} labelled />
           {name && label && <span className="cr-name">{label}</span>}
         </span>
       </div>

@@ -358,11 +358,11 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     });
   }
 
-  // the permission bubbles over the asking cats' heads, sharing the room when neighbours both ask
+  // the permission bubbles over the asking cats' heads (above the ? sign over the head), sharing the room when neighbours both ask
   const askSpots = room
     ? deskMembers.flatMap((m) => {
         const seat = room.seats[m.key];
-        return asks[m.key]?.length && seat ? [{ key: m.key, m, at: { x: seat.x, y: seat.y - size - 4 } }] : [];
+        return asks[m.key]?.length && seat ? [{ key: m.key, m, at: { x: seat.x, y: seat.y - size - 24 } }] : [];
       })
     : [];
   const halves = askHalves(askSpots, room?.w ?? 0);
