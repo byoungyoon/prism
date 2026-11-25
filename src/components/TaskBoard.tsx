@@ -8,6 +8,7 @@ import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
+import { finishedCrew, liveCrew } from "../lib/crew";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -72,10 +73,10 @@ export function TaskBoard() {
   const tasks = shown.flatMap(({ team }) => team.tasks);
   const count = (stage: string) => tasks.filter((t) => t.stage === stage).length;
   // finished 팀장·작업자 are folded into one line below; the 총괄 always stays on top
-  const members = (team: TeamSnapshot, role: Role) =>
-    team.agents.filter((a) => a.role === role && (a.status !== "off" || role === "lead") && (a.status !== "done" || role === "lead")).sort((x, y) => x.name.localeCompare(y.name, "ko"));
+  // one rule for "who is on the team" (lib/crew): the same people the office and the team tabs show
+  const members = (team: TeamSnapshot, role: Role) => liveCrew(team, { withLead: true }).filter((a) => a.role === role);
   const doneGroups = shown
-    .map(({ project, team }) => ({ project, team, list: team.agents.filter((a) => a.role !== "lead" && a.status === "done").sort((x, y) => x.name.localeCompare(y.name, "ko")) }))
+    .map(({ project, team }) => ({ project, team, list: finishedCrew(team) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));

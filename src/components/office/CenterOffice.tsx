@@ -6,6 +6,7 @@ import { useShownTeams, waitsForMe } from "../../store";
 import type { TeamSnapshot } from "../../lib/api";
 import { ReportFeed } from "../ReportFeed";
 import { Office } from "./Office";
+import { busyCrew, liveCrew } from "../../lib/crew";
 import "./office.css";
 
 const count = (t: TeamSnapshot, stage: string) => t.tasks.filter((x) => x.stage === stage).length;
@@ -21,7 +22,9 @@ export function CenterOffice() {
       <div role="tablist" aria-label="팀 요약" className="of-tabs">
         <button role="tab" aria-selected={!pick} onClick={() => setOpen(null)} className={`of-tab of-tab-office${pick ? "" : " on"}`}>
           <span className="of-tab-name">🏢 사무실</span>
-          <span className="of-tab-sub">팀원 {shown.reduce((n, s) => n + s.team.agents.filter((a) => a.status !== "off").length, 0)}명</span>
+          <span className="of-tab-sub">
+            팀원 {shown.reduce((n, s) => n + liveCrew(s.team).length, 0)}명 · 일하는 중 {shown.reduce((n, s) => n + busyCrew(s.team).length, 0)}명
+          </span>
         </button>
         {shown.map(({ project, team }) => {
           const asks = team.chat.filter(waitsForMe).length;
@@ -48,7 +51,7 @@ export function CenterOffice() {
           <ReportFeed only={pick} />
         </div>
       ) : (
-        <Office />
+        <Office onTeam={setOpen} />
       )}
     </section>
   );

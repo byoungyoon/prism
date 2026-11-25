@@ -112,6 +112,10 @@ pub struct Task {
     /// a follow-up: the card this one continues (same member, same context)
     #[serde(default)]
     pub follow_of: Option<String>,
+    /// the assignee's shown name ("W1"), kept so the card still says who did it after the finished
+    /// member is cleared from the team (see `prune_finished`)
+    #[serde(default)]
+    pub who: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1264,6 +1268,56 @@ fn restore_plan(agents: &[Agent], tasks: &[Task]) -> Vec<Restore> {
     out
 }
 
+/// Finished 팀장·작업자 kept in the team for the record (the board's "끝난 작업자", their transcripts).
+const KEEP_FINISHED: usize = 6;
+
+/// Tidy the team's member list so finished sessions don't pile up (a busy team made dozens: every
+/// card gets a fresh member, often under a recycled name like "W1"):
+/// - a 팀장·작업자 whose session is gone (`off`) while its card is finished becomes `done` (nothing
+///   to bring back when the team clocks in again);
+/// - of the `done` ones, only the newest per shown name and at most `KEEP_FINISHED` in all stay —
+///   except one whose card still waits for review, or a 팀장 with members still working under it.
+/// Cards of the removed ones keep the name (`who`). Returns the removed ids (to drop transcripts).
+fn prune_finished(agents: &mut Vec<Agent>, tasks: &mut [Task]) -> Vec<String> {
+    let card_finished = |a: &Agent| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed");
+    let ended: Vec<String> = agents.iter().filter(|a| a.role != "lead" && a.status == "off" && card_finished(a)).map(|a| a.id.clone()).collect();
+    for a in agents.iter_mut().filter(|a| ended.contains(&a.id)) {
+        a.status = "done".into();
+        a.resume_as = None;
+    }
+
+    let needed = |a: &Agent| {
+        let reviewing = a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| !matches!(t.stage.as_str(), "done" | "failed"));
+        let leads_live = agents.iter().any(|w| w.parent_id.as_deref() == Some(a.id.as_str()) && w.status != "done");
+        reviewing || leads_live
+    };
+    let mut finished: Vec<&Agent> = agents.iter().filter(|a| a.role != "lead" && a.status == "done").collect();
+    finished.sort_by(|x, y| y.status_since.cmp(&x.status_since));
+    let mut names = std::collections::HashSet::new();
+    let mut kept = 0usize;
+    let mut drop: Vec<String> = vec![];
+    for a in finished {
+        if needed(a) {
+            names.insert(a.name.clone());
+            continue;
+        }
+        if kept < KEEP_FINISHED && names.insert(a.name.clone()) {
+            kept += 1;
+        } else {
+            drop.push(a.id.clone());
+        }
+    }
+    for t in tasks.iter_mut() {
+        if let Some(a) = t.assignee.as_deref().filter(|a| drop.iter().any(|d| d == a)) {
+            if t.who.is_none() {
+                t.who = agents.iter().find(|x| x.id == a).map(|x| x.name.clone());
+            }
+        }
+    }
+    agents.retain(|a| !drop.contains(&a.id));
+    drop
+}
+
 /// Note what each member in the team was doing as the app goes away (`why`). False when nobody
 /// was in (nothing to bring back; the team is left as it is).
 fn mark_suspended(agents: &mut [Agent], restarted: &mut Option<String>, why: &str) -> bool {
@@ -1435,7 +1489,11 @@ impl Team {
         }
     }
     fn name_of(&self, id: &str) -> String {
-        self.agent(id).map(|a| a.name.clone()).unwrap_or_else(|| id.to_string())
+        self.agent(id)
+            .map(|a| a.name.clone())
+            // a finished member already cleared from the team: its card remembers the name
+            .or_else(|| self.tasks.iter().find(|t| t.assignee.as_deref() == Some(id)).and_then(|t| t.who.clone()))
+            .unwrap_or_else(|| id.to_string())
     }
     fn active(&self, role: &str) -> usize {
         self.agents.iter().filter(|a| a.role == role && a.status != "done" && a.status != "off").count()
@@ -1570,10 +1628,15 @@ impl TeamManager {
                     m.children = n;
                 }
             }
+            // finished members from earlier sessions: keep only a few for the record
+            let mut tasks = saved.tasks;
+            let removed = prune_finished(&mut agents, &mut tasks);
             {
                 let mut t = self.transcripts.lock().unwrap();
                 for (aid, list) in saved.transcripts {
-                    t.insert(format!("{pid}/{aid}"), list);
+                    if !removed.contains(&aid) {
+                        t.insert(format!("{pid}/{aid}"), list);
+                    }
                 }
             }
             self.teams.lock().unwrap().insert(
@@ -1587,7 +1650,7 @@ impl TeamManager {
                     branch: saved.branch,
                     home: saved.home,
                     agents,
-                    tasks: saved.tasks,
+                    tasks,
                     chat: saved.chat,
                     events: saved.events,
                     next_task: saved.next_task,
@@ -2412,6 +2475,7 @@ impl TeamManager {
         team.next_task += 1;
         let fid = format!("T-{}", team.next_task);
         let now = now_ms();
+        let who = team.agent(&aid).map(|a| a.name.clone());
         team.tasks.push(Task {
             id: fid.clone(),
             title: short(text, 30),
@@ -2429,6 +2493,7 @@ impl TeamManager {
             created_at: now,
             updated_at: now,
             follow_of: Some(tid.into()),
+            who,
         });
 
         let mut fresh = false;
@@ -3065,6 +3130,7 @@ impl TeamManager {
                     created_at: now,
                     updated_at: now,
                     follow_of: None,
+                    who: None,
                 });
                 team.log(format!("{}이(가) {id} \"{}\"를 만들었다.", me.name, short(&s("title").unwrap_or_default(), 30)), None);
                 self.process_queue(team);
@@ -3140,6 +3206,14 @@ impl TeamManager {
                     }
                 }
                 team.log(format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default()), None);
+                // the finished member leaves the list once enough newer ones are on record
+                let removed = prune_finished(&mut team.agents, &mut team.tasks);
+                if !removed.is_empty() {
+                    let mut tr = self.transcripts.lock().unwrap();
+                    for a in &removed {
+                        tr.remove(&format!("{pid}/{a}"));
+                    }
+                }
                 self.process_queue(team);
                 format!("{tid} 완료 처리했어요.")
             }
@@ -3212,6 +3286,7 @@ impl TeamManager {
                     let name = team.name_of(&aid);
                     if let Some(t) = team.task_mut(&tid) {
                         t.assignee = Some(aid);
+                        t.who = Some(name.clone());
                         t.stage = "running".into();
                         t.updated_at = now_ms();
                     }
@@ -3988,6 +4063,7 @@ mod restart_tests {
             created_at: 0,
             updated_at: 0,
             follow_of: None,
+            who: None,
         }
     }
 
@@ -4065,6 +4141,73 @@ mod restart_tests {
     fn the_nudge_says_why() {
         assert!(restart_nudge(Some("update")).contains("업데이트로 다시 시작됐어요. 하던 작업을 이어서 하세요"));
         assert!(restart_nudge(Some("quit")).contains("다시 켜졌어요"));
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    fn member(id: &str, name: &str, status: &str, task: Option<&str>, since: u64) -> Agent {
+        let mut a: Agent = serde_json::from_value(json!({
+            "id": id, "name": name, "role": "worker", "kind": "claude", "model": "", "effort": "", "status": status,
+            "taskId": task, "parentId": null, "ptyId": null, "cwd": "/tmp", "branch": null, "sessionId": "",
+            "costUsd": 0.0, "startedAt": 0, "statusSince": since, "lastNote": null, "structured": true, "activity": []
+        }))
+        .expect("agent json");
+        a.ready = true;
+        a
+    }
+    fn card(id: &str, stage: &str, assignee: &str) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "title": "", "goal": "", "files": [], "doneWhen": [], "requestedBy": "lead", "assignee": assignee,
+            "role": "worker", "model": null, "stage": stage, "summary": null, "branch": null, "base": null,
+            "createdAt": 0, "updatedAt": 0
+        }))
+        .expect("task json")
+    }
+
+    #[test]
+    fn finished_sessions_do_not_pile_up() {
+        // 20 finished cards, each by a fresh "W1" or "W2"; one live W1 at work; one W3 awaiting review
+        let mut agents = vec![member("lead", "총괄", "wait", None, 0)];
+        agents[0].role = "lead".into();
+        let mut tasks = vec![];
+        for i in 0..20 {
+            let id = format!("w{i}");
+            agents.push(member(&id, if i % 2 == 0 { "W1" } else { "W2" }, "done", Some(&format!("T-{i}")), i as u64));
+            tasks.push(card(&format!("T-{i}"), "done", &id));
+        }
+        agents.push(member("live", "W1", "work", Some("T-90"), 100));
+        tasks.push(card("T-90", "running", "live"));
+        agents.push(member("rev", "W3", "done", Some("T-91"), 1));
+        tasks.push(card("T-91", "review", "rev"));
+
+        let removed = prune_finished(&mut agents, &mut tasks);
+        let done: Vec<&Agent> = agents.iter().filter(|a| a.status == "done").collect();
+        // the newest finished W1 and W2, plus the W3 still in review
+        assert_eq!(done.len(), 3, "{:?}", done.iter().map(|a| &a.id).collect::<Vec<_>>());
+        assert!(agents.iter().any(|a| a.id == "w18") && agents.iter().any(|a| a.id == "w19") && agents.iter().any(|a| a.id == "rev"));
+        assert!(agents.iter().any(|a| a.id == "live" && a.status == "work"), "live members stay");
+        assert_eq!(removed.len(), 18);
+        // a cleared member's card still says who did it
+        let t0 = tasks.iter().find(|t| t.id == "T-0").unwrap();
+        assert_eq!(t0.who.as_deref(), Some("W1"));
+    }
+
+    #[test]
+    fn an_ended_session_on_a_finished_card_counts_as_finished() {
+        // the app restarted: every session is "off"; this one's card was completed meanwhile
+        let mut agents = vec![member("w1", "W1", "off", Some("T-1"), 5), member("w2", "W2", "off", Some("T-2"), 5)];
+        agents[0].resume_as = Some("work".into());
+        let mut tasks = vec![card("T-1", "done", "w1"), card("T-2", "running", "w2")];
+        prune_finished(&mut agents, &mut tasks);
+        let w1 = agents.iter().find(|a| a.id == "w1").unwrap();
+        assert_eq!(w1.status, "done");
+        assert!(w1.resume_as.is_none(), "nothing to bring back");
+        assert_eq!(agents.iter().find(|a| a.id == "w2").unwrap().status, "off", "a running card's member comes back");
+        // and it isn't brought back on clock-in
+        assert!(restore_plan(&agents, &tasks).iter().all(|r| r.id != "w1"));
     }
 }
 
