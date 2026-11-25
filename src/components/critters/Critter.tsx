@@ -3,7 +3,7 @@
 // colorKey) its coat. No role props: a role shows as its name tag.
 import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
-import { FH, FW, type Row } from "./pixel/art";
+import { FH, FW, K, type Row } from "./pixel/art";
 import { coatOf } from "./pixel/coats";
 import type { Feel } from "./pixel/faces";
 import { strip } from "./pixel/render";
@@ -123,6 +123,10 @@ function PixelCat({ name, role, state, pose, size, flip, dir, label, className, 
     backgroundImage: `url(${url})`,
     backgroundSize: `${n * 100}% 100%`,
     animationDuration: `${ms}ms`,
+    // the strip has K dots per drawing dot, so it shows at s / K screen pixels per dot. Only a whole
+    // multiple (s = K: 1:1) can stay hard-edged; any other size (s = 1 is half, s = 3 is 1.5) averages
+    // instead, or the dots of the fine drawing drop out unevenly
+    imageRendering: s % K === 0 ? "pixelated" : "auto",
   };
   return (
     <span
