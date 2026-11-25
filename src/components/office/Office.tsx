@@ -10,7 +10,7 @@ import { plainAction } from "../../lib/plainAction";
 import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
-import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
+import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
 import { catName } from "../critters/pixel/coats";
 
@@ -151,8 +151,7 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   );
 }
 
-/** `onTeam`: open a team's reports (a click on a resting team's chip) */
-export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}) {
+export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
   // the furniture's pixel pictures (drawn once, kept in a <style>)
   ensurePixelOffice();
   const shown = useOfficeTeams();
@@ -170,11 +169,10 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   }, [shown]);
 
   // each team's live crew. A team with someone at work (or asking) gets desks: its 총괄 plus everyone
-  // working; a team where nobody works is folded into one small line ("쉬는 팀"), and its 팀장·작업자 between cards still rest in the lounge. Members who reported and
+  // working; a team where nobody works gets no area at all, and its 팀장·작업자 between cards still rest in the lounge. Members who reported and
   // wait for the 총괄's check are in the lounge too ("보고함").
-  const { pods, resting, idle } = useMemo(() => {
+  const { pods, idle } = useMemo(() => {
     const pods: { project: Project; desks: Member[]; waiting: Member[] }[] = [];
-    const resting: { project: Project; lead?: Agent; waiting: number }[] = [];
     const idle: Member[] = [];
     for (const { project, team } of shown) {
       const member = (a: Agent): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: currentCard(team, a) });
@@ -184,14 +182,13 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || asks[m.key]?.length);
       if (!busy) {
         const waiting = [...crew.filter((m) => m.agent.role !== "lead"), ...reported];
-        resting.push({ project, lead: crew.find((m) => m.agent.role === "lead")?.agent, waiting: waiting.length });
         idle.push(...waiting);
         continue;
       }
       const seated = (m: Member) => atDesk(m.agent) || !!asks[m.key]?.length;
       pods.push({ project, desks: crew.filter(seated), waiting: [...crew.filter((m) => !seated(m)), ...reported] });
     }
-    return { pods, resting, idle };
+    return { pods, idle };
   }, [shown, asks]);
   const deskMembers = pods.flatMap((p) => p.desks);
   const waitingAll = [...pods.flatMap((p) => p.waiting), ...idle];
@@ -400,18 +397,6 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
           <span className="of-shelf px-shelf" />
           <span className="of-door px-door" data-door />
         </div>
-        {resting.length > 0 && (
-          <div className="of-resting" aria-label="쉬는 팀">
-            <span className="of-resting-title">쉬는 팀</span>
-            {resting.map(({ project, lead, waiting }) => (
-              <button key={project.id} className="of-resting-team" onClick={() => onTeam?.(project.id)} title={`${project.name} 보고 보기`}>
-                {lead && <Critter agent={lead} colorKey={project.name} state="off" size={narrow ? 24 : 28} />}
-                <span className="of-resting-name">{project.name}</span>
-                <span className="of-resting-sub">{waiting ? `대기 ${waiting}명` : "쉬는 중"}</span>
-              </button>
-            ))}
-          </div>
-        )}
         <div className="of-floor">
           <div className="of-pods">
             {pods.map(({ project, desks }) => (
@@ -429,7 +414,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
                 })}
               </div>
             ))}
-            {!pods.length && <span className="of-empty">{resting.length ? "지금 일하는 팀원이 없어요. 총괄에게 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
+            {!pods.length && <span className="of-empty">{shown.length ? "지금 일하는 팀이 없어요. 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
           </div>
           <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>

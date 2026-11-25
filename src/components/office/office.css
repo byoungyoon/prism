@@ -511,50 +511,11 @@
   font-size: 12px;
   font-weight: 600;
 }
-.of-resting {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px 0;
-}
-.of-resting-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text2);
-}
-.of-resting-team {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 3px 12px 3px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--glass2);
-  color: var(--text);
-}
-.of-resting-name {
-  overflow: hidden;
-  font-size: 12.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.of-resting-sub {
-  flex: none;
-  font-size: 11px;
-  color: var(--text2);
-}
 @media (max-width: 820px) {
   .of-lounge {
     width: auto;
   }
-  .of-resting {
-    padding: 8px 10px 0;
   }
-}
 /* the room scrolls; its content (and with it the cats' layer and the lounge) grows with the office
    instead of being stretched to one screen's height, so cats further down aren't cut off */
 .of-room {
