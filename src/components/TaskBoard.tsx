@@ -63,6 +63,8 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
 }
 
 /** Every shown team's people, floor by floor, and one merged progress log. */
+const reportKey = (pid: string, t: { id: string; updatedAt: number }) => `report:${pid}:${t.id}:${t.updatedAt}`; // 새로 보고되면(updatedAt 변경) 키가 달라져 다시 보인다
+
 export function TaskBoard() {
   const openIn = useApp((s) => s.openIn);
   // teams whose 총괄 went home (off) stay out of the whole board, counts included
@@ -85,7 +87,7 @@ export function TaskBoard() {
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
-  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(`report:${project.id}:${t.id}`)).map((t) => ({ t, project })));
+  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(reportKey(project.id, t))).map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
     .flatMap(({ project, team }) => team.events.map((e) => ({ ...e, project })))
@@ -107,7 +109,7 @@ export function TaskBoard() {
         {shown.length > 0 && (
           <div className="flex flex-col py-1" style={{ borderBottom: "1px solid var(--line)" }}>
             {shown.map(({ project, team }) => (
-              <TeamUsageBox key={project.id} team={team} label={multi ? project.name : undefined} />
+              <TeamUsageBox key={project.id} projectId={project.id} team={team} label={multi ? project.name : undefined} />
             ))}
           </div>
         )}
@@ -149,7 +151,7 @@ export function TaskBoard() {
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
                   <span className="min-w-0 flex-auto truncate">{t.title}</span>
                   {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
-                  <button onClick={() => dismiss(`report:${project.id}:${t.id}`)} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
+                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
                     ✕
                   </button>
                 </span>
