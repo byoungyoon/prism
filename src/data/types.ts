@@ -1,6 +1,6 @@
 // View helpers: map backend state (src/lib/api.ts) onto the design's visual vocabulary.
 import { modelLabel } from "./models";
-import type { Agent, AgentStatus, Role, Task } from "../lib/api";
+import type { Agent, AgentStatus, Bucket, Role, Task } from "../lib/api";
 
 export type { Role } from "../lib/api";
 export type Column = "대기" | "배정" | "진행중" | "검토" | "완료";
@@ -28,6 +28,20 @@ export function elapsed(since: number, now = Date.now()) {
 }
 
 export const usd = (n: number) => `$${n.toFixed(2)}`;
+
+/** All the tokens in a bucket (cache reads and writes included, as the CLIs count them). */
+export const bucketTotal = (b: Bucket) => b.input + b.output + b.cacheRead + b.cacheWrite;
+
+/** A token count in everyday words: "약 12만 토큰", "약 3,500 토큰". */
+export function tokensText(n: number): string {
+  if (n < 1000) return `${n} 토큰`;
+  if (n < 10_000) return `약 ${(Math.round(n / 100) * 100).toLocaleString("ko-KR")} 토큰`;
+  if (n < 100_000_000) {
+    const man = n / 10_000;
+    return `약 ${man < 10 ? man.toFixed(1) : Math.round(man)}만 토큰`;
+  }
+  return `약 ${(n / 100_000_000).toFixed(1)}억 토큰`;
+}
 
 export interface CardView {
   task: Task;

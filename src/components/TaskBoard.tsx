@@ -10,6 +10,7 @@ import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
 import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
 import { MergeActions } from "./MergeActions";
+import { TeamUsageBox } from "./TokenUse";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -101,6 +102,14 @@ export function TaskBoard() {
       </div>
 
       <div className="flex min-h-0 flex-auto flex-col overflow-y-auto px-2 pb-3">
+        {/* tokens used today, per team (opens to models, members and warnings) */}
+        {shown.length > 0 && (
+          <div className="flex flex-col py-1" style={{ borderBottom: "1px solid var(--line)" }}>
+            {shown.map(({ project, team }) => (
+              <TeamUsageBox key={project.id} team={team} label={multi ? project.name : undefined} />
+            ))}
+          </div>
+        )}
         {shown.length === 0 && <span className="px-2 py-3 text-[12px] text-ink-2">출근한 팀이 없어요</span>}
         {shown.length > 0 && FLOORS.map((f) => {
           const groups = shown.map(({ project, team }) => ({ project, team, list: members(team, f.role) })).filter((g) => g.list.length);

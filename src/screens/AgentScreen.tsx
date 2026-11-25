@@ -6,6 +6,7 @@ import { ROLE_NAME, STATUS, elapsed, usd } from "../data/types";
 import { TerminalView } from "../components/TerminalView";
 import { Transcript } from "../components/Transcript";
 import { ChevronLeft } from "../components/icons";
+import { MemberUsage } from "../components/TokenUse";
 
 const Svg = ({ children }: { children: ReactNode }) => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -283,6 +284,7 @@ export function AgentScreen({ id }: { id: string }) {
                 </span>
               )}
             </div>
+            {team && <MemberUsage team={team} agentId={id} />}
             <div className="flex items-center justify-between gap-3">
               <span className="text-[13px] font-medium">보고 받는 쪽</span>
               <span className="flex items-center gap-1.5 text-[13px]">

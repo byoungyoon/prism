@@ -185,6 +185,53 @@ export interface TeamSnapshot {
   chat: ChatMsg[];
   events: LogEvent[];
   costUsd: number;
+  /** tokens used: today's totals and per card. Missing in demo snapshots (screenshot tool) */
+  usage?: TeamUsage;
+}
+
+/** Token counts: new input, output, cache reads and cache writes, as the CLIs report them. */
+export interface Bucket {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** "opus" | "sonnet" | "haiku" | "fable", or the model's own name */
+export interface ModelUse extends Bucket {
+  model: string;
+}
+
+export interface MemberUse extends Bucket {
+  agentId: string;
+  name: string;
+  models: ModelUse[];
+}
+
+/** a card's tokens so far (all days) */
+export interface CardUse extends Bucket {
+  taskId: string;
+  models: ModelUse[];
+}
+
+/** "big": one turn re-sent a huge conversation (peakTokens); "rapid": many turns in a short time (turns) */
+export interface UsageAlert {
+  at: number;
+  kind: "big" | "rapid";
+  agentName: string;
+  taskId: string | null;
+  peakTokens: number | null;
+  turns: number | null;
+}
+
+export interface TeamUsage {
+  /** today, the whole team */
+  today: Bucket;
+  /** today, by model */
+  models: ModelUse[];
+  members: MemberUse[];
+  cards: CardUse[];
+  alerts: UsageAlert[];
 }
 
 /** Branches the team can be pointed at (not Prism's own work branches). */
