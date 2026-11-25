@@ -565,8 +565,10 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   );
 }
 
-export function ReportFeed() {
-  const shown = useShownTeams();
+/** `only`: one team's reports (the office's team tab); default every team on screen */
+export function ReportFeed({ only }: { only?: string } = {}) {
+  const all = useShownTeams();
+  const shown = only ? all.filter((x) => x.project.id === only) : all;
   if (!shown.length) return null;
   const multi = shown.length > 1;
   const permGroups = shown

@@ -43,6 +43,22 @@
 .cr-clip {
   transform-origin: 20% 70%;
 }
+.cr-tail {
+  transform-origin: 0% 100%;
+  animation: cr-tail 2.6s ease-in-out infinite;
+}
+.cr-walk .cr-tail {
+  animation-duration: 0.84s;
+}
+.cr-off .cr-tail,
+.cr-fail .cr-tail {
+  animation: none;
+  transform: rotate(18deg);
+}
+@keyframes cr-tail {
+  0%, 100% { transform: rotate(-7deg); }
+  50% { transform: rotate(11deg); }
+}
 .cr-eyes {
   transform-origin: 50% 50%;
   animation: cr-blink 4.6s infinite;
