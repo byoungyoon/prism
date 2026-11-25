@@ -3,6 +3,20 @@ import type { Agent, Role, Task } from "../../lib/api";
 
 export type CritterState = "idle" | "walk" | "work" | "think" | "block" | "done" | "fail" | "off";
 
+/** the body pose drawn for each state (poses.tsx); a `pose` prop on <Critter> overrides it */
+export type Pose = "sit" | "type" | "think" | "coffee" | "sleep" | "walk" | "cheer" | "raise" | "sad";
+
+export const POSE_OF: Record<CritterState, Pose> = {
+  idle: "coffee", // 쉬는 중: coffee break
+  walk: "walk",
+  work: "type", // 일함: typing
+  think: "think",
+  block: "raise", // 허락 대기: paw up
+  done: "cheer", // 완료
+  fail: "sad",
+  off: "sleep", // 퇴근
+};
+
 export const STATE_WORD: Record<CritterState, string> = {
   idle: "쉬는 중",
   walk: "이동 중",
