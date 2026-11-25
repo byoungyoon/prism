@@ -515,6 +515,8 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
             },
             _ => false,
         },
+        // the screenshot tool only; any other script or `node -e` stays with the 총괄
+        "node" => matches!(args.first(), Some(&"scripts/shot.mjs") | Some(&"./scripts/shot.mjs")) && is_safe_shot_args(&args[1..], workspace),
         "ln" => is_node_modules_link(args, workspace, project),
         "rm" => is_node_modules_unlink(args, workspace),
         "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && write_path_ok(a, workspace))) && args.contains(&"-p"),
@@ -523,6 +525,12 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
         "cd" => is_inside(args, workspace),
         _ => false,
     }
+}
+
+/// `node scripts/shot.mjs` options: `--out <folder>` must stay inside the folder or /tmp.
+fn is_safe_shot_args(args: &[&str], workspace: &str) -> bool {
+    args.iter().enumerate().all(|(i, a)| !matches!(*a, "--out") || args.get(i + 1).is_some_and(|o| write_path_ok(o, workspace)))
+        && !args.iter().any(|a| a.starts_with("--out="))
 }
 
 /// `cp` / `mv`: short flags from `allowed` only, at least a source and a target, all inside the folder or /tmp.
@@ -810,6 +818,11 @@ mod auto_allow_tests {
             "npm test -- --run",
             "pnpm exec tsc --noEmit",
             "pnpm shot",
+            "node scripts/shot.mjs",
+            "node scripts/shot.mjs --screen office -w 390 --theme dark",
+            "node ./scripts/shot.mjs --list",
+            "node scripts/shot.mjs --screen office 2>&1 | tail -5",
+            "node scripts/shot.mjs --out /tmp/prism-shots",
             "pnpm shot -- -s demo --screen office --width 390 --theme dark",
             "pnpm lint",
             "pnpm exec vite build",
@@ -869,6 +882,12 @@ mod auto_allow_tests {
             "find . -exec rm {} +",
             "rg --pre sh foo src",
             "pnpm install",
+            "node scripts/other.mjs",
+            "node -e 'process.exit()'",
+            "node scripts/shot.mjs/../x.mjs",
+            "node scripts/shot.mjs --out /etc",
+            "node scripts/shot.mjs --out=/etc",
+            "node",
             "pnpm add left-pad",
             "pnpm publish",
             "pnpm exec tsc",
