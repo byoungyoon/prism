@@ -606,16 +606,6 @@
     align-self: stretch;
   }
 }
-/* a desk whose cat asks for permission keeps room above it for the bubble (it would cover the row above) */
-.of-desk-asking {
-  margin-top: 94px;
-}
-/* desks in a row line up at the bottom: the room made above an asking desk is above its neighbours
-   too, so the bubble sits over everyone's heads instead of on a neighbour's face */
-.of-row {
-  align-items: flex-end;
-}
-
 /* T-52: the room is alive. The lounge grows and shrinks smoothly instead of jumping, desks fade in, and a door on the wall is
    where cats who clock out walk off to. */
 .of-lounge,

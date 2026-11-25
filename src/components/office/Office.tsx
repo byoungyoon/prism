@@ -54,10 +54,10 @@ const restPose = (key: string, turn: number): Pose => {
 /** most cats shown in the lounge; the rest are a "+N" */
 const LOUNGE_MAX = 6;
 
-function Desk({ m, asking, onOpen }: { m: Member; asking?: boolean; onOpen: () => void }) {
+function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
   const role = m.agent.role;
   return (
-    <button className={`of-desk of-desk-${role}${asking ? " of-desk-asking" : ""}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
+    <button className={`of-desk of-desk-${role}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
       <span className={`of-chair ${role === "lead" ? "px-chair-lead" : "px-chair"}`} />
       <span className="of-seat" data-seat={m.key} />
       <span className={`of-desk-top ${role === "lead" ? "px-desk-lead" : "px-desk"}`}>
@@ -197,9 +197,8 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   const lounging = waitingAll.slice(0, LOUNGE_MAX);
   const extra = waitingAll.length - lounging.length;
   const members = [...deskMembers, ...lounging];
-  // what the layout depends on: who is where, and which desks ask (an asking desk makes room above
-  // it, which moves the seats without changing who is in the room)
-  const shape = members.map((m) => m.key).join("|") + "#" + Object.keys(asks).sort().join("|");
+  // what the layout depends on: who is where (a permission bubble floats over the room and moves nothing)
+  const shape = members.map((m) => m.key).join("|");
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
@@ -339,8 +338,8 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   for (const k of Object.keys(cameIn.current)) if (!lounging.some((m) => m.key === k)) delete cameIn.current[k];
   for (const m of lounging) cameIn.current[m.key] ??= Date.now();
   const settled = (k: string) => Date.now() - (cameIn.current[k] ?? 0) > 6000;
-  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a neighbour
-  // asks and makes room above its desk, a desk joins the row) moves with the desk, instantly —
+  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a desk
+  // joins the row) moves with the desk, instantly —
   // walking there would leave the cat behind, under the desk, for a moment
   const wasAtDesk = useRef<Set<string>>(new Set());
   const prevDesk = wasAtDesk.current;
@@ -422,7 +421,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
                   return row.length ? (
                     <div key={role} className={`of-row of-row-${role}`}>
                       {row.map((m) => (
-                        <Desk key={m.key} m={m} asking={!!asks[m.key]?.length} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
+                        <Desk key={m.key} m={m} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
                       ))}
                     </div>
                   ) : null;
