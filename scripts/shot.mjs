@@ -142,7 +142,7 @@ function fakeApi(cmd, args, data) {
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
 async function openScreen(page, screen, o, data) {
   const narrow = o.width <= 820;
-  const phoneTab = (label) => page.getByRole("tablist", { name: "화면" }).getByRole("tab", { name: label, exact: true });
+  const phoneTab = (label) => page.getByRole("tablist", { name: "화면" }).getByRole("tab", { name: new RegExp(`^${label}(\\s*\\d+)?$`) }); // "사무실 1": a badge may follow
   const focus = data.focus;
   await page.evaluate(
     ({ screen, focus, dark, edit }) => {

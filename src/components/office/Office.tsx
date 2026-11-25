@@ -9,6 +9,7 @@ import type { Agent, ChatMsg, Project, Task, TeamSnapshot } from "../../lib/api"
 import { plainAction } from "../../lib/plainAction";
 import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
+import { ensurePixelOffice } from "./pixelOffice";
 import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
 
@@ -57,28 +58,28 @@ function Desk({ m, asking, onOpen }: { m: Member; asking?: boolean; onOpen: () =
   const role = m.agent.role;
   return (
     <button className={`of-desk of-desk-${role}${asking ? " of-desk-asking" : ""}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
-      <span className="of-chair" />
+      <span className={`of-chair ${role === "lead" ? "px-chair-lead" : "px-chair"}`} />
       <span className="of-seat" data-seat={m.key} />
-      <span className="of-desk-top">
+      <span className={`of-desk-top ${role === "lead" ? "px-desk-lead" : "px-desk"}`}>
         {role === "lead" ? (
           <>
-            <span className="of-monitor" />
-            <span className="of-monitor of-monitor-2" />
-            <span className="of-headset" />
+            <span className="of-monitor px-monitor" />
+            <span className="of-monitor of-monitor-2 px-monitor" />
+            <span className="of-headset px-headset" />
           </>
         ) : role === "mgr" ? (
           <>
-            <span className="of-monitor" />
-            <span className="of-papers" />
+            <span className="of-monitor px-monitor" />
+            <span className="of-papers px-papers" />
           </>
         ) : (
           <>
-            <span className="of-monitor" />
-            <span className="of-toolbox" />
+            <span className="of-monitor px-monitor" />
+            <span className="of-toolbox px-toolbox" />
           </>
         )}
-        <span className="of-keyboard" />
-        <span className="of-mug" />
+        <span className="of-keyboard px-keyboard" />
+        <span className="of-mug px-mug" />
       </span>
       <span className="of-plate">{m.agent.name}</span>
     </button>
@@ -151,6 +152,8 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
 
 /** `onTeam`: open a team's reports (a click on a resting team's chip) */
 export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}) {
+  // the furniture's pixel pictures (drawn once, kept in a <style>)
+  ensurePixelOffice();
   const shown = useOfficeTeams();
   const openIn = useApp((s) => s.openIn);
   const narrow = useNarrow();
@@ -372,11 +375,11 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     <div className="of-room" aria-label="사무실: 팀원들이 일하는 모습">
       <div ref={content} className="of-content">
         <div className="of-wall" aria-hidden="true">
-          <span className="of-window" />
-          <span className="of-window" />
-          <span className="of-clock" />
-          <span className="of-shelf" />
-          <span className="of-door" data-door />
+          <span className="of-window px-window" />
+          <span className="of-window px-window" />
+          <span className="of-clock px-clock" />
+          <span className="of-shelf px-shelf" />
+          <span className="of-door px-door" data-door />
         </div>
         {resting.length > 0 && (
           <div className="of-resting" aria-label="쉬는 팀">
@@ -412,11 +415,13 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
           <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
-            <span className="of-rug" />
-            <span className="of-sofa" data-spot />
-            <span className="of-coffee" data-spot />
-            <span className="of-plant" data-spot />
-            <span className="of-plant of-plant-2" data-spot />
+            <span className="of-rug px-rug" data-spot />
+            <span className="of-sofa px-sofa" data-spot />
+            <span className="of-cushion px-cushion" />
+            <span className="of-coffee px-coffee" data-spot />
+            <span className="of-tower px-tower" data-spot />
+            <span className="of-plant px-plant" data-spot />
+            <span className="of-plant of-plant-2 px-plant" data-spot />
           </div>
         </div>
         <div className="of-cats">

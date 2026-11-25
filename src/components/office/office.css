@@ -1,38 +1,34 @@
-/* The office in the middle of the 관제탑. Desks are laid out by CSS (flex-wrap pods); the cats'
-   layer sits between each desk's chair (z 1) and its desk top (z 3), so a cat at work looks seated
-   behind its desk. Nothing here makes a stacking context except the room itself. */
+/* The office in the middle of the 관제탑, drawn in dots like the cats (T-61): every piece of
+   furniture is a small pixel picture (pixelOffice.ts) shown at whole-dot sizes — `--u` screen pixels
+   per dot, the same as a cat's dot — so the room and its cats share one grid. Desks are laid out by
+   CSS (flex-wrap pods); the cats' layer sits between each desk's chair (z 1) and its desk top (z 3),
+   so a cat at work looks seated behind its desk. Nothing here makes a stacking context except the
+   room itself. */
 
 .t-light {
-  --of-wall: #f2e6d4;
-  --of-wall-2: #ead9c2;
-  --of-floor: #ecdcc4;
-  --of-floor-line: rgba(120, 90, 50, 0.07);
-  --of-desk: #d4a676;
-  --of-desk-edge: #b88656;
-  --of-chair: #5d667c;
-  --of-monitor: #2f3442;
-  --of-screen: #9fd8cc;
-  --of-pod: rgba(255, 255, 255, 0.3);
-  --of-rug: #c9dbea;
-  --of-sofa: #e5a467;
-  --of-sofa-2: #d58e4f;
-  --of-window: linear-gradient(180deg, #cfe3f2, #eaf3f8);
+  --of-floor: #f1e0c8;
+  --of-edge: #d4a77c;
+  --of-base: #d9b38c;
+  --of-pod: rgba(255, 250, 242, 0.45);
+  --of-pod-line: rgba(176, 132, 92, 0.45);
+  --of-lounge-line: rgba(176, 132, 92, 0.55);
 }
 .t-dark {
-  --of-wall: #2b241d;
-  --of-wall-2: #241e18;
-  --of-floor: #2a2219;
-  --of-floor-line: rgba(255, 240, 220, 0.05);
-  --of-desk: #8a6644;
-  --of-desk-edge: #6e5034;
-  --of-chair: #3c4252;
-  --of-monitor: #15171d;
-  --of-screen: #4f8f86;
-  --of-pod: rgba(255, 248, 238, 0.04);
-  --of-rug: #3d4f63;
-  --of-sofa: #a8703f;
-  --of-sofa-2: #8a5a30;
-  --of-window: linear-gradient(180deg, #24344a, #34465c);
+  --of-floor: #33291f;
+  --of-edge: #7f5d41;
+  --of-base: #5a4532;
+  --of-pod: rgba(255, 244, 228, 0.04);
+  --of-pod-line: rgba(214, 178, 140, 0.28);
+  --of-lounge-line: rgba(214, 178, 140, 0.34);
+}
+/* one dot of the drawings: a cat at 58px is drawn 3 screen pixels to the dot, at 46px (a phone) 2 */
+.of-room {
+  --u: 3px;
+}
+@media (max-width: 820px) {
+  .of-room {
+    --u: 2px;
+  }
 }
 
 .of-center {
@@ -117,11 +113,13 @@
   overflow: auto;
   border-radius: 18px;
   border: 1px solid var(--glass-border);
-  background:
-    repeating-linear-gradient(90deg, var(--of-floor-line) 0 1px, transparent 1px 64px),
-    repeating-linear-gradient(0deg, var(--of-floor-line) 0 1px, transparent 1px 32px),
-    var(--of-floor);
+  background: var(--pxi-floor) 0 0 / calc(var(--u) * 24) calc(var(--u) * 8) repeat, var(--of-floor);
+  image-rendering: pixelated;
   box-shadow: var(--shadow-sm), var(--hi);
+}
+/* words stay crisp text on top of the dots */
+.of-room :where(span, b, button) {
+  image-rendering: auto;
 }
 .of-content {
   position: relative;
@@ -142,75 +140,34 @@
 .of-wall {
   position: relative;
   flex: none;
-  height: 62px;
-  background: linear-gradient(180deg, var(--of-wall), var(--of-wall-2));
-  border-bottom: 3px solid var(--of-desk-edge);
+  height: calc(var(--u) * 22);
+  background: var(--pxi-wall) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  image-rendering: pixelated;
+  border-bottom: calc(var(--u) * 2) solid var(--of-base);
+  box-shadow: 0 var(--u) 0 var(--of-edge);
+}
+.of-wall > span {
+  position: absolute;
+  image-rendering: pixelated;
 }
 .of-window {
-  position: absolute;
-  top: 12px;
+  top: calc(var(--u) * 3);
   left: 6%;
-  width: 92px;
-  height: 36px;
-  border-radius: 6px;
-  background: var(--of-window);
-  border: 3px solid var(--of-desk-edge);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
-}
-.of-window::after {
-  content: "";
-  position: absolute;
-  inset: 0 50%;
-  border-left: 2px solid var(--of-desk-edge);
 }
 .of-window + .of-window {
-  left: calc(6% + 112px);
+  left: calc(6% + var(--u) * 37);
 }
 .of-clock {
-  position: absolute;
-  top: 14px;
-  right: 9%;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: #fffaf2;
-  border: 3px solid var(--of-desk-edge);
-}
-.of-clock::before,
-.of-clock::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 2px;
-  background: #2b2520;
-  transform-origin: 50% 0;
-}
-.of-clock::before {
-  height: 8px;
-  transform: translateX(-50%) rotate(200deg);
-}
-.of-clock::after {
-  height: 11px;
-  transform: translateX(-50%) rotate(110deg);
+  top: calc(var(--u) * 4);
+  right: max(9%, calc(var(--u) * 22));
 }
 .of-shelf {
-  position: absolute;
-  top: 30px;
-  right: calc(9% + 56px);
-  width: 70px;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--of-desk-edge);
+  top: calc(var(--u) * 5);
+  right: calc(max(9%, var(--u) * 22) + var(--u) * 18);
 }
-.of-shelf::before {
-  content: "";
-  position: absolute;
-  bottom: 6px;
-  left: 6px;
-  width: 30px;
-  height: 14px;
-  background: linear-gradient(90deg, #d9725f 0 22%, transparent 22% 30%, #7fb08a 30% 52%, transparent 52% 60%, #8fa3d6 60% 82%, transparent 82%);
+.of-door {
+  right: calc(var(--u) * 4);
+  bottom: 0;
 }
 
 .of-floor {
@@ -239,9 +196,9 @@
   flex-direction: column;
   gap: 4px;
   padding: 20px 12px 10px;
-  border-radius: 18px;
+  border-radius: 6px;
   background: var(--of-pod);
-  border: 1.5px dashed var(--line);
+  border: 2px dashed var(--of-pod-line);
 }
 .of-pod-name {
   position: absolute;
@@ -266,48 +223,40 @@
   gap: 6px 10px;
 }
 
-/* ── a desk: chair behind (z 1), the seat mark, the desk top in front (z 3), a name plate ── */
+/* ── a desk: chair behind (z 1), the seat mark, the desk top in front (z 3), a name plate ──
+   Sizes in dots (× --u): the chair 6–22, the cat's feet at 25, the desk top 20–32, the plate at 33. */
 .of-desk {
-  --dw: 92px;
+  --dw: calc(var(--u) * 45);
   position: relative;
   display: block;
   width: var(--dw);
-  height: 92px;
+  height: calc(var(--u) * 33 + 20px);
   padding: 0;
   border: 0;
   background: none;
-  border-radius: 10px;
+  border-radius: 6px;
   cursor: pointer;
 }
 .of-desk:hover .of-desk-top,
 .of-desk:focus-visible .of-desk-top {
-  filter: brightness(1.06);
+  filter: brightness(1.05);
   outline: 2px solid var(--amber);
   outline-offset: 1px;
 }
 .of-desk-lead {
-  --dw: 126px;
+  --dw: calc(var(--u) * 59);
 }
 .of-chair {
   position: absolute;
   z-index: 1;
   left: 50%;
-  top: 22px;
-  width: 34px;
-  height: 32px;
+  top: calc(var(--u) * 6);
   transform: translateX(-50%);
-  border-radius: 12px 12px 6px 6px;
-  background: var(--of-chair);
-  box-shadow: inset 0 -6px 0 rgba(0, 0, 0, 0.15);
-}
-.of-desk-lead .of-chair {
-  width: 40px;
-  background: #7b4a3a;
 }
 .of-seat {
   position: absolute;
   left: 50%;
-  top: 56px;
+  top: calc(var(--u) * 25);
   width: 1px;
   height: 1px;
 }
@@ -315,105 +264,56 @@
   position: absolute;
   z-index: 3;
   left: 0;
-  right: 0;
-  top: 48px;
-  height: 26px;
-  border-radius: 6px;
-  background: linear-gradient(180deg, var(--of-desk) 0 7px, var(--of-desk-edge) 7px);
-  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.08);
+  top: calc(var(--u) * 20);
+}
+/* things on the desk stand on its top (their feet 3 dots below the desk top's edge) */
+.of-desk-top > span {
+  position: absolute;
+  bottom: calc(var(--u) * 9);
 }
 .of-monitor {
-  position: absolute;
-  bottom: 20px;
-  left: 6px;
-  width: 22px;
-  height: 17px;
-  border-radius: 3px;
-  background: var(--of-monitor);
-  box-shadow: inset 0 0 0 2px var(--of-monitor), inset 0 0 0 7px var(--of-screen);
-}
-.of-monitor::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -4px;
-  width: 6px;
-  height: 4px;
-  transform: translateX(-50%);
-  background: var(--of-monitor);
+  left: var(--u);
 }
 .of-monitor-2 {
   left: auto;
-  right: 6px;
+  right: var(--u);
 }
-.of-keyboard {
-  position: absolute;
-  top: 1px;
+.of-desk-top > .of-keyboard {
+  bottom: auto;
+  top: 0;
   left: 50%;
-  width: 26px;
-  height: 4px;
   transform: translateX(-50%);
-  border-radius: 2px;
-  background: #e9e2d6;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
 }
-.of-mug {
-  position: absolute;
-  bottom: 19px;
-  right: 9px;
-  width: 7px;
-  height: 8px;
-  border-radius: 1px 1px 3px 3px;
-  background: #fffaf2;
-  box-shadow: 2px 0 0 -0.5px #fffaf2;
+.of-desk-top > .of-mug {
+  bottom: auto;
+  top: calc(var(--u) * -1);
+  right: calc(var(--u) * 3);
 }
-.of-desk-lead .of-mug {
+.of-desk-lead .of-mug,
+.of-desk-mgr .of-mug,
+.of-desk-worker .of-mug {
   display: none;
 }
-.of-headset {
-  position: absolute;
-  bottom: 18px;
-  left: 50%;
-  width: 14px;
-  height: 9px;
-  margin-left: 18px;
-  border: 2.5px solid #3b4257;
-  border-bottom: 0;
-  border-radius: 9px 9px 0 0;
+.of-desk-top > .of-headset {
+  bottom: auto;
+  top: calc(var(--u) * -2);
+  left: calc(50% + var(--u) * 9);
 }
-.of-papers {
-  position: absolute;
-  bottom: 18px;
-  right: 7px;
-  width: 18px;
-  height: 9px;
-  background: #fffaf2;
-  box-shadow: 0 -3px 0 -1px #f0e6d6, 0 -6px 0 -2px #fffaf2;
-  border-radius: 1px;
-}
-.of-desk-mgr .of-mug {
-  display: none;
-}
+.of-papers,
 .of-toolbox {
-  position: absolute;
-  bottom: 18px;
-  right: 18px;
-  width: 15px;
-  height: 9px;
-  border-radius: 2px;
-  background: #d9725f;
-  box-shadow: inset 0 3px 0 rgba(0, 0, 0, 0.15);
+  right: var(--u);
 }
 .of-plate {
   position: absolute;
   z-index: 3;
   left: 50%;
-  top: 76px;
+  top: calc(var(--u) * 33);
   transform: translateX(-50%);
   max-width: calc(var(--dw) - 4px);
   padding: 0 6px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: 4px;
+  border: 1px solid var(--of-pod-line);
   background: var(--glass2);
   color: var(--text);
   font-size: 10.5px;
@@ -423,93 +323,71 @@
   white-space: nowrap;
 }
 
-/* ── the lounge ── */
+/* ── the lounge: checker tiles, a rug, the sofa with its cushions, a floor cushion, a coffee
+   machine, a cat tower and two plants ── */
 .of-lounge {
   position: relative;
   flex: none;
   width: 250px;
   min-height: 280px;
   align-self: stretch;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.16);
-  border: 1.5px dashed var(--line);
+  border-radius: 6px;
+  background: var(--pxi-tiles) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  image-rendering: pixelated;
+  border: 2px solid var(--of-lounge-line);
 }
 .of-lounge-name {
   position: absolute;
+  z-index: 3;
   top: -10px;
   left: 14px;
   padding: 1px 9px;
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--bg2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--of-lounge-line);
   font-size: 11.5px;
   font-weight: 600;
 }
-.of-rug {
+.of-lounge > .of-rug,
+.of-lounge > .of-sofa,
+.of-lounge > .of-coffee,
+.of-lounge > .of-plant,
+.of-lounge > .of-tower,
+.of-lounge > .of-cushion {
   position: absolute;
-  left: 14%;
-  right: 14%;
-  bottom: 12%;
-  height: min(34%, 130px);
-  border-radius: 50%;
-  background: var(--of-rug);
-  opacity: 0.8;
+}
+/* the rug in the middle of the lounge, however tall it grows */
+.of-rug {
+  left: 50%;
+  top: 58%;
+  transform: translate(-50%, -50%);
 }
 .of-sofa {
-  position: absolute;
-  top: 26px;
+  top: calc(var(--u) * 9);
   left: 50%;
-  width: 120px;
-  height: 40px;
   transform: translateX(-50%);
-  border-radius: 14px 14px 8px 8px;
-  background: var(--of-sofa);
-  box-shadow: inset 0 -14px 0 var(--of-sofa-2), -8px 6px 0 -2px var(--of-sofa-2), 8px 6px 0 -2px var(--of-sofa-2);
+}
+.of-cushion {
+  left: calc(50% + var(--u) * 8);
+  top: 58%;
 }
 .of-coffee {
-  position: absolute;
-  bottom: 14px;
-  right: 14px;
-  width: 26px;
-  height: 34px;
-  border-radius: 5px;
-  background: #5d667c;
-  box-shadow: inset 0 9px 0 #3b4257, inset 0 -6px 0 #3b4257;
-}
-.of-coffee::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  bottom: 7px;
-  width: 9px;
-  height: 8px;
-  border-radius: 1px 1px 3px 3px;
-  background: #fffaf2;
+  bottom: calc(var(--u) * 4);
+  right: calc(var(--u) * 4);
 }
 .of-plant {
-  position: absolute;
-  bottom: 14px;
-  left: 14px;
-  width: 18px;
-  height: 16px;
-  border-radius: 2px 2px 6px 6px;
-  background: #c8764f;
-}
-.of-plant::before {
-  content: "";
-  position: absolute;
-  bottom: 13px;
-  left: -7px;
-  width: 32px;
-  height: 26px;
-  border-radius: 50% 50% 40% 40%;
-  background: radial-gradient(circle at 30% 60%, #7fb08a 0 34%, transparent 35%), radial-gradient(circle at 70% 55%, #6aa077 0 34%, transparent 35%), radial-gradient(circle at 50% 30%, #8cc196 0 36%, transparent 37%);
+  top: calc(var(--u) * 8);
+  right: calc(var(--u) * 3);
 }
 .of-plant-2 {
-  left: auto;
-  right: 14px;
-  top: 30px;
-  bottom: auto;
+  top: auto;
+  right: auto;
+  bottom: calc(var(--u) * 4);
+  left: calc(var(--u) * 24);
+}
+.of-tower {
+  bottom: calc(var(--u) * 4);
+  left: calc(var(--u) * 4);
 }
 
 /* ── a permission request over a cat's head ── */
@@ -578,24 +456,8 @@
   border-bottom: 1.5px solid var(--amber);
 }
 
-/* ── a phone: smaller desks, the lounge below ── */
+/* ── a phone: smaller dots (--u 2px), the lounge below ── */
 @media (max-width: 820px) {
-  .of-wall {
-    height: 44px;
-  }
-  .of-window {
-    top: 8px;
-    width: 64px;
-    height: 26px;
-  }
-  .of-window + .of-window {
-    left: calc(6% + 80px);
-  }
-  .of-clock {
-    top: 8px;
-    width: 24px;
-    height: 24px;
-  }
   .of-shelf {
     display: none;
   }
@@ -607,32 +469,11 @@
   }
   .of-pods {
     justify-content: center;
+    flex: none;
   }
   .of-pod {
     flex: 1 1 100%;
     padding: 18px 6px 8px;
-  }
-  .of-desk {
-    --dw: 80px;
-    height: 84px;
-  }
-  .of-desk-lead {
-    --dw: 108px;
-  }
-  .of-chair {
-    top: 18px;
-    width: 30px;
-    height: 30px;
-  }
-  .of-seat {
-    top: 53px;
-  }
-  .of-desk-top {
-    top: 44px;
-    height: 22px;
-  }
-  .of-plate {
-    top: 68px;
   }
   .of-lounge {
     width: auto;
@@ -642,9 +483,6 @@
 
 /* ── T-44: roomier office — bigger desks (scaled as a whole: the cats' seats are measured from the
    screen, so they follow), a one-line strip for teams at rest, a "+N" for a crowded lounge ── */
-.of-desk {
-  zoom: 1.4;
-}
 .of-row {
   gap: 4px 6px;
 }
@@ -667,7 +505,7 @@
   top: -10px;
   right: 14px;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--chip);
   color: var(--text2);
   font-size: 12px;
@@ -710,9 +548,6 @@
   color: var(--text2);
 }
 @media (max-width: 820px) {
-  .of-desk {
-    zoom: 1.2;
-  }
   .of-lounge {
     width: auto;
   }
@@ -756,12 +591,15 @@
     align-items: stretch;
     gap: 22px;
   }
+  /* desks take the room they need; the lounge gets what is left (no empty floor in between) */
   .of-pods {
     justify-content: center;
+    flex: none;
   }
   .of-lounge {
     width: auto;
     min-height: 200px;
+    flex: 1 1 auto;
   }
   .of-lounge-quiet {
     min-height: 150px;
@@ -788,40 +626,11 @@
 }
 /* (opacity only: a moving desk would be measured mid-move and its cat seated off the chair) */
 .of-desk {
-  animation: of-desk-in 0.4s ease-out both;
+  animation: of-desk-in 0.4s ease-out;
 }
 @keyframes of-desk-in {
   from {
     opacity: 0;
-  }
-}
-.of-door {
-  position: absolute;
-  right: 14px;
-  bottom: -3px;
-  width: 30px;
-  height: 46px;
-  border-radius: 5px 5px 0 0;
-  background: linear-gradient(90deg, var(--of-desk-edge) 0 3px, #c89a6a 3px calc(100% - 3px), var(--of-desk-edge) calc(100% - 3px));
-  border-top: 3px solid var(--of-desk-edge);
-}
-.of-door::after {
-  content: "";
-  position: absolute;
-  right: 6px;
-  top: 52%;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #fff3d6;
-}
-.of-clock {
-  right: max(9%, 60px);
-}
-@media (max-width: 820px) {
-  .of-door {
-    height: 34px;
-    width: 24px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
