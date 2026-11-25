@@ -1285,6 +1285,8 @@ fn restore_plan(agents: &[Agent], tasks: &[Task]) -> Vec<Restore> {
     let mut out: Vec<Restore> = agents
         .iter()
         .filter(|a| a.status == "off" || (a.role == "lead" && a.status == "done"))
+        // a resting 작업자 has no session to bring back (it returns to the lounge)
+        .filter(|a| a.rest_since.is_none())
         .filter(|a| a.resume_as.is_some() || a.role == "lead" || running(a))
         .map(|a| Restore {
             id: a.id.clone(),
@@ -1312,7 +1314,9 @@ const KEEP_FINISHED: usize = 6;
 /// Cards of the removed ones keep the name (`who`). Returns the removed ids (to drop transcripts).
 fn prune_finished(agents: &mut Vec<Agent>, tasks: &mut [Task]) -> Vec<String> {
     let card_finished = |a: &Agent| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed");
-    let ended: Vec<String> = agents.iter().filter(|a| a.role != "lead" && a.status == "off" && card_finished(a)).map(|a| a.id.clone()).collect();
+    // a 작업자 resting in the lounge is off only while its team is (stopped, or the app restarted):
+    // it is not finished — it goes back to the lounge when the team clocks in (`back_to_lounge`)
+    let ended: Vec<String> = agents.iter().filter(|a| a.role != "lead" && a.status == "off" && a.rest_since.is_none() && card_finished(a)).map(|a| a.id.clone()).collect();
     for a in agents.iter_mut().filter(|a| ended.contains(&a.id)) {
         a.status = "done".into();
         a.resume_as = None;
@@ -1367,6 +1371,15 @@ fn rest_agent(a: &mut Agent, now: u64) {
     a.pending.clear();
     a.resume_as = None;
     a.ready = true;
+}
+
+/// The team clocked in again: its resting 작업자 (off while the team was) are back in the lounge.
+fn back_to_lounge(agents: &mut [Agent]) {
+    for a in agents.iter_mut().filter(|a| a.rest_since.is_some() && a.status == "off") {
+        a.status = "wait".into();
+        a.stuck = None;
+        a.resume_as = None;
+    }
 }
 
 /// How a message to a 팀원 gets there (see `TeamManager::deliver`).
@@ -1924,6 +1937,7 @@ impl TeamManager {
         for a in &mut team.agents {
             a.resume_as = None;
         }
+        back_to_lounge(&mut team.agents);
         team.log(
             match why.as_deref() {
                 Some("update") => "앱이 업데이트로 다시 시작됐다. 팀이 하던 일을 이어서 한다.",
@@ -5022,6 +5036,34 @@ mod rest_tests {
         assert!(!any && agents[0].resume_as.is_none(), "nothing to resume: no session runs");
         agents[0].status = "off".into(); // what quitting does to everyone
         assert!(restore_plan(&agents, &tasks).is_empty());
+    }
+
+    #[test]
+    fn a_resting_worker_survives_an_app_restart_and_returns_to_the_lounge() {
+        // the app flow: delegate → report (card in review, member "done") → complete_task (rests)
+        let mut agents = vec![worker("W7", "W1", "T-1")];
+        let mut tasks = vec![card("T-1", "표", "review", "W7", None)];
+        agents[0].status = "done".into(); // what `report` does
+        tasks[0].stage = "done".into(); // complete_task
+        rest_agent(&mut agents[0], 1_000);
+        // its session is killed on purpose; a stale-member sweep leaves it alone
+        assert_eq!(settle_stale(&mut agents, &tasks, &|_| false, 2_000), 0);
+        assert!(prune_finished(&mut agents, &mut tasks).is_empty());
+        assert_eq!((agents[0].status.as_str(), agents[0].rest_since), ("wait", Some(1_000)));
+
+        // the app restarts (update / quit): everyone not done is off, the saved team is tidied
+        mark_suspended(&mut agents, &mut None, "update");
+        agents[0].status = "off".into();
+        let removed = prune_finished(&mut agents, &mut tasks);
+        assert!(removed.is_empty());
+        assert_eq!(agents[0].status, "off", "not turned into a finished member");
+        assert_eq!(agents[0].rest_since, Some(1_000), "still resting");
+        assert!(restore_plan(&agents, &tasks).is_empty(), "no session to bring back");
+
+        // the team clocks in again: it is in the lounge, ready for the next card
+        back_to_lounge(&mut agents);
+        assert_eq!(agents[0].status, "wait");
+        assert_eq!(pick_resting(&agents, "lead").as_deref(), Some("W7"));
     }
 
     #[test]

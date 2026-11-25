@@ -529,6 +529,17 @@
   line-height: 1.35;
   color: var(--text);
 }
+/* a long tool name or path wraps (it pushed the bubble wider than the room) and stops at two lines;
+   the full text is in its tooltip and in the chat's request box */
+.of-ask-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
 .of-ask-more {
   color: var(--text2);
 }
@@ -538,6 +549,9 @@
 }
 .of-ask-buttons button {
   min-height: 28px;
+  min-width: 0;
+  padding: 0 4px;
+  white-space: nowrap;
   flex: 1;
   border-radius: 999px;
   font-size: 12px;
@@ -756,10 +770,66 @@
 }
 /* a desk whose cat asks for permission keeps room above it for the bubble (it would cover the row above) */
 .of-desk-asking {
-  margin-top: 62px;
+  margin-top: 94px;
 }
 /* desks in a row line up at the bottom: the room made above an asking desk is above its neighbours
    too, so the bubble sits over everyone's heads instead of on a neighbour's face */
 .of-row {
   align-items: flex-end;
+}
+
+/* T-52: the room is alive. The lounge grows and shrinks smoothly instead of jumping, desks fade in, and a door on the wall is
+   where cats who clock out walk off to. */
+.of-lounge,
+.of-lounge-quiet {
+  transition:
+    min-height 0.45s ease,
+    width 0.45s ease;
+}
+/* (opacity only: a moving desk would be measured mid-move and its cat seated off the chair) */
+.of-desk {
+  animation: of-desk-in 0.4s ease-out both;
+}
+@keyframes of-desk-in {
+  from {
+    opacity: 0;
+  }
+}
+.of-door {
+  position: absolute;
+  right: 14px;
+  bottom: -3px;
+  width: 30px;
+  height: 46px;
+  border-radius: 5px 5px 0 0;
+  background: linear-gradient(90deg, var(--of-desk-edge) 0 3px, #c89a6a 3px calc(100% - 3px), var(--of-desk-edge) calc(100% - 3px));
+  border-top: 3px solid var(--of-desk-edge);
+}
+.of-door::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  top: 52%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #fff3d6;
+}
+.of-clock {
+  right: max(9%, 60px);
+}
+@media (max-width: 820px) {
+  .of-door {
+    height: 34px;
+    width: 24px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .of-lounge,
+  .of-lounge-quiet {
+    transition: none;
+  }
+  .of-desk {
+    animation: none;
+  }
 }

@@ -68,6 +68,25 @@ export function finishedCrew(team: TeamSnapshot): Agent[] {
     });
 }
 
+/**
+ * 팀장·작업자 who reported and wait for the 총괄 to check their card (it is in review): their
+ * session is done, so they aren't live, but they aren't finished either — the office shows them in
+ * the lounge as "보고함". Not counting a name that is live again.
+ */
+export function reportedCrew(team: TeamSnapshot): Agent[] {
+  const live = new Set(liveCrew(team).map((a) => `${a.role}:${a.name}`));
+  const seen = new Set<string>();
+  return team.agents
+    .filter((a) => a.role !== "lead" && !a.restSince && (a.status === "done" || a.status === "off") && team.tasks.some((t) => t.id === a.taskId && t.stage === "review"))
+    .sort((x, y) => y.statusSince - x.statusSince)
+    .filter((a) => {
+      const k = `${a.role}:${a.name}`;
+      if (live.has(k) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+}
+
 /** Members working right now (or stuck asking). */
 export const busyCrew = (team: TeamSnapshot) => liveCrew(team).filter((a) => a.status === "work" || a.status === "block");
 

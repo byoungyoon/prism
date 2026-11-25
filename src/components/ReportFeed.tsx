@@ -40,13 +40,13 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
       <div className="flex items-center gap-2">
         {mine.length > 0 && <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />}
         {multi && <TeamTag project={project} className="text-[12px]" />}
-        <h3 className="m-0 flex-auto text-[14px] font-semibold">
+        <h3 className="m-0 min-w-0 flex-auto text-[14px] font-semibold">
           {mine.length ? `허락이 필요해요 · ${mine.length}건` : `윗선이 판단 중 · ${items.length}건`}
         </h3>
         {mine.length > 1 && (
           <button
             onClick={() => mine.forEach((m) => void answer(m.id, "allow"))}
-            className="min-h-8 rounded-full border-0 px-3.5 text-[12.5px] font-semibold"
+            className="min-h-8 shrink-0 whitespace-nowrap rounded-full border-0 px-3.5 text-[12.5px] font-semibold"
             style={{ background: "var(--amber)", color: "#2B2520" }}
           >
             모두 허용
@@ -57,17 +57,17 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
         {items.map((m) => {
           const p = m.permission!;
           return (
-            <motion.div key={m.id} data-critter-anchor={`ask:${project.id}:${m.permission?.agentId}`} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
+            <motion.div key={m.id} data-critter-anchor={`ask:${project.id}:${m.permission?.agentId}`} layout="position" exit={{ opacity: 0, height: 0 }} className="flex min-w-0 flex-wrap items-center gap-2 overflow-hidden rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
               <span className="shrink-0 text-[12.5px] font-semibold">{name(p.agentId)}</span>
               {p.decider && <span className="shrink-0 text-[11.5px] text-ink-2">{name(p.decider)}가 판단 중</span>}
-              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:basis-full max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
+              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:max-h-32 max-[820px]:basis-full max-[820px]:overflow-y-auto max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
                 {p.tool === "Bash" ? `명령 실행 · ${p.detail}` : `${p.tool} · ${p.detail}`}
               </code>
-              <span className="flex shrink-0 gap-1">
-                <button onClick={() => answer(m.id, "allow")} className="min-h-7 rounded-full border-0 px-3 text-[12px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
+              <span className="ml-auto flex shrink-0 gap-1">
+                <button onClick={() => answer(m.id, "allow")} className="min-h-7 whitespace-nowrap rounded-full border-0 px-3 text-[12px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
                   허용
                 </button>
-                <button onClick={() => answer(m.id, "always")} className="min-h-7 rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
+                <button onClick={() => answer(m.id, "always")} className="min-h-7 whitespace-nowrap rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
                   항상 허용
                 </button>
                 <button onClick={() => answer(m.id, "deny")} className="min-h-7 rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--block-ink)" }}>
