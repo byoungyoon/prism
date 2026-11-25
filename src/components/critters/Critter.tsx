@@ -53,6 +53,8 @@ const MOTION: Record<Pose, { row: Row; frames: number[]; ms: number }> = {
   sit: { row: "look", frames: [0, 1, 2, 3], ms: 6400 },
   coffee: { row: "lie", frames: [2, 3], ms: 3000 },
   sleep: { row: "sleep", frames: [0, 1, 2, 3], ms: 3600 },
+  // held up by the scruff (a person is carrying it about): dangling, swaying
+  lift: { row: "lift", frames: [0, 1, 2, 3], ms: 900 },
 };
 
 /** how it feels, by what it's doing: at work focused, stuck asking (?), done happy (♥ or ♫), failed in tears, resting sleepy */

@@ -63,6 +63,29 @@ export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
   return pool[(base + Math.abs(h)) % pool.length];
 }
 
+/**
+ * 성격: 순응형(docile)은 들어 올려도 축 늘어져 있다가 놓은 자리에 앉거나 눕고, 반항형(wild)은
+ * 버둥대며 "하악!" 하고 놓으면 원래 자리로 도망간다. 털색마다 정해 두고, 약 20%는 반대로 행동한다.
+ */
+export type Temper = "docile" | "wild";
+export const TEMPER: Record<string, Temper> = {
+  white: "docile",
+  grey: "docile",
+  cream: "docile",
+  ginger: "wild",
+  bicolor: "docile",
+  silver: "wild",
+  black: "wild",
+  calico: "docile",
+  brown: "docile",
+  siamese: "wild",
+  pink: "docile",
+  tuxedo: "wild",
+};
+/** 성격과 반대로 행동할 확률 */
+export const TEMPER_FLIP = 0.2;
+export const temperOf = (coat: Coat): Temper => TEMPER[coat.id] ?? "docile";
+
 /** 코트 색과 어울리는 한국어 고양이 이름 (COATS와 같은 순서) */
 const CAT_NAMES = ["두부", "안개", "모모", "치즈", "보리", "은비", "까망이", "나비", "호두", "라떼", "솜이", "턱시"];
 
