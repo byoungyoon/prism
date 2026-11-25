@@ -342,6 +342,14 @@
   0% { transform: translateY(6px) scale(0.6); }
   100% { transform: none; }
 }
+/* held up by a person and struggling: the whole cat wriggles (it is lifted, so no feet touch the floor) */
+.cr-struggle .cr-whole {
+  animation: cr-wriggle 0.22s ease-in-out infinite alternate;
+}
+@keyframes cr-wriggle {
+  from { transform: rotate(-7deg); }
+  to { transform: rotate(7deg); }
+}
 /* one that leaves walks to the door, fading on the way */
 .cr-leaving {
   animation: cr-out 1s ease-in forwards;

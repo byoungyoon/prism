@@ -4,7 +4,7 @@ import type { Agent, Role, Task } from "../../lib/api";
 export type CritterState = "idle" | "walk" | "work" | "think" | "block" | "done" | "fail" | "off";
 
 /** the body pose drawn for each state (poses.tsx); a `pose` prop on <Critter> overrides it */
-export type Pose = "sit" | "type" | "think" | "coffee" | "sleep" | "walk" | "cheer" | "raise" | "sad";
+export type Pose = "sit" | "type" | "think" | "coffee" | "sleep" | "walk" | "cheer" | "raise" | "sad" | "lift";
 
 export const POSE_OF: Record<CritterState, Pose> = {
   idle: "coffee", // 쉬는 중: coffee break

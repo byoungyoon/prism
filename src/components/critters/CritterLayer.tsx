@@ -33,6 +33,8 @@ export interface PlacedCritter {
   snap?: boolean;
   /** where it comes in from when it first appears: it starts there and walks to its spot */
   from?: { x: number; y: number };
+  /** held by a person and struggling (wiggles in the hand) */
+  struggle?: boolean;
 }
 
 const RM = "(prefers-reduced-motion: reduce)";
@@ -129,7 +131,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
             {say}
           </span>
         )}
-        <span className="cr-in">
+        <span className={`cr-in${item.struggle ? " cr-struggle" : ""}`}>
           <Critter agent={item.agent} task={item.task} look={item.look} colorKey={item.colorKey} state={state} pose={state === "walk" ? undefined : item.pose} size={size} flip={w.flip} dir={w.dir} labelled />
           {name && label && <span className="cr-name">{label}</span>}
         </span>

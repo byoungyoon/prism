@@ -196,8 +196,8 @@ const HEAD_CURL: Art = [
 ];
 
 // ── frames ────────────────────────────────────────────
-export type Row = "front" | "side" | "back" | "sit" | "look" | "lie" | "sleep";
-export const ROWS: Row[] = ["front", "side", "back", "sit", "look", "lie", "sleep"];
+export type Row = "front" | "side" | "back" | "sit" | "look" | "lie" | "sleep" | "lift";
+export const ROWS: Row[] = ["front", "side", "back", "sit", "look", "lie", "sleep", "lift"];
 
 /** each frame of each row: the parts, and where the face goes (for faces.ts) */
 export interface Frame {
@@ -326,6 +326,23 @@ const lieFrame = (i: number): Frame => {
   };
 };
 
+/** held up by the scruff (a person lifts it): head higher, body and legs hanging, paws dangling; sways a little */
+const LEGS_DANGLE: Art = [".owlo...olwo.", ".olllo.olllo.", ".olllo.olllo.", "..ooo...ooo.."];
+const liftFrame = (i: number): Frame => {
+  const hx = 2 + ([0, 1, 0, -1] as const)[i];
+  const hy = GROUND - 22;
+  return {
+    parts: [
+      { art: TAIL_UP[i], x: hx + 9, y: hy - 2 },
+      { art: BODY_FRONT, x: hx + 3, y: hy + 12 },
+      { art: LEGS_DANGLE, x: hx + 3, y: hy + 16 },
+      { art: HEAD_FRONT, x: hx, y: hy },
+    ],
+    front: { eyes: [hx + FACE_FRONT.eyes[0], hx + FACE_FRONT.eyes[1]], eyeY: hy + FACE_FRONT.eyeY, nose: [hx + FACE_FRONT.nose[0], hy + FACE_FRONT.nose[1]] },
+    top: hy,
+  };
+};
+
 /** curled up asleep, breathing */
 const sleepFrame = (i: number): Frame => {
   const rise = i === 1 || i === 2 ? 1 : 0;
@@ -340,7 +357,7 @@ const sleepFrame = (i: number): Frame => {
   };
 };
 
-const MAKERS: Record<Row, (i: number) => Frame> = { front: frontFrame, side: sideFrame, back: backFrame, sit: sitFrame, look: lookFrame, lie: lieFrame, sleep: sleepFrame };
+const MAKERS: Record<Row, (i: number) => Frame> = { front: frontFrame, side: sideFrame, back: backFrame, sit: sitFrame, look: lookFrame, lie: lieFrame, sleep: sleepFrame, lift: liftFrame };
 
 /** frame `i` (0–3) of a row */
 export const frameOf = (row: Row, i: number): Frame => MAKERS[row](i);

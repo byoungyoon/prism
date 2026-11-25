@@ -678,3 +678,13 @@
     height: 260px;
   }
 }
+
+/* ── T-89: the lounge's furniture can be dragged about (a piece moved by hand gets its own place inline) ── */
+.of-lounge [data-piece] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.of-lounge [data-piece]:active {
+  cursor: grabbing;
+}

@@ -50,6 +50,9 @@ const SCREENS = {
   edit: "편집 (파일 편집 화면, 엔진이 없으면 설치 안내)",
   home: "홈 (프로젝트 목록)",
   settings: "팀 설정",
+  shop: "츄르 상점 (관제탑에서 츄르 잔액 버튼을 눌러 연 상태)",
+  arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
+  lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
 };
 
 const HELP = `사용법: pnpm shot -- [옵션]
@@ -144,6 +147,8 @@ function fakeApi(cmd, args, data) {
       return data.teams[args.projectId] ?? null;
     case "workspace_root":
       return "/tmp";
+    case "prefs_get":
+      return data.prefs;
     case "accounts_list":
     case "batch_list":
     case "usage_get":
@@ -157,6 +162,51 @@ function fakeApi(cmd, args, data) {
     default:
       return null;
   }
+}
+
+/** 휴게실 시연 1: 소품을 끌어다 옮긴다 (휴게실 안의 정해 둔 자리로, 화면 비율로) */
+async function arrangeLounge(page) {
+  const lounge = await page.locator(".of-lounge").first().boundingBox();
+  if (!lounge) return;
+  const plan = [
+    ["소파", 0.2, 0.66],
+    ["캣타워", 0.13, 0.4],
+    ["숨숨집", 0.82, 0.5],
+  ];
+  for (const [name, fx, fy] of plan) {
+    const box = await page.locator(`[data-piece="${name}"]`).first().boundingBox();
+    if (!box) continue;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(lounge.x + fx * lounge.width, lounge.y + fy * lounge.height, { steps: 12 });
+    await page.mouse.up();
+  }
+}
+
+/** 휴게실 시연 2: 쉬던 고양이를 마우스로 집어 든 채로 둔다 (버튼을 떼지 않아 들려 있는 모습이 남는다) */
+async function liftLoungeCat(page) {
+  // 고양이는 .of-cats에 있어서 휴게실 박스 안에 중심이 드는 쉬는 고양이만 고른다 (벽 쪽 고양이를 잡지 않게)
+  const lounge = await page.locator(".of-lounge").first().boundingBox();
+  if (!lounge) return;
+  const lounging = page.locator(".of-cats .cr-mover").filter({ has: page.locator(".cr-pose-coffee, .cr-pose-sit, .cr-pose-sleep") });
+  await lounging.first().waitFor({ timeout: 15000 }).catch(() => {});
+  let body = null;
+  for (let i = 0; i < (await lounging.count()); i++) {
+    const b = await lounging.nth(i).locator(".critter").boundingBox().catch(() => null);
+    if (!b) continue;
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height / 2;
+    if (cx > lounge.x && cx < lounge.x + lounge.width && cy > lounge.y && cy < lounge.y + lounge.height) {
+      body = b;
+      break;
+    }
+  }
+  if (!body) return;
+  const x = body.x + body.width / 2;
+  const y = body.y + body.height * 0.6;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y - 90, { steps: 14 });
 }
 
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
@@ -182,6 +232,13 @@ async function openScreen(page, screen, o, data) {
     if (screen === "board") await phoneTab("보드").click();
     if (screen === "chat") await phoneTab("총괄").click();
   }
+  if (screen === "arrange" || screen === "lift") {
+    if (narrow) await phoneTab("사무실").click();
+    await page.locator(".of-lounge [data-piece]").first().waitFor({ timeout: 15000 }).catch(() => {});
+    if (screen === "arrange") await arrangeLounge(page);
+    else await liftLoungeCat(page);
+  }
+  if (screen === "shop") await page.getByRole("button", { name: /츄르 상점/ }).click();
   if (screen === "team") {
     // 팀 요약 탭 줄에서 첫 번째 팀 (0번은 🏢 사무실)
     await page.getByRole("tablist", { name: "팀 요약" }).getByRole("tab").nth(1).click();

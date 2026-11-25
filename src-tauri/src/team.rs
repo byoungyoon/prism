@@ -3028,6 +3028,12 @@ impl TeamManager {
                     let b = crate::tokens::Bucket { input, output, cache_read, cache_write };
                     self.tokens.lock().unwrap().add(pid, aid, &a.name, a.task_id.as_deref(), &model, b, context);
                 }
+                // 츄르: input + output + cache_write (cache_read는 뺀다). 업데이트 전 토큰은 소급하지 않는다.
+                if let Some(p) = self.app.try_state::<Projects>() {
+                    if let Some(s) = p.add_churu_tokens(input.saturating_add(output).saturating_add(cache_write)) {
+                        let _ = self.app.emit("prefs", s);
+                    }
+                }
                 return; // the turn's end (next) shows it
             }
             Event::Exit(_) => {}
