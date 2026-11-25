@@ -296,9 +296,71 @@
   animation: cr-breathe 1.1s ease-in-out infinite;
 }
 
+
+/* ── alive: small things all the time ── */
+/* a breath for every resting body (a nap breathes slower) */
+.cr-block .cr-body,
+.cr-pose-sit .cr-body,
+.cr-pose-coffee .cr-body {
+  animation: cr-breathe 3.4s ease-in-out infinite;
+}
+.cr-pose-sleep .cr-body {
+  animation: cr-breathe 4.8s ease-in-out infinite;
+}
+/* at the desk, now and then: a stretch, a sway in the chair, a glance at the next desk.
+   --fdur and --fd (set per cat) keep the cats out of step */
+.cr-fidget .critter:not(.cr-walk) .cr-whole {
+  animation: cr-fidget var(--fdur, 11s) ease-in-out infinite;
+  animation-delay: var(--fd, 0s);
+}
+@keyframes cr-fidget {
+  0%, 52%, 100% { transform: none; }
+  55% { transform: scale(0.97, 1.08) translateY(-1px); }
+  58% { transform: scale(1.02, 0.98); }
+  60% { transform: none; }
+  74% { transform: rotate(0deg); }
+  77% { transform: rotate(-4deg); }
+  80% { transform: rotate(3.5deg); }
+  83% { transform: rotate(0deg); }
+  90% { transform: none; }
+  91.5%, 96% { transform: scaleX(-1); }
+  97.5% { transform: none; }
+}
+/* a cat that arrives pops in with a little bounce */
+.cr-in {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform-origin: 50% 100%;
+  animation: cr-in 0.5s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+}
+@keyframes cr-in {
+  0% { opacity: 0; transform: translateY(6px) scale(0.6); }
+  100% { opacity: 1; transform: none; }
+}
+/* one that leaves walks to the door, fading on the way */
+.cr-leaving {
+  animation: cr-out 1s ease-in forwards;
+}
+@keyframes cr-out {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; }
+}
+/* a hidden window: everything holds still */
+.cr-paused .critter *,
+.cr-paused .cr-in,
+.cr-paused .cr-leaving,
+.cr-paused .cr-anchor {
+  animation-play-state: paused !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .critter,
   .critter * {
+    animation: none !important;
+  }
+  .cr-in,
+  .cr-leaving {
     animation: none !important;
   }
   .cr-mover {

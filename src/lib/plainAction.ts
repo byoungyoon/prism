@@ -31,5 +31,9 @@ export function plainAction(tool: string, detail: string): string {
     const hit = RULES.find((r) => r.test.test(detail));
     return hit ? hit.line : "명령을 실행하려고 해요";
   }
+  // an outside tool ("mcp__figcraft__set_properties"): the program's name reads better than the
+  // raw id, which also ran past the permission bubble's edge
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(tool);
+  if (mcp) return `${mcp[1]}에서 작업하려고 해요 (${mcp[2].replace(/_/g, " ")})`;
   return TOOLS[tool] ?? `${tool} 작업을 하려고 해요`;
 }
