@@ -56,7 +56,7 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
         {items.map((m) => {
           const p = m.permission!;
           return (
-            <motion.div key={m.id} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
+            <motion.div key={m.id} data-critter-anchor={`ask:${project.id}:${m.permission?.agentId}`} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
               <span className="shrink-0 text-[12.5px] font-semibold">{name(p.agentId)}</span>
               {p.decider && <span className="shrink-0 text-[11.5px] text-ink-2">{name(p.decider)}가 판단 중</span>}
               <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:basis-full max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
@@ -306,6 +306,7 @@ function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen
   const follow = !!task.followOf;
   return (
     <button
+      data-critter-anchor={`task:${team.projectId}:${task.id}`}
       onClick={() => a && onOpen(a.id)}
       disabled={!a}
       className="flex min-h-8 w-full flex-wrap items-center gap-x-2 rounded-lg border-0 bg-transparent px-2 py-1 text-left text-[12.5px] hover:bg-[var(--chip)] disabled:hover:bg-transparent"
@@ -431,6 +432,7 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
 
   return (
     <motion.article
+      data-critter-anchor={`task:${project.id}:${task.id} report:${project.id}:${task.id}`}
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}

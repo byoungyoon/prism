@@ -35,7 +35,7 @@ export function PermissionAsks({ groups, multi = false }: { groups: Group[]; mul
           const who = team.agents.find((a) => a.id === p.agentId)?.name ?? "팀원";
           const answer = (a: "allow" | "always" | "deny") => answerPermission(m.id, a, project.id);
           return (
-            <motion.div key={`${project.id}-${m.id}`} layout exit={{ opacity: 0, height: 0 }} className="flex flex-col gap-1.5 rounded-xl px-3 py-2" style={{ background: "var(--glass2)" }}>
+            <motion.div key={`${project.id}-${m.id}`} data-critter-anchor={`ask:${project.id}:${p.agentId}`} layout exit={{ opacity: 0, height: 0 }} className="flex flex-col gap-1.5 rounded-xl px-3 py-2" style={{ background: "var(--glass2)" }}>
               <div className="flex flex-wrap items-center gap-2">
                 {multi && <TeamTag project={project} className="text-[11px]" />}
                 <span className="min-w-0 flex-auto text-[12.5px] leading-snug">

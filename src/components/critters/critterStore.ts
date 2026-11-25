@@ -28,17 +28,25 @@ interface CritterStore {
   /** key: `${layer}:${id}`, layer "*" = every layer */
   over: Record<string, CritterOverride>;
   patch(id: string, p: Partial<Record<keyof CritterOverride, unknown>>, layer?: string): void;
-  /** how many editing screens show critters right now: the bottom 작업장 띠 steps aside meanwhile */
-  stages: number;
-  stageOpen(on: boolean): void;
+  /** critters an editing screen is moving right now (the app layer leaves them alone): key → true */
+  claims: Record<string, true>;
+  claim(keys: string[], on: boolean): void;
 }
 
 const keyOf = (id: string, layer?: string) => `${layer ?? "*"}:${id}`;
 
 export const useCritterStore = create<CritterStore>((set) => ({
   over: {},
-  stages: 0,
-  stageOpen: (on) => set((s) => ({ stages: Math.max(0, s.stages + (on ? 1 : -1)) })),
+  claims: {},
+  claim: (keys, on) =>
+    set((s) => {
+      const claims = { ...s.claims };
+      for (const k of keys) {
+        if (on) claims[k] = true;
+        else delete claims[k];
+      }
+      return { claims };
+    }),
   patch: (id, p, layer) =>
     set((s) => {
       const k = keyOf(id, layer);

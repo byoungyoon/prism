@@ -225,6 +225,7 @@ export function UnifiedChat() {
 
   return (
     <section
+      data-critter-anchor="lead"
       aria-label="총괄 채팅"
       className="glass flex max-w-[520px] min-w-0 flex-[1_1_460px] flex-col overflow-hidden rounded-2xl"
       onDragOver={(e) => {

@@ -33,7 +33,7 @@ const subscribeRM = (cb: () => void) => {
 /** true when the system asks for less motion */
 export const useReducedMotion = () => useSyncExternalStore(subscribeRM, () => window.matchMedia(RM).matches, () => false);
 
-const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, still }: { item: PlacedCritter; layer?: string; size: number; speed: number; bubble: boolean; name: boolean; still: boolean }) {
+const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, still, width }: { item: PlacedCritter; layer?: string; size: number; speed: number; bubble: boolean; name: boolean; still: boolean; width?: number }) {
   const o = useOverride(item.id, layer);
   const x = o?.x ?? item.x;
   const y = o?.y ?? item.y;
@@ -70,7 +70,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
     <div className="cr-mover" style={{ transform: `translate3d(${x}px, ${y}px, 0)`, transitionDuration: `${walk.ms}ms` }}>
       <div className="cr-anchor">
         {bubble && say && (
-          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.2 }}>
+          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.2, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
             {say}
           </span>
         )}
@@ -82,12 +82,13 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
 });
 
 /** `<CritterLayer items={[{ id, agent, x, y }]} />` inside a `position: relative` box. */
-export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true, names = false, className }: { id?: string; items: PlacedCritter[]; size?: number; speed?: number; bubbles?: boolean; names?: boolean; className?: string }) {
+/** `width`: the layer's width, so bubbles near its edges shift inward instead of being cut off */
+export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true, names = false, className, width }: { id?: string; items: PlacedCritter[]; size?: number; speed?: number; bubbles?: boolean; names?: boolean; className?: string; width?: number }) {
   const still = useReducedMotion();
   return (
     <div className={`cr-layer${className ? ` ${className}` : ""}`} data-critter-layer={id}>
       {items.map((it) => (
-        <Walker key={it.id} item={it} layer={id} size={size} speed={speed} bubble={bubbles} name={names} still={still} />
+        <Walker key={it.id} item={it} layer={id} size={size} speed={speed} bubble={bubbles} name={names} still={still} width={width} />
       ))}
     </div>
   );
