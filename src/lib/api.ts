@@ -346,6 +346,10 @@ export interface Prefs {
   restart?: "update" | "quit" | null;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** 츄르 잔액 (상점에서 쓰는 돈) */
+  churu: number;
+  /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
+  owned: string[];
 }
 
 /** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
@@ -389,6 +393,9 @@ export const api = {
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
+  /** buy a shop item; returns the updated prefs, or rejects with a plain Korean reason */
+  buyItem: (id: string, price: number) => call<Prefs>("shop_buy", { id, price }),
+  onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
 
   // agent CLIs
   cliStatus: () => call<CliStatus[]>("cli_status"),

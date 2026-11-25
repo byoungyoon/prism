@@ -5,7 +5,9 @@ import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
-import { catName } from "./components/critters/pixel/coats";
+import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
+import { DEFAULT_OWNED } from "./lib/shop";
+import type { Prefs } from "./lib/api";
 
 export type View =
   | { name: "home" }
@@ -50,11 +52,19 @@ interface AppState {
   startFailures: { id: string; name: string; reason: string }[];
   /** a group clock-in is running */
   clockingIn: boolean;
+  /** 츄르 잔액 and the things bought so far ("cat:<id>" · "item:<이름>") */
+  churu: number;
+  owned: string[];
+  /** the 상점 sheet is open */
+  shopOpen: boolean;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
 
+  openShop(on: boolean): void;
+  /** buy one shop item; resolves to null on success, or a plain Korean reason to show */
+  buyItem(id: string, price: number): Promise<string | null>;
   toggleDark(): void;
   toggleLeft(): void;
   toggleRight(): void;
@@ -147,6 +157,12 @@ export const useApp = create<AppState>((set, get) => {
   let batchesListed = false;
   // the automatic clock-in happens once per launch
   let autoResumed = false;
+  /** the shop's money and purchases, from prefs (read at start, then on every change) */
+  const applyPrefs = (p: Prefs) => {
+    const owned = p.owned ?? DEFAULT_OWNED;
+    setOwnedCoats(owned);
+    set({ churu: p.churu ?? 0, owned });
+  };
   const upsertBatch = (b: Batch) => set((s) => ({ batches: [...s.batches.filter((x) => x.id !== b.id), b] }));
 
   return {
@@ -171,6 +187,21 @@ export const useApp = create<AppState>((set, get) => {
     clockingIn: false,
     critters: savedCritters(),
     confirmQuit: true,
+    churu: 0,
+    owned: [...DEFAULT_OWNED],
+    shopOpen: false,
+
+    openShop: (shopOpen) => set({ shopOpen }),
+    buyItem: async (id, price) => {
+      try {
+        applyPrefs(await api.buyItem(id, price));
+        // the teammates' coats and the lounge follow the purchase at once
+        set((s) => ({ teams: { ...s.teams } }));
+        return null;
+      } catch (e) {
+        return msg(e);
+      }
+    },
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -193,6 +224,8 @@ export const useApp = create<AppState>((set, get) => {
         if (nowDone && !wasDone && (prev || batchesListed)) void notifyUser("종합 결과가 나왔어요", b.text.slice(0, 60));
         upsertBatch(b);
       });
+      await api.onPrefs(applyPrefs);
+      void api.prefs().then(applyPrefs).catch(() => {});
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       const reload = async () => {
