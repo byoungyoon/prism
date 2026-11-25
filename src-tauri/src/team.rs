@@ -215,6 +215,8 @@ fn auto_allow(tool: &str, input: &Value, detail: &str, workspace: &str, project:
     match tool {
         "Bash" => is_safe_bash(detail, workspace, project),
         "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" => read_tool_ok(tool, input, workspace, project),
+        // reading the web changes nothing here; `needs_user` already catches secrets and deploys in the query
+        "WebSearch" | "WebFetch" => true,
         _ => false,
     }
 }
@@ -259,19 +261,20 @@ fn path_within(path: &str, base: &str, roots: &[&str]) -> bool {
         return false;
     }
     let full: PathBuf = if p.is_absolute() { p.to_path_buf() } else { Path::new(base).join(p) };
-    // the nearest ancestor that exists tells where it really lives
-    let mut anc: &Path = &full;
-    let real = loop {
-        match std::fs::canonicalize(anc) {
-            Ok(r) => break r,
-            Err(_) => match anc.parent() {
-                Some(par) => anc = par,
-                None => return false,
-            },
+    let Some(resolved) = real_location(&full) else { return false };
+    // roots that don't exist yet (a build folder not built yet) are resolved the same way
+    roots.iter().filter(|r| !r.is_empty()).any(|r| real_location(Path::new(r)).is_some_and(|root| resolved.starts_with(root)))
+}
+
+/// Where `full` really lives: the nearest ancestor that exists, resolved, with the rest appended.
+fn real_location(full: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut anc = full;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(anc) {
+            return Some(real.join(full.strip_prefix(anc).unwrap_or(std::path::Path::new(""))));
         }
-    };
-    let resolved = real.join(full.strip_prefix(anc).unwrap_or(Path::new("")));
-    roots.iter().filter(|r| !r.is_empty()).any(|r| resolved.starts_with(std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r))))
+        anc = anc.parent()?;
+    }
 }
 
 /// A path word typed in a shell line: plain characters only (no quoting tricks, wildcards or expansion),
@@ -293,10 +296,30 @@ fn is_safe_bash(detail: &str, workspace: &str, project: &str) -> bool {
         return false;
     }
     let Some((line, bodies)) = take_heredocs(detail) else { return false };
-    match split_shell(&line, workspace) {
-        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies)),
-        None => false,
+    let Some(parts) = split_shell(&line, workspace) else { return false };
+    // `cd /tmp/x && …`: the rest of the line runs in that folder, so its paths are judged from there
+    if let Some((first, rest)) = parts.split_first() {
+        if let Some(dir) = leading_cd_tmp(first, workspace) {
+            return !rest.is_empty() && rest.iter().all(|p| is_safe_simple(p, &dir, project, &bodies));
+        }
     }
+    !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies))
+}
+
+/// A line's first piece that is just `cd <folder>` where the folder is really inside /tmp: its real path.
+/// Only at the start of a line, so the later pieces know where they run.
+fn leading_cd_tmp(part: &str, workspace: &str) -> Option<String> {
+    let words: Vec<&str> = part.split_whitespace().collect();
+    let [cd, target] = words.as_slice() else { return None };
+    let target = target.trim_matches(|c| c == '"' || c == '\'');
+    if *cd != "cd" || target.is_empty() || target.contains(['$', '~', '\\']) {
+        return None;
+    }
+    let p = std::path::Path::new(target);
+    let full = if p.is_absolute() { p.to_path_buf() } else { std::path::Path::new(workspace).join(p) };
+    let real = std::fs::canonicalize(&full).ok().filter(|r| r.is_dir())?;
+    let in_tmp = TMP_ROOTS.iter().any(|t| std::fs::canonicalize(t).is_ok_and(|root| real.starts_with(root)));
+    in_tmp.then(|| real.to_string_lossy().into_owned())
 }
 
 /// Pulls `<<'TAG'` here-documents out of the line: their text is data for the command, not commands.
@@ -437,7 +460,7 @@ fn has_flag(args: &[&str], flags: &[&str]) -> bool {
 fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String]) -> bool {
     // a here-document is only the command's input; its text is `bodies[n]`
     let mut heredoc: Option<&str> = None;
-    let words: Vec<&str> = part
+    let mut words: Vec<&str> = part
         .split_whitespace()
         .filter(|w| match w.strip_prefix("__HEREDOC_").and_then(|r| r.strip_suffix("__")).and_then(|n| n.parse::<usize>().ok()) {
             Some(n) => {
@@ -447,6 +470,15 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
             None => true,
         })
         .collect();
+    // `CARGO_TARGET_DIR=<the team's shared build folder> cargo …`: the only variable allowed in front
+    let cache = crate::launch::build_cache_dir(project).to_string_lossy().into_owned();
+    loop {
+        let Some(value) = words.first().and_then(|w| w.strip_prefix("CARGO_TARGET_DIR=")).map(str::to_string) else { break };
+        if !path_within(&value, workspace, &[cache.as_str()]) {
+            return false;
+        }
+        words.remove(0);
+    }
     let Some((&first, args)) = words.split_first() else { return false };
     // the project's own tsc / vite (`node_modules/.bin/tsc`, `./node_modules/.bin/vite`, or by full path)
     let local = first.rsplit_once("node_modules/.bin/").map(|(_, b)| b).filter(|b| matches!(*b, "tsc" | "vite") && path_within(first, workspace, &[workspace, project]));
@@ -472,11 +504,19 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
         "tsc" => !has_flag(args, &["--outDir", "--outFile", "--out", "--declarationDir", "--tsBuildInfoFile", "--generateTrace"]),
         "vite" => args.first() == Some(&"build") && !has_flag(args, &["--outDir"]),
         "cargo" => is_safe_cargo(args, workspace),
+        // the project's own scripts; `install` and anything that fetches or publishes stays with the 총괄
         "pnpm" | "npm" => match args.first() {
-            Some(&"build") | Some(&"test") => true,
-            Some(&"exec") => args.get(1) == Some(&"tsc") && args.contains(&"--noEmit"),
+            Some(&"build") | Some(&"test") | Some(&"lint") | Some(&"shot") => true,
+            Some(&"exec") => match args.get(1) {
+                Some(&"tsc") => args.contains(&"--noEmit"),
+                Some(&"vite") => args.get(2) == Some(&"build") && !has_flag(args, &["--outDir"]),
+                Some(&"vitest") => !has_flag(args, &["--outputFile", "--coverage.reportsDirectory"]),
+                _ => false,
+            },
             _ => false,
         },
+        "ln" => is_node_modules_link(args, workspace, project),
+        "rm" => is_node_modules_unlink(args, workspace),
         "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && write_path_ok(a, workspace))) && args.contains(&"-p"),
         "cp" => file_move_ok(args, "rRapfnvHLP", workspace),
         "mv" => file_move_ok(args, "fnv", workspace),
@@ -491,6 +531,31 @@ fn file_move_ok(args: &[&str], allowed: &str, workspace: &str) -> bool {
     flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| allowed.contains(c)))
         && paths.len() >= 2
         && paths.iter().all(|p| write_path_ok(p, workspace))
+}
+
+/// `node_modules` (or `./node_modules`): the one link name the worktree sharing and clearing touch.
+fn is_node_modules_name(p: &str) -> bool {
+    matches!(p, "node_modules" | "./node_modules")
+}
+
+/// `ln -s <the project's folder> node_modules`: a worktree borrows the project's installed packages.
+/// Only that link name, and only a target inside the project.
+fn is_node_modules_link(args: &[&str], workspace: &str, project: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| "sfn".contains(c))) && flags.iter().any(|f| f.contains('s'))
+        && paths.len() == 2
+        && is_node_modules_name(paths[1])
+        && write_path_ok(paths[1], workspace)
+        && path_within(paths[0], workspace, &[project])
+}
+
+/// `rm node_modules` / `rm -rf node_modules` where `node_modules` is the link itself: removes only the link,
+/// never the packages behind it. A real folder named node_modules still asks.
+fn is_node_modules_unlink(args: &[&str], workspace: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    !paths.is_empty()
+        && flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| "rf".contains(c)))
+        && paths.iter().all(|p| is_node_modules_name(p) && std::fs::symlink_metadata(std::path::Path::new(workspace).join(p)).is_ok_and(|m| m.file_type().is_symlink()))
 }
 
 /// `sips` reading (`-g`), or converting into /tmp (`--out`): never rewriting a picture in place.
@@ -603,7 +668,8 @@ fn is_safe_cargo(args: &[&str], workspace: &str) -> bool {
 }
 
 /// Git inside the member's own folder: look (status/diff/log/show/rev-parse/branch list), and keep its
-/// own work (add, commit, merge of local branches). Never another folder (`-C`, `--git-dir`), never the network.
+/// own work (add, commit). Never another folder (`-C`, `--git-dir`), never the network. `merge` is not here:
+/// merging goes to the 총괄 every time.
 fn is_safe_git(args: &[&str], workspace: &str) -> bool {
     let Some((&sub, rest)) = args.split_first() else { return false };
     match sub {
@@ -613,12 +679,6 @@ fn is_safe_git(args: &[&str], workspace: &str) -> bool {
         }
         // the message words can be anything; what it does is only to record the work in the local history
         "commit" => !rest.iter().any(|a| a.starts_with("--git-dir") || a.starts_with("--work-tree")),
-        "merge" => {
-            let remote = |a: &&str| {
-                ["origin", "remotes/", "upstream"].iter().any(|p| a.starts_with(p)) || a.contains(['@', ':']) || a.starts_with("-X") || a.starts_with("-s") || has_flag(&[a], &["--strategy", "--strategy-option"])
-            };
-            !rest.is_empty() && !rest.iter().any(remote)
-        }
         _ => is_read_only_git(args),
     }
 }
@@ -718,6 +778,8 @@ mod auto_allow_tests {
         let (project, _) = dirs();
         let abs_tsc = format!("{project}/node_modules/.bin/tsc --noEmit");
         let abs_vite = format!("{project}/node_modules/.bin/vite build");
+        let shared_cargo = format!("CARGO_TARGET_DIR={project}/.prism/cargo-target cargo test");
+        let shared_cargo_pipe = format!("CARGO_TARGET_DIR={project}/.prism/cargo-target cargo build 2>&1 | tail -5");
         for cmd in [
             "ls -la src",
             "pwd",
@@ -747,6 +809,14 @@ mod auto_allow_tests {
             "pnpm build",
             "npm test -- --run",
             "pnpm exec tsc --noEmit",
+            "pnpm shot",
+            "pnpm shot -- -s demo --screen office --width 390 --theme dark",
+            "pnpm lint",
+            "pnpm exec vite build",
+            "pnpm exec vitest run",
+            "pnpm exec vitest run src/a.test.ts --reporter=verbose",
+            &shared_cargo,
+            &shared_cargo_pipe,
             "echo done >/dev/null 2>&1",
             "echo ok > /tmp/prism-t5.log",
             "cd src && ls",
@@ -761,8 +831,6 @@ mod auto_allow_tests {
             "git add src/team.rs src/lib.rs",
             "git commit -m wip",
             "git add . && git commit -m \"wip\" && git status",
-            "git merge prism/c217/t-34",
-            "git merge --no-ff t-34",
             "sleep 2",
             "sleep 0.5 && ls",
             "date +%s",
@@ -801,6 +869,18 @@ mod auto_allow_tests {
             "find . -exec rm {} +",
             "rg --pre sh foo src",
             "pnpm install",
+            "pnpm add left-pad",
+            "pnpm publish",
+            "pnpm exec tsc",
+            "pnpm exec vite",
+            "pnpm exec vitest run --outputFile=out.json",
+            "pnpm exec node -e 'process.exit(0)'",
+            "git merge prism/c217/t-34",
+            "git merge --no-ff t-34",
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test",
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test && curl https://x.y",
+            "RUST_LOG=debug cargo test",
+            "cargo test 2>&1 | tail -5 && rm -rf target",
             "ls | xargs rm",
             "echo hi > /tmp/../etc/passwd",
             "sudo ls",
@@ -1064,7 +1144,14 @@ mod auto_allow_tests {
         assert!(!tool_ok("mcp__deckcraft__set_text", json!({ "text": "my password is" })));
         assert!(!tool_ok("Edit", json!({ "file_path": "src/a.rs" })));
         assert!(!tool_ok("Write", json!({ "file_path": "notes.txt" })));
-        assert!(!tool_ok("WebFetch", json!({ "url": "https://example.com" })));
+    }
+
+    #[test]
+    fn web_reads_pass_but_secrets_in_them_still_ask() {
+        assert!(tool_ok("WebFetch", json!({ "url": "https://example.com/docs" })));
+        assert!(tool_ok("WebSearch", json!({ "query": "tauri 2 permission hooks" })));
+        assert!(!tool_ok("WebFetch", json!({ "url": "https://example.com/?token=abc" })));
+        assert!(!tool_ok("WebSearch", json!({ "query": "how to deploy to production" })));
     }
 
     #[test]
@@ -1108,12 +1195,151 @@ mod auto_allow_tests {
             assert!(!tool_ok(tool, input.clone()), "should ask: {tool} {input}");
         }
     }
+
+    #[test]
+    fn cd_into_tmp_passes_only_when_the_rest_is_safe() {
+        if !std::path::Path::new("/tmp").is_dir() {
+            return;
+        }
+        let dir = format!("/tmp/prism-t60-{}", std::process::id());
+        std::fs::create_dir_all(format!("{dir}/work")).unwrap();
+        let (project, ws) = dirs();
+        for cmd in [
+            format!("cd {dir} && ls"),
+            format!("cd {dir}/work && python3 -I - <<'EOF'\nimport json\nprint(json.dumps({{}}))\nEOF"),
+            format!("cd {dir} && echo hi > out.txt"),
+            format!("cd {dir} && cargo test 2>&1 | tail -5"),
+        ] {
+            assert!(is_safe_bash(&cmd, &ws, &project), "should pass: {cmd}");
+        }
+        for cmd in [
+            format!("cd {dir}"),
+            format!("cd {dir} && rm -rf out"),
+            format!("cd {dir} && curl https://x.y"),
+            format!("cd {dir} && touch /etc/x"),
+            format!("cd {dir} && cd /"),
+            format!("cd {dir} && (ls)"),
+            format!("ls && cd {dir}"),
+            "cd /etc && ls".to_string(),
+            "cd ~ && ls".to_string(),
+        ] {
+            assert!(!is_safe_bash(&cmd, &ws, &project), "should ask: {cmd}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_modules_link_is_shared_and_cleared_but_real_folders_ask() {
+        let base = std::env::temp_dir().join(format!("prism-t60-nm-{}", std::process::id()));
+        let project_dir = base.join("myOrca");
+        let ws_dir = project_dir.join(".prism").join("worktrees").join("w2");
+        std::fs::create_dir_all(project_dir.join("node_modules")).unwrap();
+        std::fs::create_dir_all(ws_dir.join("src")).unwrap();
+        std::fs::create_dir_all(ws_dir.join("vendor").join("node_modules")).unwrap();
+        let project = project_dir.to_string_lossy().into_owned();
+        let ws = ws_dir.to_string_lossy().into_owned();
+        let ok = |cmd: &str| is_safe_bash(cmd, &ws, &project);
+
+        // link the project's packages into the worktree: that name only, and only a target inside the project
+        assert!(ok(&format!("ln -s {project}/node_modules node_modules")));
+        assert!(ok(&format!("ln -sfn {project}/node_modules ./node_modules")));
+        assert!(!ok(&format!("ln -s {project}/node_modules src")));
+        assert!(!ok("ln -s /etc node_modules"));
+        assert!(!ok(&format!("ln -s {project}/node_modules ../node_modules")));
+        assert!(!ok(&format!("ln -s {project}/node_modules node_modules && rm -rf src")));
+
+        // clearing the link: only once it's really a symlink, never through its trailing slash
+        assert!(!ok("rm -rf node_modules"));
+        std::os::unix::fs::symlink(format!("{project}/node_modules"), ws_dir.join("node_modules")).unwrap();
+        assert!(ok("rm -rf node_modules"));
+        assert!(ok("rm node_modules"));
+        assert!(!ok("rm -rf node_modules/"));
+        assert!(!ok("rm -rf vendor/node_modules"));
+        assert!(!ok("rm -rf src"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shared_cargo_build_folder_passes_other_folders_ask() {
+        let (project, ws) = dirs();
+        let cache = format!("{project}/.prism/cargo-target");
+        assert!(is_safe_bash(&format!("CARGO_TARGET_DIR={cache} cargo build"), &ws, &project));
+        assert!(is_safe_bash(&format!("CARGO_TARGET_DIR={cache} cargo test -- --nocapture"), &ws, &project));
+        for cmd in [
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test".to_string(),
+            format!("CARGO_TARGET_DIR={cache}/../../x cargo build"),
+            format!("CARGO_TARGET_DIR={cache} cargo run"),
+            format!("RUST_LOG=debug CARGO_TARGET_DIR={cache} cargo test"),
+            format!("CARGO_TARGET_DIR={cache}"),
+        ] {
+            assert!(!is_safe_bash(&cmd, &ws, &project), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn quick_requests_from_one_member_form_one_batch() {
+        let mut b = super::PermBatches::default();
+        assert!(b.add("p/w1", 5), "the first request opens the window");
+        assert!(!b.add("p/w1", 6), "a request inside the window joins it");
+        assert!(b.add("p/w2", 7), "another member gets its own window");
+        assert_eq!(b.take("p/w1"), vec![5, 6]);
+        assert!(b.take("p/w1").is_empty());
+        assert!(b.add("p/w1", 8), "a later burst opens a new window");
+    }
+
+    #[test]
+    fn batch_text_keeps_one_request_as_before_and_lists_many() {
+        let one = super::permission_batch_text("W1", &[(12, "Bash".into(), "cargo test".into())]);
+        assert_eq!(one, "[Prism 허락 요청 #12] W1: Bash cargo test\ndecide_permission(request_id: 12, decision: allow|deny|ask_user)");
+        let many = super::permission_batch_text("W1", &[(12, "Bash".into(), "cargo test".into()), (13, "Edit".into(), "src/a.rs".into())]);
+        assert!(many.starts_with("[Prism 허락 요청 #12, #13] W1이(가) 연달아 2건을 올렸어요:"), "{many}");
+        assert!(many.contains("- #13 Edit src/a.rs"), "{many}");
+        assert!(many.contains("decide_permission(request_ids: [12, 13], decision:"), "{many}");
+    }
 }
 
 /// Outcome of a PermissionRequest hook: decide now, or wait for the user.
 pub enum PermWait {
     Now(&'static str),
     Wait(u64, tokio::sync::oneshot::Receiver<&'static str>),
+}
+
+/// Requests from the same member that arrive this close together reach the boss as one message.
+const PERM_BATCH_MS: u64 = 2_000;
+
+/// Permission request numbers held back per member ("project/member") until their window closes.
+#[derive(Default)]
+struct PermBatches(HashMap<String, Vec<u64>>);
+
+impl PermBatches {
+    /// Adds a request. `true` when it opens a new window: the caller schedules the flush for it.
+    fn add(&mut self, key: &str, id: u64) -> bool {
+        let list = self.0.entry(key.to_string()).or_default();
+        let opens = list.is_empty();
+        list.push(id);
+        opens
+    }
+
+    fn take(&mut self, key: &str) -> Vec<u64> {
+        self.0.remove(key).unwrap_or_default()
+    }
+}
+
+/// What the boss reads for one or more requests from one member: `(number, tool, detail)` each.
+fn permission_batch_text(name: &str, items: &[(u64, String, String)]) -> String {
+    let ids: Vec<String> = items.iter().map(|(id, ..)| id.to_string()).collect();
+    if let [(id, tool, detail)] = items {
+        return format!("[Prism 허락 요청 #{id}] {name}: {tool} {}\ndecide_permission(request_id: {id}, decision: allow|deny|ask_user)", short(detail, 200));
+    }
+    let lines: Vec<String> = items.iter().map(|(id, tool, detail)| format!("- #{id} {tool} {}", short(detail, 200))).collect();
+    format!(
+        "[Prism 허락 요청 #{}] {name}이(가) 연달아 {}건을 올렸어요:\n{}\ndecide_permission(request_ids: [{}], decision: allow|deny|ask_user) — 같은 답이면 한 번에, 다르면 번호별로 나눠 부르세요.",
+        ids.join(", #"),
+        items.len(),
+        lines.join("\n"),
+        ids.join(", ")
+    )
 }
 
 /// "always allow" key: tool + the first two words of a shell command.
@@ -1207,6 +1433,8 @@ pub struct TeamManager {
     pub token: String,
     data_dir: PathBuf,
     perm_waiters: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<&'static str>>>,
+    /// requests from one member still waiting to be sent to the boss together (see `PermBatches`)
+    perm_batches: Mutex<PermBatches>,
     /// "project/agent" whose next turn was started by a permission request: its bare reply ("." etc.) stays out of the chat
     permission_turns: Mutex<std::collections::HashSet<String>>,
     /// structured agents by "project/agent"
@@ -1836,7 +2064,7 @@ impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
         let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
     }
 
     /// Adds the token figures a team's screens show to its snapshot.
@@ -3528,12 +3756,17 @@ impl TeamManager {
             Some(b) => {
                 let boss_name = team.name_of(b);
                 team.log(format!("{name}이(가) {boss_name}에게 허락을 구한다: {tool} {}", short(&detail, 50)), None);
-                self.permission_turns.lock().unwrap().insert(format!("{pid}/{b}"));
-                self.inject(
-                    team,
-                    b,
-                    format!("[Prism 허락 요청 #{id}] {name}: {tool} {}\ndecide_permission(request_id: {id}, decision: allow|deny|ask_user)", short(&detail, 200)),
-                );
+                // the first request of a burst opens a short window; the boss hears about the whole burst at its end
+                if self.perm_batches.lock().unwrap().add(&format!("{pid}/{aid}"), id) {
+                    let app = self.app.clone();
+                    let (pid2, aid2) = (pid.to_string(), aid.to_string());
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(PERM_BATCH_MS));
+                        if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                            m.flush_permission_batch(&pid2, &aid2);
+                        }
+                    });
+                }
                 // a busy boss mustn't stall the team: hand it to the user after a while
                 let app = self.app.clone();
                 let pid2 = pid.to_string();
@@ -3551,6 +3784,40 @@ impl TeamManager {
         }
         self.emit(team);
         PermWait::Wait(id, rx)
+    }
+
+    /// Sends the boss the requests one member made in one window, as a single message (see `PermBatches`).
+    fn flush_permission_batch(&self, pid: &str, aid: &str) {
+        let ids = self.perm_batches.lock().unwrap().take(&format!("{pid}/{aid}"));
+        if ids.is_empty() {
+            return;
+        }
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        // only the ones still waiting on the boss: answered or handed to the user are left out
+        let open: Vec<(u64, String, String, String)> = ids
+            .iter()
+            .filter_map(|id| {
+                let p = team.chat.iter().find(|m| m.id == *id)?.permission.as_ref()?;
+                let boss = p.decider.clone()?;
+                p.answer.is_none().then(|| (*id, p.tool.clone(), p.detail.clone(), boss))
+            })
+            .collect();
+        let Some((_, _, _, boss)) = open.first().cloned() else { return };
+        let items: Vec<(u64, String, String)> = open.iter().map(|(id, tool, detail, _)| (*id, tool.clone(), detail.clone())).collect();
+        if !self.drivers.lock().unwrap().contains_key(&format!("{pid}/{boss}")) {
+            // the boss is no longer running: the user takes them
+            let waiting: Vec<u64> = items.iter().map(|(id, ..)| *id).collect();
+            drop(teams);
+            for id in waiting {
+                self.escalate_permission(pid, id, "윗선이 없어요");
+            }
+            return;
+        }
+        let name = team.name_of(aid);
+        self.permission_turns.lock().unwrap().insert(format!("{pid}/{boss}"));
+        self.inject(team, &boss, permission_batch_text(&name, &items));
+        self.emit(team);
     }
 
     /// Hand a request the boss is holding over to the user (boss asked, or took too long).
@@ -3742,12 +4009,13 @@ impl TeamManager {
         });
         let decide = json!({
             "name": "decide_permission",
-            "description": "아래 팀원이 보낸 '[Prism 허락 요청 #번호]'에 답한다. 평범한 개발 작업이면 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.",
+            "description": "아래 팀원이 보낸 '[Prism 허락 요청 #번호]'에 답한다. 여러 번호가 한 메시지로 왔으면 request_ids에 모아 한 번에 답할 수 있다. 평범한 개발 작업이면 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.",
             "inputSchema": { "type": "object", "properties": {
                 "request_id": { "type": "integer" },
+                "request_ids": { "type": "array", "items": { "type": "integer" }, "description": "같은 결정을 줄 번호들" },
                 "decision": { "type": "string", "enum": ["allow", "deny", "ask_user"] },
                 "reason": { "type": "string", "description": "한 줄 이유 (기록용)" }
-            }, "required": ["request_id", "decision"] }
+            }, "required": ["decision"] }
         });
         match role.as_str() {
             "lead" => vec![delegate, list, message, complete, decide, approve],
@@ -3812,25 +4080,51 @@ impl TeamManager {
                 }
             }
             "decide_permission" => {
-                let id = args.get("request_id").and_then(Value::as_u64).ok_or("request_id 필요")?;
+                // one number (`request_id`) or several at once (`request_ids`), all with the same decision
+                let ids: Vec<u64> = match args.get("request_ids").and_then(Value::as_array) {
+                    Some(list) => list.iter().filter_map(Value::as_u64).collect(),
+                    None => args.get("request_id").and_then(Value::as_u64).into_iter().collect(),
+                };
+                if ids.is_empty() {
+                    return Err("request_id 또는 request_ids 필요".into());
+                }
                 let decision = s("decision").unwrap_or_default();
-                let perm = team.chat.iter().find(|m| m.id == id).and_then(|m| m.permission.clone()).ok_or("그런 허락 요청이 없어요")?;
-                if perm.answer.is_some() {
-                    "이미 처리된 요청이에요. 하던 일을 이어서 하세요.".to_string()
-                } else if perm.decider.as_deref() != Some(aid) {
-                    return Err("네가 판단할 요청이 아니에요".into());
-                } else {
+                // every number must be one of this boss's before any is settled
+                for id in &ids {
+                    let perm = team.chat.iter().find(|m| m.id == *id).and_then(|m| m.permission.clone()).ok_or("그런 허락 요청이 없어요")?;
+                    if perm.answer.is_none() && perm.decider.as_deref() != Some(aid) {
+                        return Err("네가 판단할 요청이 아니에요".into());
+                    }
+                }
+                let mut settled = 0;
+                let mut to_user = Vec::new();
+                for id in &ids {
+                    let answered = team.chat.iter().find(|m| m.id == *id).and_then(|m| m.permission.as_ref()).is_none_or(|p| p.answer.is_some());
+                    if answered {
+                        continue;
+                    }
                     match decision.as_str() {
                         "allow" | "deny" => {
-                            self.resolve_permission(team, id, &decision, &me.name)?;
-                            format!("{} 처리했어요. 하던 일을 이어서 하세요.", if decision == "allow" { "허락" } else { "거부" })
+                            self.resolve_permission(team, *id, &decision, &me.name)?;
+                            settled += 1;
                         }
-                        _ => {
-                            drop(teams);
-                            self.escalate_permission(pid, id, &s("reason").unwrap_or_else(|| "윗선이 사용자 판단을 요청".into()));
-                            return Ok("사용자에게 넘겼어요. 답은 그 팀원에게 바로 가요. 하던 일을 이어서 하세요.".into());
-                        }
+                        _ => to_user.push(*id),
                     }
+                }
+                if !to_user.is_empty() {
+                    let reason = s("reason").unwrap_or_else(|| "윗선이 사용자 판단을 요청".into());
+                    drop(teams);
+                    for id in &to_user {
+                        self.escalate_permission(pid, *id, &reason);
+                    }
+                    let others = if settled > 0 { format!(" 나머지 {settled}건은 처리했어요.") } else { String::new() };
+                    return Ok(format!("사용자에게 {}건 넘겼어요.{others} 답은 그 팀원에게 바로 가요. 하던 일을 이어서 하세요.", to_user.len()));
+                }
+                if settled == 0 {
+                    "이미 처리된 요청이에요. 하던 일을 이어서 하세요.".to_string()
+                } else {
+                    let verb = if decision == "allow" { "허락" } else { "거부" };
+                    format!("{}{verb} 처리했어요. 하던 일을 이어서 하세요.", if settled > 1 { format!("{settled}건 ") } else { String::new() })
                 }
             }
             "list_tasks" => {
