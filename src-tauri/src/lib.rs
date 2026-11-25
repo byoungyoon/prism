@@ -166,6 +166,7 @@ pub fn run() {
             team::attach_bytes,
             team::team_get,
             team::lead_send,
+            team::lead_renew,
             team::task_follow_up,
             team::team_branches,
             team::team_set_branch,

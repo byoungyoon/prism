@@ -90,3 +90,21 @@ pub fn workspace(home: &str, work: &str) -> String {
 사용자에게 브랜치를 말할 때는 '{work}'라고 그대로 말한다."
     )
 }
+
+/// Asked of the 총괄 when the user starts a new conversation: its answer becomes the memo.
+pub fn handoff_request() -> String {
+    "[Prism 인수인계 요청] 사용자가 총괄 대화를 새로 시작하려고 해요. 새 총괄이 바로 이어받을 수 있게 인수인계 메모를 10~20줄로 써 주세요. \
+내용: ① 진행 중인 카드(T-번호와 한 줄 상황) ② 합치기·검토를 기다리는 것 ③ 사용자와 약속한 다음 할 일 ④ 주의사항(사용자 취향, 건드리면 안 되는 것 등). \
+도구는 쓰지 말고 메모 본문만 답하세요. 이 답은 사용자 화면에 나가지 않아요."
+        .into()
+}
+
+/// The new 총괄's first message: the memo (if it could be written) and the card list.
+pub fn handoff_start(memo: Option<&str>, tasks: &str) -> String {
+    let memo = memo.unwrap_or("(이전 총괄이 메모를 남기지 못했어요. 아래 카드 목록만 보고 이어가세요.)");
+    format!(
+        "[Prism 새 대화] 대화가 길어져 새로 시작했어요. 사용자는 이전 대화를 화면에서 그대로 볼 수 있어요. 카드·팀원·작업 폴더는 그대로예요.\n\n\
+[인수인계 메모]\n{memo}\n\n[작업 카드 현황]\n{tasks}\n\n\
+위를 읽고 이어서 일할 준비만 하세요. 이 메시지에는 — 한 글자로만 답하세요."
+    )
+}

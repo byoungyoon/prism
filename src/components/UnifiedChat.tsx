@@ -76,7 +76,7 @@ export function UnifiedChat() {
     const out: Item[] = cards.map((card) => ({ key: `batch-${card.batch.id}`, at: card.batch.sentAt, card }));
     for (const { project, team } of shown) {
       for (const m of team.chat) {
-        if (m.kind === "system" || m.kind === "permission" || absorbed.has(absorbKey(project.id, m))) continue;
+        if (m.kind === "system" || m.kind === "divider" || m.kind === "permission" || absorbed.has(absorbKey(project.id, m))) continue;
         if (m.kind === "me") {
           const text = m.text.split(ATTACH_MARK)[0];
           const twin = out.find(
