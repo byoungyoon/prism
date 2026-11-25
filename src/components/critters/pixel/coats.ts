@@ -43,14 +43,24 @@ export const COATS: Coat[] = [
   { id: "tuxedo", word: "턱시도", line: "#141215", top: "#262428", side: "#2e2c31", chest: "#ffffff", ear: "#6e555b", paw: "#ffffff", tail: "#262428", eye: "#e0b44a", nose: "#e9a1ab" },
 ];
 
+/** the coats a team can show: only the ones bought in the shop (white is free) */
+let OWNED: Coat[] = [COATS[0]];
+
+/** 상점에서 산 털색 (Prefs.owned의 "cat:<id>"). 팀원 털색은 이 안에서만 고른다. */
+export function setOwnedCoats(ids: string[]) {
+  const pool = COATS.filter((c) => ids.includes(`cat:${c.id}`));
+  OWNED = pool.length ? pool : [COATS[0]];
+}
+
 /** W1, W2… each a different coat in turn; other names a steady pick. 총괄 and 팀장 start elsewhere. */
 export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
+  const pool = OWNED;
   const n = /(\d+)\s*$/.exec(name);
   const base = role === "lead" ? 2 : role === "mgr" ? 5 : 0;
-  if (n) return COATS[(base + Number(n[1]) - 1 + COATS.length * 4) % COATS.length];
+  if (n) return pool[(base + Number(n[1]) - 1 + pool.length * 4) % pool.length];
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
-  return COATS[(base + Math.abs(h)) % COATS.length];
+  return pool[(base + Math.abs(h)) % pool.length];
 }
 
 /** 코트 색과 어울리는 한국어 고양이 이름 (COATS와 같은 순서) */

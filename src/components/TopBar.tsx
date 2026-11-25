@@ -6,6 +6,7 @@ import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
 import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
 import { KnowledgeSheet } from "./KnowledgeSheet";
+import { ShopSheet } from "./ShopSheet";
 import { RemoteCard } from "./RemoteCard";
 import { useShallow } from "zustand/react/shallow";
 
@@ -187,6 +188,27 @@ function KnowledgeButton() {
   );
 }
 
+/** 츄르 잔액 버튼: 누르면 상점이 열린다 */
+function ChurruButton() {
+  const churu = useApp((s) => s.churu);
+  return (
+    <>
+      <button
+        onClick={() => useApp.getState().openShop(true)}
+        aria-label={`츄르 상점 (잔액 ${churu}개)`}
+        title="츄르로 고양이 털색과 휴게실 물건을 사요"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        style={{ border: "1px solid var(--line)" }}
+      >
+        <span aria-hidden="true">🐟</span>
+        <span className="font-mono">{churu.toLocaleString("ko-KR")}</span>
+        <span className="max-[820px]:hidden">츄르</span>
+      </button>
+      <ShopSheet />
+    </>
+  );
+}
+
 /** Clock in another team: its 총괄 joins the stack on the left. */
 function AddTeam() {
   const go = useApp((s) => s.go);
@@ -234,6 +256,7 @@ export function TopBar() {
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
+      <ChurruButton />
       <KnowledgeButton />
       {!isRemote && <PhoneAccess />}
       <UsageMeter />

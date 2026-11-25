@@ -50,6 +50,7 @@ const SCREENS = {
   edit: "편집 (파일 편집 화면, 엔진이 없으면 설치 안내)",
   home: "홈 (프로젝트 목록)",
   settings: "팀 설정",
+  shop: "츄르 상점 (관제탑에서 츄르 잔액 버튼을 눌러 연 상태)",
 };
 
 const HELP = `사용법: pnpm shot -- [옵션]
@@ -144,6 +145,8 @@ function fakeApi(cmd, args, data) {
       return data.teams[args.projectId] ?? null;
     case "workspace_root":
       return "/tmp";
+    case "prefs_get":
+      return data.prefs;
     case "accounts_list":
     case "batch_list":
     case "usage_get":
@@ -182,6 +185,7 @@ async function openScreen(page, screen, o, data) {
     if (screen === "board") await phoneTab("보드").click();
     if (screen === "chat") await phoneTab("총괄").click();
   }
+  if (screen === "shop") await page.getByRole("button", { name: /츄르 상점/ }).click();
   if (screen === "team") {
     // 팀 요약 탭 줄에서 첫 번째 팀 (0번은 🏢 사무실)
     await page.getByRole("tablist", { name: "팀 요약" }).getByRole("tab").nth(1).click();

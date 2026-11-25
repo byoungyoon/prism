@@ -155,6 +155,9 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
   // the furniture's pixel pictures (drawn once, kept in a <style>)
   ensurePixelOffice();
   const shown = useOfficeTeams();
+  // the lounge's furniture: only what the person bought in the shop is drawn ("item:<이름>")
+  const owned = useApp((s) => s.owned);
+  const has = (name: string) => owned.includes(`item:${name}`);
   const openIn = useApp((s) => s.openIn);
   const narrow = useNarrow();
   const still = useReducedMotion();
@@ -242,7 +245,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     const le = el.querySelector("[data-lounge]");
     if (le) ro.observe(le);
     return () => ro.disconnect();
-  }, [shape, size]);
+  }, [shape, size, owned.join("|")]);
 
   // lounging cats: a spot each — by the sofa, the coffee machine, a plant, or anywhere in between,
   // never on top of another cat — and now and then one gets up and wanders slowly to another
@@ -429,22 +432,23 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
           <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
-            <span className="of-frame px-frame" />
-            <span className="of-bookcase px-bookcase" data-block />
-            <span className="of-lamp px-lamp" data-block />
-            <span className="of-sunspot px-sunspot" data-spot data-on />
-            <span className="of-rug px-rug" data-spot />
-            <span className="of-rug2 px-rug2" />
-            <span className="of-sofa px-sofa" data-spot />
-            <span className="of-cushion px-cushion" />
-            <span className="of-catbox px-catbox" data-spot data-on />
-            <span className="of-scratcher px-scratcher" data-spot data-on />
-            <span className="of-yarn px-yarn" />
-            <span className="of-bowls px-bowls" data-spot />
-            <span className="of-coffee px-coffee" data-spot />
-            <span className="of-tower px-tower" data-spot />
-            <span className="of-plant of-plant-1 px-plant" data-block />
-            <span className="of-plant of-plant-2 px-plant" data-block />
+            {/* the bare room (floor and walls) is all there is until something is bought */}
+            {has("액자") && <span className="of-frame px-frame" />}
+            {has("책장") && <span className="of-bookcase px-bookcase" data-block />}
+            {has("스탠드") && <span className="of-lamp px-lamp" data-block />}
+            {has("햇살 자리") && <span className="of-sunspot px-sunspot" data-spot data-on />}
+            {has("러그") && <span className="of-rug px-rug" data-spot />}
+            {has("러그·쿠션") && <span className="of-rug2 px-rug2" />}
+            {has("소파") && <span className="of-sofa px-sofa" data-spot />}
+            {has("러그·쿠션") && <span className="of-cushion px-cushion" />}
+            {has("숨숨집") && <span className="of-catbox px-catbox" data-spot data-on />}
+            {has("스크래처") && <span className="of-scratcher px-scratcher" data-spot data-on />}
+            {has("털실") && <span className="of-yarn px-yarn" />}
+            {has("밥그릇") && <span className="of-bowls px-bowls" data-spot />}
+            {has("정수기") && <span className="of-coffee px-coffee" data-spot />}
+            {has("캣타워") && <span className="of-tower px-tower" data-spot />}
+            {has("화분") && <span className="of-plant of-plant-1 px-plant" data-block />}
+            {has("화분") && <span className="of-plant of-plant-2 px-plant" data-block />}
           </div>
         </div>
         <div className="of-cats">
