@@ -45,6 +45,22 @@ export interface Project {
   linked?: boolean;
 }
 
+export interface StorageInfo {
+  /** work folders on disk (the 총괄's included) */
+  copies: number;
+  copiesBytes: number;
+  /** the shared build folder */
+  buildBytes: number;
+  /** folders the cleanup would delete now */
+  reclaimable: number;
+  reclaimableBytes: number;
+}
+
+export interface CleanupReport {
+  removed: number;
+  freedBytes: number;
+}
+
 export interface WorktreeInfo {
   path: string;
   branch: string | null;
@@ -381,6 +397,10 @@ export const api = {
   taskMerge: (projectId: string, taskIds: string[]) => call<MergeOutcome[]>("task_merge", { projectId, taskIds }),
   /** 완료 on a report with nothing to merge */
   taskComplete: (projectId: string, taskId: string) => call<void>("task_complete", { projectId, taskId }),
+  /** disk used by the work folders and the shared build folder, and what the cleanup would remove */
+  teamStorage: (projectId: string) => call<StorageInfo>("team_storage", { projectId }),
+  /** delete the work folders that are merged (or unmerged and finished over a week ago); branches stay */
+  teamCleanup: (projectId: string) => call<CleanupReport>("team_cleanup", { projectId }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
     call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>

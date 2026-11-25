@@ -1266,6 +1266,7 @@ fn work_dir(team: &mut Team, role: &str, task: Option<&Task>, parent: Option<&st
             let path = PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{slug}", team.run));
             let base = sys::git(&parent_cwd, &["rev-parse", "HEAD"]).ok();
             sys::add_worktree(&parent_cwd, &path, &branch)?;
+            sys::share_node_modules(&team.project.path, &path);
             if let Some(t) = team.task_mut(&t.id.clone()) {
                 t.base = base;
             }
@@ -1470,6 +1471,56 @@ fn retire_resting(agents: &mut Vec<Agent>, tasks: &mut [Task], now: u64) -> Vec<
 /// Is this member's card over (done or failed)?
 fn card_over(a: &Agent, tasks: &[Task]) -> bool {
     a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed")
+}
+
+/// A work copy whose work never landed in the team branch is kept this long after its card ended;
+/// then the manual cleanup marks it for removal (see `copy_removable`).
+const COPY_KEEP_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// May this work copy be deleted now? Merged work can go: its branch keeps the commits. Unmerged
+/// work goes only after `COPY_KEEP_MS` and only on a manual cleanup (`manual`), never by itself. A
+/// copy a member still stands on is never deleted (a resting 작업자 keeps its folder for a follow-up).
+fn copy_removable(merged: bool, card_over_at: Option<u64>, in_use: bool, manual: bool, now: u64) -> bool {
+    if in_use {
+        return false;
+    }
+    merged || (manual && card_over_at.is_some_and(|t| now.saturating_sub(t) > COPY_KEEP_MS))
+}
+
+/// The work copies (`.prism/worktrees/<card>`) that may be deleted now. The 총괄's own copy (`team-…`,
+/// on the team branch) is never on the list. Merged means "in the team branch", or — with no team in
+/// memory — in the branch the project's folder is on.
+fn removable_copies(repo: &str, team: Option<&Team>, now: u64, manual: bool) -> Vec<String> {
+    let into = match team {
+        Some(t) => t.branch.clone(),
+        None => sys::current_branch(repo),
+    };
+    sys::work_copies(repo)
+        .into_iter()
+        .filter(|w| {
+            let name = std::path::Path::new(&w.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with("team-") || team.is_some_and(|t| t.cwd == w.path) || (w.branch.is_some() && w.branch == into) {
+                return false;
+            }
+            let merged = match (&w.branch, &into) {
+                (Some(b), Some(i)) => sys::is_merged(repo, b, i),
+                _ => false,
+            };
+            let card_over_at = team
+                .and_then(|t| t.tasks.iter().find(|x| w.branch.is_some() && x.branch == w.branch))
+                .filter(|t| t.stage == "done" || t.stage == "failed")
+                .map(|t| t.updated_at);
+            let in_use = team.is_some_and(|t| t.agents.iter().any(|a| a.cwd == w.path && a.status != "done" && a.status != "off"));
+            copy_removable(merged, card_over_at, in_use, manual, now)
+        })
+        .map(|w| w.path)
+        .collect()
+}
+
+/// Deletes work copies with `git worktree remove` — never `--force`: a copy with uncommitted files
+/// stays. Branches are not touched. Returns the paths that went.
+fn remove_copies(repo: &str, paths: &[String]) -> Vec<String> {
+    paths.iter().filter(|p| sys::git(repo, &["worktree", "remove", p.as_str()]).is_ok()).cloned().collect()
 }
 
 /// The member a name means ("W1" is reused for every new card, so several may carry it): among the
@@ -2032,6 +2083,7 @@ impl TeamManager {
                     }
                 }
             };
+            sys::share_node_modules(&root, &path);
             team.cwd = path.to_string_lossy().into_owned();
             team.branch = Some(branch);
         } else {
@@ -2269,6 +2321,8 @@ impl TeamManager {
         if let Some(a) = team.agent_mut(aid) {
             wake_agent(a, tid, cwd, branch, note, now);
         }
+        // its old copy is no longer its folder: clear it if its work has landed
+        self.sweep_copies(team);
         if let Err(e) = self.launch_agent(team, aid, None) {
             if let Some(a) = team.agent_mut(aid) {
                 rest_agent(a, now);
@@ -2344,6 +2398,8 @@ impl TeamManager {
         let env: Vec<(String, String)> = [("PRISM_AGENT".to_string(), aid.to_string()), ("PRISM_PROJECT".to_string(), pid.clone())]
             .into_iter()
             .chain(launch.env)
+            // every member builds into the project's one shared target folder (see `shared_build_env`)
+            .chain(crate::launch::shared_build_env(&team.project.path))
             .collect();
         // Drivers report from anywhere — including inside `send`/`kill`, which we call while holding
         // the team lock that on_event needs. So events go through a queue to this member's own
@@ -3143,8 +3199,58 @@ impl TeamManager {
                 }
             }
             team.log(format!("{}이(가) {}분 쉬어서 퇴근했다.", names.join(", "), REST_MAX_MS / 60_000), None);
+            // a clocked-out 작업자 no longer holds its copy
+            self.sweep_copies(team);
             self.emit(team);
         }
+    }
+
+    /// Deletes the work copies nobody needs (see `removable_copies`) in the background, once the member
+    /// that just left one has let go of its folder. Branches stay.
+    fn sweep_copies(&self, team: &Team) {
+        let paths = removable_copies(&team.project.path, Some(team), now_ms(), false);
+        if paths.is_empty() {
+            return;
+        }
+        let repo = team.project.path.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            remove_copies(&repo, &paths);
+        });
+    }
+
+    /// The project's folder, for the work-copy cleanup.
+    fn project_path(&self, pid: &str) -> Result<String, String> {
+        self.app.try_state::<Projects>().and_then(|p| p.get(pid)).map(|p| p.path).ok_or_else(|| "프로젝트가 없어요".to_string())
+    }
+
+    /// How much disk the work copies and the shared build folder take, and what the cleanup would remove.
+    pub fn storage(&self, pid: &str) -> Result<StorageInfo, String> {
+        let repo = self.project_path(pid)?;
+        let reclaim = {
+            let teams = self.teams.lock().unwrap();
+            removable_copies(&repo, teams.get(pid), now_ms(), true)
+        };
+        let reclaimable_bytes = reclaim.iter().map(|p| sys::disk_bytes(p)).sum();
+        Ok(StorageInfo {
+            copies: sys::work_copies(&repo).len(),
+            copies_bytes: sys::disk_bytes(&worktrees_dir(&repo).to_string_lossy()),
+            build_bytes: sys::disk_bytes(&crate::launch::build_cache_dir(&repo).to_string_lossy()),
+            reclaimable: reclaim.len(),
+            reclaimable_bytes,
+        })
+    }
+
+    /// Removes what `storage` lists as reclaimable, now (the cleanup button). The team lock is held so
+    /// nobody takes a copy between the check and the removal.
+    pub fn cleanup(&self, pid: &str) -> Result<CleanupReport, String> {
+        let repo = self.project_path(pid)?;
+        let teams = self.teams.lock().unwrap();
+        let paths = removable_copies(&repo, teams.get(pid), now_ms(), true);
+        let sizes: Vec<(String, u64)> = paths.iter().map(|p| (p.clone(), sys::disk_bytes(p))).collect();
+        let gone = remove_copies(&repo, &paths);
+        let freed_bytes = sizes.iter().filter(|(p, _)| gone.contains(p)).map(|(_, b)| b).sum();
+        Ok(CleanupReport { removed: gone.len(), freed_bytes })
     }
 
     pub fn kill_agent(&self, pid: &str, aid: &str) {
@@ -3611,17 +3717,10 @@ impl TeamManager {
         }
         if let Some(a) = assignee.as_deref() {
             self.kill_driver(&pid, a);
-            // its work is merged: drop the work copy (the branch stays, so results remain viewable)
-            let wt = team.agent(a).map(|x| x.cwd.clone()).filter(|c| c.contains("/.prism/worktrees/"));
-            if let Some(wt) = wt {
-                let repo = team.project.path.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    // no --force: anything left uncommitted keeps the folder
-                    let _ = sys::git(&repo, &["worktree", "remove", &wt]);
-                });
-            }
         }
+        // a finished card's copy goes once its work is in the team branch (the branch stays);
+        // a resting 작업자 keeps its folder for a follow-up
+        self.sweep_copies(team);
         team.log(log, None);
         // the finished member leaves the list once enough newer ones are on record
         let removed = prune_finished(&mut team.agents, &mut team.tasks);
@@ -4043,6 +4142,37 @@ pub struct BranchList {
     /// the branch the team works on now
     pub current: String,
     pub list: Vec<String>,
+}
+
+/// The disk the work copies take (bytes) and what the cleanup would remove now.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfo {
+    /// work copies on disk (the 총괄's included)
+    pub copies: usize,
+    pub copies_bytes: u64,
+    /// the project's shared build folder (`CARGO_TARGET_DIR`)
+    pub build_bytes: u64,
+    /// copies the cleanup would delete: merged ones, and unmerged ones finished over a week ago
+    pub reclaimable: usize,
+    pub reclaimable_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupReport {
+    pub removed: usize,
+    pub freed_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn team_storage(app: AppHandle, project_id: String) -> Result<StorageInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().storage(&project_id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn team_cleanup(app: AppHandle, project_id: String) -> Result<CleanupReport, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().cleanup(&project_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5084,5 +5214,59 @@ mod engine_file_tests {
     #[test]
     fn a_task_without_a_work_copy_lists_nothing() {
         assert!(engine_files_of(None, &[".figcraft".to_string()]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod copy_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_goes_when_merged_or_when_unmerged_and_finished_a_week_ago_on_request() {
+        assert!(copy_removable(true, None, false, false, 0));
+        assert!(!copy_removable(true, None, true, false, 0), "a copy in use stays, merged or not");
+        assert!(!copy_removable(false, Some(0), false, false, COPY_KEEP_MS + 1), "the automatic sweep never takes unmerged work");
+        assert!(copy_removable(false, Some(0), false, true, COPY_KEEP_MS + 1), "a manual cleanup takes it after a week");
+        assert!(!copy_removable(false, Some(0), false, true, COPY_KEEP_MS), "not before a week");
+        assert!(!copy_removable(false, None, false, true, u64::MAX), "no finished card, no end");
+    }
+
+    fn git_as_test(cwd: &str, args: &[&str]) {
+        let mut all = vec!["-c", "user.name=prism-test", "-c", "user.email=test@prism.invalid"];
+        all.extend_from_slice(args);
+        sys::git(cwd, &all).unwrap();
+    }
+
+    #[test]
+    fn only_finished_copies_whose_work_landed_are_listed_and_the_team_copy_never_is() {
+        let root = std::env::temp_dir().join(format!("prism-t53-{}", now_ms()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let r = repo.to_string_lossy().into_owned();
+        sys::git(&r, &["init", "-b", "main"]).unwrap();
+        git_as_test(&r, &["commit", "--allow-empty", "-m", "first"]);
+        let copy = |name: &str| worktrees_dir(&r).join(name);
+        let name_of = |p: &String| std::path::Path::new(p).file_name().unwrap().to_string_lossy().into_owned();
+
+        // a card whose commit is merged into main
+        sys::add_worktree(&r, &copy("run-t-1"), "prism/run/t-1").unwrap();
+        git_as_test(&copy("run-t-1").to_string_lossy(), &["commit", "--allow-empty", "-m", "work"]);
+        git_as_test(&r, &["merge", "--ff-only", "prism/run/t-1"]);
+        // a card whose commit is not in main
+        sys::add_worktree(&r, &copy("run-t-2"), "prism/run/t-2").unwrap();
+        git_as_test(&copy("run-t-2").to_string_lossy(), &["commit", "--allow-empty", "-m", "more"]);
+        // the 총괄's own copy: its branch is merged too, but it must never be listed
+        sys::add_worktree(&r, &copy("team-run"), "prism/team-run").unwrap();
+
+        let listed: Vec<String> = removable_copies(&r, None, now_ms(), false).iter().map(name_of).collect();
+        assert_eq!(listed, vec!["run-t-1".to_string()]);
+
+        let gone = remove_copies(&r, &[copy("run-t-1").to_string_lossy().into_owned()]);
+        assert_eq!(gone.len(), 1);
+        assert!(!copy("run-t-1").exists(), "its folder is deleted");
+        assert!(sys::git(&r, &["rev-parse", "--verify", "--quiet", "refs/heads/prism/run/t-1"]).is_ok(), "its branch stays");
+        assert!(copy("run-t-2").exists(), "unmerged work keeps its folder");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
