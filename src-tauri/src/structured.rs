@@ -31,6 +31,9 @@ pub enum Event {
     Exit(Option<i32>),
     /// how many tokens the conversation held in its last request (its size right now)
     Context(u64),
+    /// the tokens one turn used, for one model (`model` "" = the member's own model). `context` is
+    /// the largest conversation a request of the turn sent, when the CLI reports only the turn's total
+    Tokens { model: String, input: u64, output: u64, cache_read: u64, cache_write: u64, context: u64 },
 }
 
 /// Where a driver reports. Drivers may call it from inside `send`/`kill`, i.e. while their caller
@@ -161,6 +164,10 @@ impl Claude {
 
         let weak = Arc::downgrade(&me);
         std::thread::spawn(move || {
+            // the model of the latest assistant message (the turn's total carries no model when it names none)
+            let mut model = String::new();
+            // the process's running token counts per model, as of the last turn (see claude_tokens)
+            let mut seen = std::collections::HashMap::new();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
                 match v.get("type").and_then(Value::as_str) {
@@ -170,6 +177,9 @@ impl Claude {
                         }
                     }
                     Some("assistant") => {
+                        if let Some(m) = v.pointer("/message/model").and_then(Value::as_str) {
+                            model = m.to_string();
+                        }
                         if let (Some(u), true) = (v.pointer("/message/usage"), v.get("parent_tool_use_id").is_none_or(Value::is_null)) {
                             let n: u64 = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u.get(k).and_then(Value::as_u64)).sum();
                             if n > 0 {
@@ -200,6 +210,9 @@ impl Claude {
                     }
                     Some("result") => {
                         busy.store(false, std::sync::atomic::Ordering::SeqCst);
+                        for ev in claude_tokens(&v, &model, &mut seen) {
+                            sink(ev);
+                        }
                         let error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
                         let mut result = v.get("result").and_then(Value::as_str).map(String::from);
                         if error && result.as_deref().is_none_or(|r| r.trim().is_empty()) {
@@ -223,6 +236,38 @@ impl Claude {
             sink(Event::Exit(code));
         });
         Ok(me)
+    }
+}
+
+/// The tokens of a finished Claude turn, one event per model.
+///
+/// `modelUsage` counts from the start of the process, not the turn: one `claude` process runs many turns,
+/// so this turn is the change since the last result (`seen` keeps the last counts per model). Without
+/// `modelUsage`, the turn's own `usage` is used as the total.
+fn claude_tokens(v: &Value, model: &str, seen: &mut std::collections::HashMap<String, [u64; 4]>) -> Vec<Event> {
+    let n = |u: &Value, k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+    if let Some(models) = v.get("modelUsage").and_then(Value::as_object) {
+        let mut out = Vec::new();
+        for (name, u) in models {
+            let now = [n(u, "inputTokens"), n(u, "outputTokens"), n(u, "cacheReadInputTokens"), n(u, "cacheCreationInputTokens")];
+            let before = seen.insert(name.clone(), now).unwrap_or([0; 4]);
+            let d = |i: usize| now[i].saturating_sub(before[i]);
+            if (0..4).any(|i| d(i) > 0) {
+                out.push(Event::Tokens { model: name.clone(), input: d(0), output: d(1), cache_read: d(2), cache_write: d(3), context: 0 });
+            }
+        }
+        return out;
+    }
+    match v.get("usage") {
+        Some(u) => vec![Event::Tokens {
+            model: model.to_string(),
+            input: n(u, "input_tokens"),
+            output: n(u, "output_tokens"),
+            cache_read: n(u, "cache_read_input_tokens"),
+            cache_write: n(u, "cache_creation_input_tokens"),
+            context: 0,
+        }],
+        None => vec![],
     }
 }
 
@@ -351,6 +396,19 @@ impl Codex {
                     },
                     Some("turn.completed") => {
                         ended = true;
+                        // `input_tokens` counts the cached part too: split it so the parts add up like Claude's
+                        if let Some(u) = v.get("usage") {
+                            let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+                            let (input, cache_read, cache_write) = (n("input_tokens"), n("cached_input_tokens"), n("cache_write_input_tokens"));
+                            (me.sink)(Event::Tokens {
+                                model: me.model().unwrap_or_default(),
+                                input: input.saturating_sub(cache_read + cache_write),
+                                output: n("output_tokens"),
+                                cache_read,
+                                cache_write,
+                                context: input,
+                            });
+                        }
                         (me.sink)(Event::TurnEnd { result: last_text.take(), cost: None, error: false });
                     }
                     Some("turn.failed") | Some("error") => {
@@ -822,5 +880,67 @@ mod tests {
         let rx = run_fake(rest, no_ask());
         assert_eq!(next(&rx), "start");
         assert_eq!(next(&rx), "end:false:");
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn fresh() -> HashMap<String, [u64; 4]> {
+        HashMap::new()
+    }
+
+    /// Field names as Claude Code 2.x prints them (checked against real `claude -p --output-format stream-json` runs).
+    #[test]
+    fn a_claude_result_gives_tokens_per_model() {
+        let v = json!({
+            "type": "result",
+            "usage": { "input_tokens": 2, "output_tokens": 4, "cache_read_input_tokens": 11837, "cache_creation_input_tokens": 12507 },
+            "modelUsage": {
+                "claude-haiku-5-5": { "inputTokens": 2, "outputTokens": 4, "cacheReadInputTokens": 11837, "cacheCreationInputTokens": 12507, "costUSD": 0.0026 },
+                "claude-opus-5-5": { "inputTokens": 1, "outputTokens": 9, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "costUSD": 0.01 }
+            }
+        });
+        let evs = claude_tokens(&v, "claude-haiku-5-5", &mut fresh());
+        assert_eq!(evs.len(), 2);
+        let haiku = evs.iter().find_map(|e| match e {
+            Event::Tokens { model, input, output, cache_read, cache_write, .. } if model == "claude-haiku-5-5" => Some((*input, *output, *cache_read, *cache_write)),
+            _ => None,
+        });
+        assert_eq!(haiku, Some((2, 4, 11837, 12507)));
+    }
+
+    /// `modelUsage` is cumulative for the process: the second turn of one process must only count its own part.
+    /// Numbers from a real two-turn run: turn 2's `usage` is its own (input 2, output 3), `modelUsage` is the running total.
+    #[test]
+    fn the_second_turn_of_a_process_counts_only_its_own_tokens() {
+        let mut seen = fresh();
+        let first = json!({
+            "type": "result",
+            "usage": { "input_tokens": 2, "output_tokens": 3, "cache_read_input_tokens": 11839, "cache_creation_input_tokens": 10771 },
+            "modelUsage": { "claude-haiku-5-5": { "inputTokens": 2, "outputTokens": 3, "cacheReadInputTokens": 11839, "cacheCreationInputTokens": 10771 } }
+        });
+        let second = json!({
+            "type": "result",
+            "usage": { "input_tokens": 2, "output_tokens": 3, "cache_read_input_tokens": 14968, "cache_creation_input_tokens": 9498 },
+            "modelUsage": { "claude-haiku-5-5": { "inputTokens": 4, "outputTokens": 6, "cacheReadInputTokens": 26807, "cacheCreationInputTokens": 20269 } }
+        });
+        claude_tokens(&first, "claude-haiku-5-5", &mut seen);
+        let evs = claude_tokens(&second, "claude-haiku-5-5", &mut seen);
+        assert!(matches!(&evs[..], [Event::Tokens { input: 2, output: 3, cache_read: 14968, cache_write: 9498, .. }]));
+    }
+
+    #[test]
+    fn without_modelusage_the_turns_total_is_filed_under_the_last_model_seen() {
+        let v = json!({ "type": "result", "usage": { "input_tokens": 5, "output_tokens": 6, "cache_read_input_tokens": 7, "cache_creation_input_tokens": 8 } });
+        let evs = claude_tokens(&v, "claude-sonnet-5-5", &mut fresh());
+        assert!(matches!(&evs[..], [Event::Tokens { model, input: 5, output: 6, cache_read: 7, cache_write: 8, .. }] if model == "claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn a_result_without_usage_gives_nothing() {
+        assert!(claude_tokens(&json!({ "type": "result", "is_error": true }), "x", &mut fresh()).is_empty());
     }
 }

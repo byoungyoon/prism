@@ -12,6 +12,7 @@ import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
+import { ReportMerge } from "./MergeActions";
 import { Markdown } from "./Markdown";
 
 const bubbleIn = {
@@ -696,6 +697,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                       failed={team.tasks.find((t) => t.id === m.taskIds[0])?.stage === "failed"}
                       line={firstLine(m.text)}
                       text={m.text}
+                      footer={project && <ReportMerge project={project} team={team} taskId={m.taskIds[0]} />}
                     />
                   ) : (
                     <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={m.text} /></div>

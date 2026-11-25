@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { isLive, useApp, useCurrent } from "../store";
-import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, type TeamConfig } from "../lib/api";
+import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, type StorageInfo, type TeamConfig } from "../lib/api";
 import { EffortPicker, ModelPicker } from "../components/ModelPicker";
 import { Bot, Briefcase, ChevronLeft, Tower } from "../components/icons";
 import { useShallow } from "zustand/react/shallow";
@@ -140,6 +140,76 @@ function Card({ title, aside, children, className }: { title: string; aside?: Re
   );
 }
 
+function fmtBytes(n: number) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/** how much disk the members' work folders take, and a button to clear the ones nobody needs */
+function WorkCopies({ projectId }: { projectId: string }) {
+  const [info, setInfo] = useState<StorageInfo | "error" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setInfo(null);
+    setNote(null);
+    api.teamStorage(projectId).then(
+      (s) => alive && setInfo(s),
+      () => alive && setInfo("error"),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  const clean = async () => {
+    setBusy(true);
+    try {
+      const r = await api.teamCleanup(projectId);
+      setNote(r.removed ? `${r.removed}개 지웠어요. ${fmtBytes(r.freedBytes)} 비웠어요.` : "지울 작업 폴더가 없어요.");
+      setInfo(await api.teamStorage(projectId));
+    } catch (e) {
+      setNote(`정리하지 못했어요: ${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="작업 폴더 용량">
+      {info === null && <span className="text-[12px] text-ink-2">용량을 재는 중…</span>}
+      {info === "error" && <span className="text-[12px] text-ink-2">용량을 재지 못했어요.</span>}
+      {info && info !== "error" && (
+        <>
+          <span className="text-[13.5px]">
+            작업 폴더 {info.copies}개 · <b className="font-semibold">{fmtBytes(info.copiesBytes)}</b> · 공용 빌드 폴더 {fmtBytes(info.buildBytes)}
+          </span>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            합쳐진 작업 폴더는 자동으로 지워요. 쉬는 작업자가 이어서 쓸 폴더는 남겨둬요. 합쳐지지 않은 건 끝난 뒤 7일이 지나면 정리 대상이 돼요. 브랜치는 지우지 않아요.
+          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-[12.5px] text-ink-2">
+              정리 대상 {info.reclaimable}개 · {fmtBytes(info.reclaimableBytes)}
+            </span>
+            <div className="flex-auto" />
+            <button
+              disabled={busy || info.reclaimable === 0}
+              onClick={() => void clean()}
+              className="glass-soft min-h-9 rounded-full px-4 text-[13px] disabled:opacity-40"
+            >
+              {busy ? "정리 중…" : "작업 폴더 정리"}
+            </button>
+          </div>
+          {note && <span className="text-[12px] text-ink-2">{note}</span>}
+        </>
+      )}
+    </Card>
+  );
+}
+
 function Stepper({ value, min, max, onChange, label }: { value: number; min: number; max: number; onChange: (n: number) => void; label: string }) {
   const btn = "flex size-8 items-center justify-center rounded-[10px] border-0 text-[15px] disabled:opacity-35";
   return (
@@ -182,6 +252,8 @@ export function SettingsScreen() {
   const { go, saveTeam } = useApp(useShallow((s) => ({ go: s.go, saveTeam: s.saveTeam })));
   const autoResume = useApp((s) => s.autoResume);
   const setAutoResume = useApp((s) => s.setAutoResume);
+  const confirmQuit = useApp((s) => s.confirmQuit);
+  const setConfirmQuit = useApp((s) => s.setConfirmQuit);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -329,6 +401,14 @@ export function SettingsScreen() {
             앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
           </span>
         </Card>
+
+        <Card title="창을 닫거나 앱을 끌 때 한 번 물어보기" aside={<Switch on={confirmQuit} onChange={(on) => void setConfirmQuit(on)} label="창을 닫거나 앱을 끌 때 한 번 물어보기" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            팀원이 일하는 중에 창을 닫거나(Cmd+W) 앱을 끄면(Cmd+Q) 먼저 물어봐요. 끄면 묻지 않고 바로 꺼요. 일하는 팀원이 없을 때와 업데이트로 다시 켤 때는 묻지 않아요.
+          </span>
+        </Card>
+
+        <WorkCopies projectId={project.id} />
 
         <Card title="캐릭터 보기" aside={<Switch on={critters} onChange={setCritters} label="팀원 캐릭터 보기" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">

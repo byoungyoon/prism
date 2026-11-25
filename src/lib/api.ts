@@ -45,6 +45,22 @@ export interface Project {
   linked?: boolean;
 }
 
+export interface StorageInfo {
+  /** work folders on disk (the 총괄's included) */
+  copies: number;
+  copiesBytes: number;
+  /** the shared build folder */
+  buildBytes: number;
+  /** folders the cleanup would delete now */
+  reclaimable: number;
+  reclaimableBytes: number;
+}
+
+export interface CleanupReport {
+  removed: number;
+  freedBytes: number;
+}
+
 export interface WorktreeInfo {
   path: string;
   branch: string | null;
@@ -169,6 +185,53 @@ export interface TeamSnapshot {
   chat: ChatMsg[];
   events: LogEvent[];
   costUsd: number;
+  /** tokens used: today's totals and per card. Missing in demo snapshots (screenshot tool) */
+  usage?: TeamUsage;
+}
+
+/** Token counts: new input, output, cache reads and cache writes, as the CLIs report them. */
+export interface Bucket {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** "opus" | "sonnet" | "haiku" | "fable", or the model's own name */
+export interface ModelUse extends Bucket {
+  model: string;
+}
+
+export interface MemberUse extends Bucket {
+  agentId: string;
+  name: string;
+  models: ModelUse[];
+}
+
+/** a card's tokens so far (all days) */
+export interface CardUse extends Bucket {
+  taskId: string;
+  models: ModelUse[];
+}
+
+/** "big": one turn re-sent a huge conversation (peakTokens); "rapid": many turns in a short time (turns) */
+export interface UsageAlert {
+  at: number;
+  kind: "big" | "rapid";
+  agentName: string;
+  taskId: string | null;
+  peakTokens: number | null;
+  turns: number | null;
+}
+
+export interface TeamUsage {
+  /** today, the whole team */
+  today: Bucket;
+  /** today, by model */
+  models: ModelUse[];
+  members: MemberUse[];
+  cards: CardUse[];
+  alerts: UsageAlert[];
 }
 
 /** Branches the team can be pointed at (not Prism's own work branches). */
@@ -183,6 +246,21 @@ export interface FileStat {
   /** -1 for binary files */
   added: number;
   removed: number;
+}
+
+/** What merging a report's card would bring into the team's branch */
+export interface MergeCheck {
+  into: string | null;
+  /** commits the team's branch doesn't have yet; 0 means nothing to merge */
+  commits: number;
+  files: number;
+}
+
+/** One card's outcome of 합치기 */
+export interface MergeOutcome {
+  taskId: string;
+  result: "merged" | "nothing" | "conflict" | "failed";
+  message: string;
 }
 
 export interface GitChange {
@@ -264,6 +342,16 @@ export interface Prefs {
   autoResume: boolean;
   /** the app closed with teams at work: "update" (they come back regardless of autoResume) | "quit" */
   restart?: "update" | "quit" | null;
+  /** ask before closing the window or quitting while members are at work */
+  confirmQuit: boolean;
+}
+
+/** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
+export type QuitKind = "window" | "quit";
+/** Sent when a close or quit would stop `working` members. */
+export interface QuitAsk {
+  kind: QuitKind;
+  working: number;
 }
 
 export interface RemoteStatus {
@@ -292,6 +380,9 @@ export const api = {
   remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
+  setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
+  /** let the held-back window close (or quit) go through after the user pressed 끄기 */
+  quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
@@ -360,6 +451,16 @@ export const api = {
   teamBranches: (projectId: string) => call<BranchList>("team_branches", { projectId }),
   /** put the team on another branch (`create`: a new one, cut from where the team started) */
   setTeamBranch: (projectId: string, branch: string, create: boolean) => call<void>("team_set_branch", { projectId, branch, create }),
+  /** what merging this report's card would bring in (commits, files) */
+  taskMergeCheck: (projectId: string, taskId: string) => call<MergeCheck>("task_merge_check", { projectId, taskId }),
+  /** 합치기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
+  taskMerge: (projectId: string, taskIds: string[]) => call<MergeOutcome[]>("task_merge", { projectId, taskIds }),
+  /** 완료 on a report with nothing to merge */
+  taskComplete: (projectId: string, taskId: string) => call<void>("task_complete", { projectId, taskId }),
+  /** disk used by the work folders and the shared build folder, and what the cleanup would remove */
+  teamStorage: (projectId: string) => call<StorageInfo>("team_storage", { projectId }),
+  /** delete the work folders that are merged (or unmerged and finished over a week ago); branches stay */
+  teamCleanup: (projectId: string) => call<CleanupReport>("team_cleanup", { projectId }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
     call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>

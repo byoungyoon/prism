@@ -26,3 +26,6 @@ dist-ssr
 # 엔진 웹판 빌드 산출물 (scripts/build-engine-figcraft.sh, 용량이 커서 커밋하지 않음)
 /public/engines/figcraft/
 /public/engines/deckcraft/
+
+# 화면 캡처 도구 산출물 (scripts/shot.mjs 기본 저장 폴더)
+/shots/

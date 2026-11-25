@@ -44,6 +44,7 @@ pub fn worker() -> String {
 - 카드 범위 밖의 파일은 고치지 않는다.\n\
 - 끝나면 변경사항을 git commit 하고 report(status:\"done\", summary: 3줄 이내)로 보고한 뒤 멈춘다.\n\
 - 실패하면 report(status:\"failed\", summary: 이유).\n\
+- 화면을 확인하거나 캡처해야 하면 /tmp에 Playwright 스크립트를 새로 짜지 말고 `pnpm shot -- --screen office`를 쓴다 (화면: office·team·board·chat·edit·home·settings, 폭 `-w 390`, 어두운 테마 `--theme dark`, 연속 캡처 `--frames 5`, 시나리오 `-s demo|multi|empty`, 목록 `pnpm shot -- --list`). 시스템 크롬은 쓰지 않고 끝나면 서버·브라우저를 스스로 닫는다. 결과 PNG는 shots/ 폴더에 생긴다.\n\
 - 사람의 판단이나 비밀값이 필요할 때만 escalate로 질문한다. 사용자는 개발을 모를 수 있으니 쉬운 말과 선택지(options)로 묻고 '[Prism 답변]'을 기다린다. 기술적인 선택은 스스로 정한다."
         .into()
 }
@@ -108,4 +109,21 @@ pub fn handoff_start(memo: Option<&str>, tasks: &str) -> String {
 [인수인계 메모]\n{memo}\n\n[작업 카드 현황]\n{tasks}\n\n\
 위를 읽고 이어서 일할 준비만 하세요. 이 메시지에는 — 한 글자로만 답하세요."
     )
+}
+
+/// Asked of a 작업자·팀장 whose conversation grew too long mid-card: its answer becomes the note the new
+/// conversation starts with. Images stay out of it (only their file paths).
+pub fn worker_handover_request() -> String {
+    "[Prism 인수인계 요청] 대화가 길어져 이 카드를 새 대화에서 이어갈 거예요. 새 대화가 바로 이어서 할 수 있게 요약을 10~15줄로 써 주세요. \
+내용: ① 카드 목표 한 줄 ② 지금까지 바꾼 파일 경로 ③ 커밋 해시와 메시지 ④ 남은 일 ⑤ 막힌 점과 주의사항. \
+이미지나 화면 캡처는 내용을 옮겨 적지 말고 파일 경로만 적으세요. 도구는 쓰지 말고 요약 본문만 답하세요."
+        .into()
+}
+
+/// The new conversation's note (after its card): what the old conversation got to, or just that it restarted.
+pub fn worker_handover_start(memo: Option<&str>) -> String {
+    match memo {
+        Some(m) => format!("[이어서 하는 일 — 이전 대화를 요약했어요]\n{m}\n\n(이전 대화는 길어져서 새로 시작했어요. 이전 결과는 이 폴더의 코드와 git 기록에 있어요. 위 요약을 바탕으로 남은 일을 이어서 하세요.)"),
+        None => "[이어서 하는 일] 이전 대화가 길어져 새로 시작했어요. 이전 결과는 이 폴더의 코드와 git 기록에 있어요. 카드의 남은 일을 이어서 하세요.".into(),
+    }
 }

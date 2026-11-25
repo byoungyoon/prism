@@ -159,7 +159,8 @@ pub struct WorktreeInfo {
     pub is_main: bool,
 }
 
-pub fn worktrees(repo: &str) -> Vec<WorktreeInfo> {
+/// Every worktree of `repo` in git's order (the main one first): (path, branch).
+fn all_worktrees(repo: &str) -> Vec<(String, Option<String>)> {
     let Ok(out) = git(repo, &["worktree", "list", "--porcelain"]) else { return vec![] };
     let mut list = vec![];
     for block in out.split("\n\n") {
@@ -173,14 +174,36 @@ pub fn worktrees(repo: &str) -> Vec<WorktreeInfo> {
             }
         }
         if let Some(path) = path {
-            // agent worktrees live under .prism/ — not something to open a team on
-            if path.contains("/.prism/worktrees/") {
-                continue;
-            }
-            list.push(WorktreeInfo { is_main: list.is_empty(), path, branch });
+            list.push((path, branch));
         }
     }
     list
+}
+
+pub fn worktrees(repo: &str) -> Vec<WorktreeInfo> {
+    let mut list: Vec<WorktreeInfo> = vec![];
+    for (path, branch) in all_worktrees(repo) {
+        // agent worktrees live under .prism/ — not something to open a team on
+        if path.contains("/.prism/worktrees/") {
+            continue;
+        }
+        list.push(WorktreeInfo { is_main: list.is_empty(), path, branch });
+    }
+    list
+}
+
+/// The work copies members run in (`<project>/.prism/worktrees/…`), not the project's own folders.
+pub fn work_copies(repo: &str) -> Vec<WorktreeInfo> {
+    all_worktrees(repo)
+        .into_iter()
+        .filter(|(path, _)| path.contains("/.prism/worktrees/"))
+        .map(|(path, branch)| WorktreeInfo { path, branch, is_main: false })
+        .collect()
+}
+
+/// Whether `branch`'s commits are all in `into` (the work has landed there).
+pub fn is_merged(repo: &str, branch: &str, into: &str) -> bool {
+    git(repo, &["merge-base", "--is-ancestor", branch, into]).is_ok()
 }
 
 /// Creates `branch` from `base_cwd`'s HEAD, checked out at `path`.
@@ -189,6 +212,31 @@ pub fn add_worktree(base_cwd: &str, path: &Path, branch: &str) -> Result<(), Str
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     git(base_cwd, &["worktree", "add", "-b", branch, &path.to_string_lossy(), "HEAD"]).map(|_| ())
+}
+
+/// Lets a new work copy use the project's installed packages instead of installing its own: a link
+/// to `<repo>/node_modules`. Only when git ignores `node_modules` there, so the link never gets
+/// committed. Best effort: without it the copy simply has no packages.
+pub fn share_node_modules(repo: &str, work: &Path) {
+    let src = Path::new(repo).join("node_modules");
+    let dst = work.join("node_modules");
+    if !src.is_dir() || dst.exists() || dst.is_symlink() {
+        return;
+    }
+    if git(&work.to_string_lossy(), &["check-ignore", "-q", "node_modules"]).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    let _ = std::os::unix::fs::symlink(&src, &dst);
+}
+
+/// Disk space used by `path` in bytes (`du`); 0 when it is missing.
+pub fn disk_bytes(path: &str) -> u64 {
+    if !Path::new(path).exists() {
+        return 0;
+    }
+    let Ok(out) = command("du").args(["-sk", path]).output() else { return 0 };
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next().and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(0) * 1024
 }
 
 /// Makes `path` a git repo with at least one commit (agents branch their worktrees from HEAD).

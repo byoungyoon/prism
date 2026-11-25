@@ -215,6 +215,8 @@ fn auto_allow(tool: &str, input: &Value, detail: &str, workspace: &str, project:
     match tool {
         "Bash" => is_safe_bash(detail, workspace, project),
         "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" => read_tool_ok(tool, input, workspace, project),
+        // reading the web changes nothing here; `needs_user` already catches secrets and deploys in the query
+        "WebSearch" | "WebFetch" => true,
         _ => false,
     }
 }
@@ -259,19 +261,20 @@ fn path_within(path: &str, base: &str, roots: &[&str]) -> bool {
         return false;
     }
     let full: PathBuf = if p.is_absolute() { p.to_path_buf() } else { Path::new(base).join(p) };
-    // the nearest ancestor that exists tells where it really lives
-    let mut anc: &Path = &full;
-    let real = loop {
-        match std::fs::canonicalize(anc) {
-            Ok(r) => break r,
-            Err(_) => match anc.parent() {
-                Some(par) => anc = par,
-                None => return false,
-            },
+    let Some(resolved) = real_location(&full) else { return false };
+    // roots that don't exist yet (a build folder not built yet) are resolved the same way
+    roots.iter().filter(|r| !r.is_empty()).any(|r| real_location(Path::new(r)).is_some_and(|root| resolved.starts_with(root)))
+}
+
+/// Where `full` really lives: the nearest ancestor that exists, resolved, with the rest appended.
+fn real_location(full: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut anc = full;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(anc) {
+            return Some(real.join(full.strip_prefix(anc).unwrap_or(std::path::Path::new(""))));
         }
-    };
-    let resolved = real.join(full.strip_prefix(anc).unwrap_or(Path::new("")));
-    roots.iter().filter(|r| !r.is_empty()).any(|r| resolved.starts_with(std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r))))
+        anc = anc.parent()?;
+    }
 }
 
 /// A path word typed in a shell line: plain characters only (no quoting tricks, wildcards or expansion),
@@ -293,10 +296,30 @@ fn is_safe_bash(detail: &str, workspace: &str, project: &str) -> bool {
         return false;
     }
     let Some((line, bodies)) = take_heredocs(detail) else { return false };
-    match split_shell(&line, workspace) {
-        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies)),
-        None => false,
+    let Some(parts) = split_shell(&line, workspace) else { return false };
+    // `cd /tmp/x && …`: the rest of the line runs in that folder, so its paths are judged from there
+    if let Some((first, rest)) = parts.split_first() {
+        if let Some(dir) = leading_cd_tmp(first, workspace) {
+            return !rest.is_empty() && rest.iter().all(|p| is_safe_simple(p, &dir, project, &bodies));
+        }
     }
+    !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies))
+}
+
+/// A line's first piece that is just `cd <folder>` where the folder is really inside /tmp: its real path.
+/// Only at the start of a line, so the later pieces know where they run.
+fn leading_cd_tmp(part: &str, workspace: &str) -> Option<String> {
+    let words: Vec<&str> = part.split_whitespace().collect();
+    let [cd, target] = words.as_slice() else { return None };
+    let target = target.trim_matches(|c| c == '"' || c == '\'');
+    if *cd != "cd" || target.is_empty() || target.contains(['$', '~', '\\']) {
+        return None;
+    }
+    let p = std::path::Path::new(target);
+    let full = if p.is_absolute() { p.to_path_buf() } else { std::path::Path::new(workspace).join(p) };
+    let real = std::fs::canonicalize(&full).ok().filter(|r| r.is_dir())?;
+    let in_tmp = TMP_ROOTS.iter().any(|t| std::fs::canonicalize(t).is_ok_and(|root| real.starts_with(root)));
+    in_tmp.then(|| real.to_string_lossy().into_owned())
 }
 
 /// Pulls `<<'TAG'` here-documents out of the line: their text is data for the command, not commands.
@@ -437,7 +460,7 @@ fn has_flag(args: &[&str], flags: &[&str]) -> bool {
 fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String]) -> bool {
     // a here-document is only the command's input; its text is `bodies[n]`
     let mut heredoc: Option<&str> = None;
-    let words: Vec<&str> = part
+    let mut words: Vec<&str> = part
         .split_whitespace()
         .filter(|w| match w.strip_prefix("__HEREDOC_").and_then(|r| r.strip_suffix("__")).and_then(|n| n.parse::<usize>().ok()) {
             Some(n) => {
@@ -447,6 +470,15 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
             None => true,
         })
         .collect();
+    // `CARGO_TARGET_DIR=<the team's shared build folder> cargo …`: the only variable allowed in front
+    let cache = crate::launch::build_cache_dir(project).to_string_lossy().into_owned();
+    loop {
+        let Some(value) = words.first().and_then(|w| w.strip_prefix("CARGO_TARGET_DIR=")).map(str::to_string) else { break };
+        if !path_within(&value, workspace, &[cache.as_str()]) {
+            return false;
+        }
+        words.remove(0);
+    }
     let Some((&first, args)) = words.split_first() else { return false };
     // the project's own tsc / vite (`node_modules/.bin/tsc`, `./node_modules/.bin/vite`, or by full path)
     let local = first.rsplit_once("node_modules/.bin/").map(|(_, b)| b).filter(|b| matches!(*b, "tsc" | "vite") && path_within(first, workspace, &[workspace, project]));
@@ -472,11 +504,19 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
         "tsc" => !has_flag(args, &["--outDir", "--outFile", "--out", "--declarationDir", "--tsBuildInfoFile", "--generateTrace"]),
         "vite" => args.first() == Some(&"build") && !has_flag(args, &["--outDir"]),
         "cargo" => is_safe_cargo(args, workspace),
+        // the project's own scripts; `install` and anything that fetches or publishes stays with the 총괄
         "pnpm" | "npm" => match args.first() {
-            Some(&"build") | Some(&"test") => true,
-            Some(&"exec") => args.get(1) == Some(&"tsc") && args.contains(&"--noEmit"),
+            Some(&"build") | Some(&"test") | Some(&"lint") | Some(&"shot") => true,
+            Some(&"exec") => match args.get(1) {
+                Some(&"tsc") => args.contains(&"--noEmit"),
+                Some(&"vite") => args.get(2) == Some(&"build") && !has_flag(args, &["--outDir"]),
+                Some(&"vitest") => !has_flag(args, &["--outputFile", "--coverage.reportsDirectory"]),
+                _ => false,
+            },
             _ => false,
         },
+        "ln" => is_node_modules_link(args, workspace, project),
+        "rm" => is_node_modules_unlink(args, workspace),
         "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && write_path_ok(a, workspace))) && args.contains(&"-p"),
         "cp" => file_move_ok(args, "rRapfnvHLP", workspace),
         "mv" => file_move_ok(args, "fnv", workspace),
@@ -491,6 +531,31 @@ fn file_move_ok(args: &[&str], allowed: &str, workspace: &str) -> bool {
     flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| allowed.contains(c)))
         && paths.len() >= 2
         && paths.iter().all(|p| write_path_ok(p, workspace))
+}
+
+/// `node_modules` (or `./node_modules`): the one link name the worktree sharing and clearing touch.
+fn is_node_modules_name(p: &str) -> bool {
+    matches!(p, "node_modules" | "./node_modules")
+}
+
+/// `ln -s <the project's folder> node_modules`: a worktree borrows the project's installed packages.
+/// Only that link name, and only a target inside the project.
+fn is_node_modules_link(args: &[&str], workspace: &str, project: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| "sfn".contains(c))) && flags.iter().any(|f| f.contains('s'))
+        && paths.len() == 2
+        && is_node_modules_name(paths[1])
+        && write_path_ok(paths[1], workspace)
+        && path_within(paths[0], workspace, &[project])
+}
+
+/// `rm node_modules` / `rm -rf node_modules` where `node_modules` is the link itself: removes only the link,
+/// never the packages behind it. A real folder named node_modules still asks.
+fn is_node_modules_unlink(args: &[&str], workspace: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    !paths.is_empty()
+        && flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| "rf".contains(c)))
+        && paths.iter().all(|p| is_node_modules_name(p) && std::fs::symlink_metadata(std::path::Path::new(workspace).join(p)).is_ok_and(|m| m.file_type().is_symlink()))
 }
 
 /// `sips` reading (`-g`), or converting into /tmp (`--out`): never rewriting a picture in place.
@@ -603,7 +668,8 @@ fn is_safe_cargo(args: &[&str], workspace: &str) -> bool {
 }
 
 /// Git inside the member's own folder: look (status/diff/log/show/rev-parse/branch list), and keep its
-/// own work (add, commit, merge of local branches). Never another folder (`-C`, `--git-dir`), never the network.
+/// own work (add, commit). Never another folder (`-C`, `--git-dir`), never the network. `merge` is not here:
+/// merging goes to the 총괄 every time.
 fn is_safe_git(args: &[&str], workspace: &str) -> bool {
     let Some((&sub, rest)) = args.split_first() else { return false };
     match sub {
@@ -613,12 +679,6 @@ fn is_safe_git(args: &[&str], workspace: &str) -> bool {
         }
         // the message words can be anything; what it does is only to record the work in the local history
         "commit" => !rest.iter().any(|a| a.starts_with("--git-dir") || a.starts_with("--work-tree")),
-        "merge" => {
-            let remote = |a: &&str| {
-                ["origin", "remotes/", "upstream"].iter().any(|p| a.starts_with(p)) || a.contains(['@', ':']) || a.starts_with("-X") || a.starts_with("-s") || has_flag(&[a], &["--strategy", "--strategy-option"])
-            };
-            !rest.is_empty() && !rest.iter().any(remote)
-        }
         _ => is_read_only_git(args),
     }
 }
@@ -718,6 +778,8 @@ mod auto_allow_tests {
         let (project, _) = dirs();
         let abs_tsc = format!("{project}/node_modules/.bin/tsc --noEmit");
         let abs_vite = format!("{project}/node_modules/.bin/vite build");
+        let shared_cargo = format!("CARGO_TARGET_DIR={project}/.prism/cargo-target cargo test");
+        let shared_cargo_pipe = format!("CARGO_TARGET_DIR={project}/.prism/cargo-target cargo build 2>&1 | tail -5");
         for cmd in [
             "ls -la src",
             "pwd",
@@ -747,6 +809,14 @@ mod auto_allow_tests {
             "pnpm build",
             "npm test -- --run",
             "pnpm exec tsc --noEmit",
+            "pnpm shot",
+            "pnpm shot -- -s demo --screen office --width 390 --theme dark",
+            "pnpm lint",
+            "pnpm exec vite build",
+            "pnpm exec vitest run",
+            "pnpm exec vitest run src/a.test.ts --reporter=verbose",
+            &shared_cargo,
+            &shared_cargo_pipe,
             "echo done >/dev/null 2>&1",
             "echo ok > /tmp/prism-t5.log",
             "cd src && ls",
@@ -761,8 +831,6 @@ mod auto_allow_tests {
             "git add src/team.rs src/lib.rs",
             "git commit -m wip",
             "git add . && git commit -m \"wip\" && git status",
-            "git merge prism/c217/t-34",
-            "git merge --no-ff t-34",
             "sleep 2",
             "sleep 0.5 && ls",
             "date +%s",
@@ -801,6 +869,18 @@ mod auto_allow_tests {
             "find . -exec rm {} +",
             "rg --pre sh foo src",
             "pnpm install",
+            "pnpm add left-pad",
+            "pnpm publish",
+            "pnpm exec tsc",
+            "pnpm exec vite",
+            "pnpm exec vitest run --outputFile=out.json",
+            "pnpm exec node -e 'process.exit(0)'",
+            "git merge prism/c217/t-34",
+            "git merge --no-ff t-34",
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test",
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test && curl https://x.y",
+            "RUST_LOG=debug cargo test",
+            "cargo test 2>&1 | tail -5 && rm -rf target",
             "ls | xargs rm",
             "echo hi > /tmp/../etc/passwd",
             "sudo ls",
@@ -1064,7 +1144,14 @@ mod auto_allow_tests {
         assert!(!tool_ok("mcp__deckcraft__set_text", json!({ "text": "my password is" })));
         assert!(!tool_ok("Edit", json!({ "file_path": "src/a.rs" })));
         assert!(!tool_ok("Write", json!({ "file_path": "notes.txt" })));
-        assert!(!tool_ok("WebFetch", json!({ "url": "https://example.com" })));
+    }
+
+    #[test]
+    fn web_reads_pass_but_secrets_in_them_still_ask() {
+        assert!(tool_ok("WebFetch", json!({ "url": "https://example.com/docs" })));
+        assert!(tool_ok("WebSearch", json!({ "query": "tauri 2 permission hooks" })));
+        assert!(!tool_ok("WebFetch", json!({ "url": "https://example.com/?token=abc" })));
+        assert!(!tool_ok("WebSearch", json!({ "query": "how to deploy to production" })));
     }
 
     #[test]
@@ -1108,12 +1195,156 @@ mod auto_allow_tests {
             assert!(!tool_ok(tool, input.clone()), "should ask: {tool} {input}");
         }
     }
+
+    #[test]
+    fn cd_into_tmp_passes_only_when_the_rest_is_safe() {
+        if !std::path::Path::new("/tmp").is_dir() {
+            return;
+        }
+        let dir = format!("/tmp/prism-t60-{}", std::process::id());
+        std::fs::create_dir_all(format!("{dir}/work")).unwrap();
+        let (project, ws) = dirs();
+        for cmd in [
+            format!("cd {dir} && ls"),
+            format!("cd {dir}/work && python3 -I - <<'EOF'\nimport json\nprint(json.dumps({{}}))\nEOF"),
+            format!("cd {dir} && echo hi > out.txt"),
+            format!("cd {dir} && cargo test 2>&1 | tail -5"),
+        ] {
+            assert!(is_safe_bash(&cmd, &ws, &project), "should pass: {cmd}");
+        }
+        for cmd in [
+            format!("cd {dir}"),
+            format!("cd {dir} && rm -rf out"),
+            format!("cd {dir} && curl https://x.y"),
+            format!("cd {dir} && touch /etc/x"),
+            format!("cd {dir} && cd /"),
+            format!("cd {dir} && (ls)"),
+            format!("ls && cd {dir}"),
+            "cd /etc && ls".to_string(),
+            "cd ~ && ls".to_string(),
+        ] {
+            assert!(!is_safe_bash(&cmd, &ws, &project), "should ask: {cmd}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_modules_link_is_shared_and_cleared_but_real_folders_ask() {
+        let base = std::env::temp_dir().join(format!("prism-t60-nm-{}", std::process::id()));
+        let project_dir = base.join("myOrca");
+        let ws_dir = project_dir.join(".prism").join("worktrees").join("w2");
+        std::fs::create_dir_all(project_dir.join("node_modules")).unwrap();
+        std::fs::create_dir_all(ws_dir.join("src")).unwrap();
+        std::fs::create_dir_all(ws_dir.join("vendor").join("node_modules")).unwrap();
+        let project = project_dir.to_string_lossy().into_owned();
+        let ws = ws_dir.to_string_lossy().into_owned();
+        let ok = |cmd: &str| is_safe_bash(cmd, &ws, &project);
+
+        // link the project's packages into the worktree: that name only, and only a target inside the project
+        assert!(ok(&format!("ln -s {project}/node_modules node_modules")));
+        assert!(ok(&format!("ln -sfn {project}/node_modules ./node_modules")));
+        assert!(!ok(&format!("ln -s {project}/node_modules src")));
+        assert!(!ok("ln -s /etc node_modules"));
+        assert!(!ok(&format!("ln -s {project}/node_modules ../node_modules")));
+        assert!(!ok(&format!("ln -s {project}/node_modules node_modules && rm -rf src")));
+
+        // clearing the link: only once it's really a symlink, never through its trailing slash
+        assert!(!ok("rm -rf node_modules"));
+        std::os::unix::fs::symlink(format!("{project}/node_modules"), ws_dir.join("node_modules")).unwrap();
+        assert!(ok("rm -rf node_modules"));
+        assert!(ok("rm node_modules"));
+        assert!(!ok("rm -rf node_modules/"));
+        assert!(!ok("rm -rf vendor/node_modules"));
+        assert!(!ok("rm -rf src"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn shared_cargo_build_folder_passes_other_folders_ask() {
+        let (project, ws) = dirs();
+        let cache = format!("{project}/.prism/cargo-target");
+        assert!(is_safe_bash(&format!("CARGO_TARGET_DIR={cache} cargo build"), &ws, &project));
+        assert!(is_safe_bash(&format!("CARGO_TARGET_DIR={cache} cargo test -- --nocapture"), &ws, &project));
+        for cmd in [
+            "CARGO_TARGET_DIR=/tmp/elsewhere cargo test".to_string(),
+            format!("CARGO_TARGET_DIR={cache}/../../x cargo build"),
+            format!("CARGO_TARGET_DIR={cache} cargo run"),
+            format!("RUST_LOG=debug CARGO_TARGET_DIR={cache} cargo test"),
+            format!("CARGO_TARGET_DIR={cache}"),
+        ] {
+            assert!(!is_safe_bash(&cmd, &ws, &project), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn quick_requests_from_one_member_form_one_batch() {
+        let mut b = super::PermBatches::default();
+        assert!(b.add("p/w1", 5), "the first request opens the window");
+        assert!(!b.add("p/w1", 6), "a request inside the window joins it");
+        assert!(b.add("p/w2", 7), "another member gets its own window");
+        assert_eq!(b.take("p/w1"), vec![5, 6]);
+        assert!(b.take("p/w1").is_empty());
+        assert!(b.add("p/w1", 8), "a later burst opens a new window");
+    }
+
+    #[test]
+    fn batch_text_keeps_one_request_as_before_and_lists_many() {
+        let one = super::permission_batch_text("W1", &[(12, "Bash".into(), "cargo test".into())]);
+        assert_eq!(one, "[Prism 허락 요청 #12] W1: Bash cargo test\ndecide_permission(request_id: 12, decision: allow|deny|ask_user)");
+        let many = super::permission_batch_text("W1", &[(12, "Bash".into(), "cargo test".into()), (13, "Edit".into(), "src/a.rs".into())]);
+        assert!(many.starts_with("[Prism 허락 요청 #12, #13] W1이(가) 연달아 2건을 올렸어요:"), "{many}");
+        assert!(many.contains("- #13 Edit src/a.rs"), "{many}");
+        assert!(many.contains("decide_permission(request_ids: [12, 13], decision:"), "{many}");
+    }
 }
 
 /// Outcome of a PermissionRequest hook: decide now, or wait for the user.
 pub enum PermWait {
     Now(&'static str),
     Wait(u64, tokio::sync::oneshot::Receiver<&'static str>),
+}
+
+/// Requests from the same member that arrive this close together reach the boss as one message.
+const PERM_BATCH_MS: u64 = 2_000;
+
+/// A member counts as at work unless clocked out ("off") or finished ("done").
+pub fn is_working(status: &str) -> bool {
+    status != "off" && status != "done"
+}
+
+/// Permission request numbers held back per member ("project/member") until their window closes.
+#[derive(Default)]
+struct PermBatches(HashMap<String, Vec<u64>>);
+
+impl PermBatches {
+    /// Adds a request. `true` when it opens a new window: the caller schedules the flush for it.
+    fn add(&mut self, key: &str, id: u64) -> bool {
+        let list = self.0.entry(key.to_string()).or_default();
+        let opens = list.is_empty();
+        list.push(id);
+        opens
+    }
+
+    fn take(&mut self, key: &str) -> Vec<u64> {
+        self.0.remove(key).unwrap_or_default()
+    }
+}
+
+/// What the boss reads for one or more requests from one member: `(number, tool, detail)` each.
+fn permission_batch_text(name: &str, items: &[(u64, String, String)]) -> String {
+    let ids: Vec<String> = items.iter().map(|(id, ..)| id.to_string()).collect();
+    if let [(id, tool, detail)] = items {
+        return format!("[Prism 허락 요청 #{id}] {name}: {tool} {}\ndecide_permission(request_id: {id}, decision: allow|deny|ask_user)", short(detail, 200));
+    }
+    let lines: Vec<String> = items.iter().map(|(id, tool, detail)| format!("- #{id} {tool} {}", short(detail, 200))).collect();
+    format!(
+        "[Prism 허락 요청 #{}] {name}이(가) 연달아 {}건을 올렸어요:\n{}\ndecide_permission(request_ids: [{}], decision: allow|deny|ask_user) — 같은 답이면 한 번에, 다르면 번호별로 나눠 부르세요.",
+        ids.join(", #"),
+        items.len(),
+        lines.join("\n"),
+        ids.join(", ")
+    )
 }
 
 /// "always allow" key: tool + the first two words of a shell command.
@@ -1172,6 +1403,8 @@ pub struct TeamSnapshot {
     pub chat: Vec<ChatMsg>,
     pub events: Vec<LogEvent>,
     pub cost_usd: f64,
+    /// tokens used: today's totals, and per card (filled in by `TeamManager::with_usage`)
+    pub usage: crate::tokens::TeamUsage,
 }
 
 /// What survives an app restart (agents come back stopped, with their session ids).
@@ -1205,6 +1438,8 @@ pub struct TeamManager {
     pub token: String,
     data_dir: PathBuf,
     perm_waiters: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<&'static str>>>,
+    /// requests from one member still waiting to be sent to the boss together (see `PermBatches`)
+    perm_batches: Mutex<PermBatches>,
     /// "project/agent" whose next turn was started by a permission request: its bare reply ("." etc.) stays out of the chat
     permission_turns: Mutex<std::collections::HashSet<String>>,
     /// structured agents by "project/agent"
@@ -1228,6 +1463,10 @@ pub struct TeamManager {
     launches: Mutex<HashMap<String, u64>>,
     /// teams whose 총괄 is writing its hand-over memo ("새 대화") → when it was asked
     renewing: Mutex<HashMap<String, u64>>,
+    /// tokens each turn used, per day / team / card / member / model (saved in usage.json)
+    tokens: Mutex<crate::tokens::Ledger>,
+    /// "project/agent" whose long conversation is being handed over to a new one (mid-card) → its state
+    handovers: Mutex<HashMap<String, Handover>>,
     watchdog: std::sync::Once,
 }
 
@@ -1266,6 +1505,7 @@ fn work_dir(team: &mut Team, role: &str, task: Option<&Task>, parent: Option<&st
             let path = PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{slug}", team.run));
             let base = sys::git(&parent_cwd, &["rev-parse", "HEAD"]).ok();
             sys::add_worktree(&parent_cwd, &path, &branch)?;
+            sys::share_node_modules(&team.project.path, &path);
             if let Some(t) = team.task_mut(&t.id.clone()) {
                 t.base = base;
             }
@@ -1284,6 +1524,8 @@ fn restore_plan(agents: &[Agent], tasks: &[Task]) -> Vec<Restore> {
     let mut out: Vec<Restore> = agents
         .iter()
         .filter(|a| a.status == "off" || (a.role == "lead" && a.status == "done"))
+        // a resting 작업자 has no session to bring back (it returns to the lounge)
+        .filter(|a| a.rest_since.is_none())
         .filter(|a| a.resume_as.is_some() || a.role == "lead" || running(a))
         .map(|a| Restore {
             id: a.id.clone(),
@@ -1311,7 +1553,9 @@ const KEEP_FINISHED: usize = 6;
 /// Cards of the removed ones keep the name (`who`). Returns the removed ids (to drop transcripts).
 fn prune_finished(agents: &mut Vec<Agent>, tasks: &mut [Task]) -> Vec<String> {
     let card_finished = |a: &Agent| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed");
-    let ended: Vec<String> = agents.iter().filter(|a| a.role != "lead" && a.status == "off" && card_finished(a)).map(|a| a.id.clone()).collect();
+    // a 작업자 resting in the lounge is off only while its team is (stopped, or the app restarted):
+    // it is not finished — it goes back to the lounge when the team clocks in (`back_to_lounge`)
+    let ended: Vec<String> = agents.iter().filter(|a| a.role != "lead" && a.status == "off" && a.rest_since.is_none() && card_finished(a)).map(|a| a.id.clone()).collect();
     for a in agents.iter_mut().filter(|a| ended.contains(&a.id)) {
         a.status = "done".into();
         a.resume_as = None;
@@ -1366,6 +1610,15 @@ fn rest_agent(a: &mut Agent, now: u64) {
     a.pending.clear();
     a.resume_as = None;
     a.ready = true;
+}
+
+/// The team clocked in again: its resting 작업자 (off while the team was) are back in the lounge.
+fn back_to_lounge(agents: &mut [Agent]) {
+    for a in agents.iter_mut().filter(|a| a.rest_since.is_some() && a.status == "off") {
+        a.status = "wait".into();
+        a.stuck = None;
+        a.resume_as = None;
+    }
 }
 
 /// How a message to a 팀원 gets there (see `TeamManager::deliver`).
@@ -1470,6 +1723,56 @@ fn retire_resting(agents: &mut Vec<Agent>, tasks: &mut [Task], now: u64) -> Vec<
 /// Is this member's card over (done or failed)?
 fn card_over(a: &Agent, tasks: &[Task]) -> bool {
     a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed")
+}
+
+/// A work copy whose work never landed in the team branch is kept this long after its card ended;
+/// then the manual cleanup marks it for removal (see `copy_removable`).
+const COPY_KEEP_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// May this work copy be deleted now? Merged work can go: its branch keeps the commits. Unmerged
+/// work goes only after `COPY_KEEP_MS` and only on a manual cleanup (`manual`), never by itself. A
+/// copy a member still stands on is never deleted (a resting 작업자 keeps its folder for a follow-up).
+fn copy_removable(merged: bool, card_over_at: Option<u64>, in_use: bool, manual: bool, now: u64) -> bool {
+    if in_use {
+        return false;
+    }
+    merged || (manual && card_over_at.is_some_and(|t| now.saturating_sub(t) > COPY_KEEP_MS))
+}
+
+/// The work copies (`.prism/worktrees/<card>`) that may be deleted now. The 총괄's own copy (`team-…`,
+/// on the team branch) is never on the list. Merged means "in the team branch", or — with no team in
+/// memory — in the branch the project's folder is on.
+fn removable_copies(repo: &str, team: Option<&Team>, now: u64, manual: bool) -> Vec<String> {
+    let into = match team {
+        Some(t) => t.branch.clone(),
+        None => sys::current_branch(repo),
+    };
+    sys::work_copies(repo)
+        .into_iter()
+        .filter(|w| {
+            let name = std::path::Path::new(&w.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.starts_with("team-") || team.is_some_and(|t| t.cwd == w.path) || (w.branch.is_some() && w.branch == into) {
+                return false;
+            }
+            let merged = match (&w.branch, &into) {
+                (Some(b), Some(i)) => sys::is_merged(repo, b, i),
+                _ => false,
+            };
+            let card_over_at = team
+                .and_then(|t| t.tasks.iter().find(|x| w.branch.is_some() && x.branch == w.branch))
+                .filter(|t| t.stage == "done" || t.stage == "failed")
+                .map(|t| t.updated_at);
+            let in_use = team.is_some_and(|t| t.agents.iter().any(|a| a.cwd == w.path && a.status != "done" && a.status != "off"));
+            copy_removable(merged, card_over_at, in_use, manual, now)
+        })
+        .map(|w| w.path)
+        .collect()
+}
+
+/// Deletes work copies with `git worktree remove` — never `--force`: a copy with uncommitted files
+/// stays. Branches are not touched. Returns the paths that went.
+fn remove_copies(repo: &str, paths: &[String]) -> Vec<String> {
+    paths.iter().filter(|p| sys::git(repo, &["worktree", "remove", p.as_str()]).is_ok()).cloned().collect()
 }
 
 /// The member a name means ("W1" is reused for every new card, so several may carry it): among the
@@ -1639,6 +1942,55 @@ const RENEW_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 const RENEW_CONTEXT: u64 = 170_000;
 /// A worker's earlier conversation this big isn't continued for a follow-up: it starts fresh with a summary.
 const FRESH_CONTEXT: u64 = 150_000;
+/// A 작업자·팀장 whose conversation grows past this in the middle of its card is handed over to a new
+/// one in the same folder (see `TeamManager::begin_handover`). Every turn re-reads the whole conversation.
+const WORKER_CONTEXT: u64 = 150_000;
+/// How long a 작업자's hand-over waits for its summary before the new conversation starts without it.
+const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// The longest summary carried into the new conversation.
+const HANDOVER_MEMO_MAX: usize = 4000;
+
+/// Where a 작업자·팀장 conversation handover is: its turn is stopped first, then it writes the summary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HandoverPhase {
+    Stopping,
+    Summarizing,
+}
+
+/// A running handover, by "project/agent". `started` tells a late timeout apart from the current one.
+#[derive(Debug, Clone, Copy)]
+struct Handover {
+    phase: HandoverPhase,
+    started: u64,
+}
+
+/// The member is on its own card that is still running (not reported, not finished) and working now.
+fn on_running_card(a: &Agent, tasks: &[Task]) -> bool {
+    a.status == "work" && a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "running")
+}
+
+/// Whether a 작업자·팀장 should move its card to a new conversation now: its conversation is past
+/// `WORKER_CONTEXT` and it is still working on the card. (The 총괄 has its own rule, `RENEW_CONTEXT`.)
+fn handover_due(a: &Agent, tasks: &[Task]) -> bool {
+    a.role != "lead" && a.context >= WORKER_CONTEXT && on_running_card(a, tasks)
+}
+
+/// The summary a handover carries over: trimmed, and capped. Nothing usable → `None` (start with the card alone).
+fn handover_memo(memo: Option<String>) -> Option<String> {
+    memo.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).map(|m| short(&m, HANDOVER_MEMO_MAX))
+}
+
+/// Back to a fresh conversation on the same card, same folder and branch: the session is cleared, and
+/// the first message carries `note`. The status, the card and the folder are left as they were.
+fn start_fresh_conversation(a: &mut Agent, note: String) {
+    a.session_id.clear();
+    a.context = 0;
+    a.handoff = Some(note);
+    a.activity.clear();
+    a.thought = None;
+    a.pending.clear();
+    a.stuck = None;
+}
 
 fn short(s: &str, n: usize) -> String {
     let s = s.trim();
@@ -1708,6 +2060,7 @@ impl Team {
             },
             events: self.events.iter().take(SNAPSHOT_EVENTS).cloned().collect(),
             cost_usd: self.cost(),
+            usage: Default::default(),
         }
     }
 }
@@ -1715,7 +2068,17 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), watchdog: std::sync::Once::new() }
+        let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+    }
+
+    /// Adds the token figures a team's screens show to its snapshot.
+    fn with_usage(&self, mut snap: TeamSnapshot) -> TeamSnapshot {
+        let mut usage = self.tokens.lock().unwrap().summary(&snap.project_id);
+        // only the cards the team still lists: the snapshot goes out on every change
+        usage.cards.retain(|c| snap.tasks.iter().any(|t| t.id == c.task_id));
+        snap.usage = usage;
+        snap
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -1723,7 +2086,7 @@ impl TeamManager {
     fn emit(&self, team: &Team) {
         let pid = team.project.id.clone();
         self.dirty.lock().unwrap().insert(pid.clone());
-        let first = self.outbox.lock().unwrap().insert(pid.clone(), team.snapshot()).is_none();
+        let first = self.outbox.lock().unwrap().insert(pid.clone(), self.with_usage(team.snapshot())).is_none();
         if !first {
             return;
         }
@@ -1873,6 +2236,7 @@ impl TeamManager {
         for a in &mut team.agents {
             a.resume_as = None;
         }
+        back_to_lounge(&mut team.agents);
         team.log(
             match why.as_deref() {
                 Some("update") => "앱이 업데이트로 다시 시작됐다. 팀이 하던 일을 이어서 한다.",
@@ -1935,14 +2299,15 @@ impl TeamManager {
     }
 
     pub fn snapshot(&self, pid: &str) -> Option<TeamSnapshot> {
-        self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())
+        let snap = self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())?;
+        Some(self.with_usage(snap))
     }
 
     pub fn start(&self, project: Project, cwd: String, homes: HashMap<String, Option<String>>) -> Result<TeamSnapshot, String> {
         let mut teams = self.teams.lock().unwrap();
         if let Some(t) = teams.get_mut(&project.id) {
             if t.agents.iter().any(|a| a.role == "lead" && a.status != "off" && a.status != "done") {
-                return Ok(t.snapshot());
+                return Ok(self.with_usage(t.snapshot()));
             }
             // a saved (stopped) team: same history, sessions continue
             if t.agents.iter().any(|a| a.role == "lead") {
@@ -1954,7 +2319,7 @@ impl TeamManager {
                 }
                 t.homes = homes;
                 self.resume_team(t);
-                let snap = t.snapshot();
+                let snap = self.with_usage(t.snapshot());
                 self.emit(t);
                 return Ok(snap);
             }
@@ -1988,7 +2353,7 @@ impl TeamManager {
         team.homes = homes;
         self.spawn_agent(&mut team, "lead", None, None)?;
         team.log("팀이 출근했다. 총괄이 지시를 기다린다.", None);
-        let snap = team.snapshot();
+        let snap = self.with_usage(team.snapshot());
         let _ = self.app.emit("team://snapshot", &snap);
         teams.insert(team.project.id.clone(), team);
         Ok(snap)
@@ -2032,6 +2397,7 @@ impl TeamManager {
                     }
                 }
             };
+            sys::share_node_modules(&root, &path);
             team.cwd = path.to_string_lossy().into_owned();
             team.branch = Some(branch);
         } else {
@@ -2143,11 +2509,16 @@ impl TeamManager {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off" && a.status != "done"))
+            .filter(|(_, t)| t.agents.iter().any(|a| is_working(&a.status)))
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();
         ids
+    }
+
+    /// How many team members are at work right now, across every team.
+    pub fn working_count(&self) -> usize {
+        self.teams.lock().unwrap().values().map(|t| t.agents.iter().filter(|a| is_working(&a.status)).count()).sum()
     }
 
     /// The app is going away (`why`: "update" | "quit"): note what everyone was doing, so the next
@@ -2269,6 +2640,8 @@ impl TeamManager {
         if let Some(a) = team.agent_mut(aid) {
             wake_agent(a, tid, cwd, branch, note, now);
         }
+        // its old copy is no longer its folder: clear it if its work has landed
+        self.sweep_copies(team);
         if let Err(e) = self.launch_agent(team, aid, None) {
             if let Some(a) = team.agent_mut(aid) {
                 rest_agent(a, now);
@@ -2344,6 +2717,8 @@ impl TeamManager {
         let env: Vec<(String, String)> = [("PRISM_AGENT".to_string(), aid.to_string()), ("PRISM_PROJECT".to_string(), pid.clone())]
             .into_iter()
             .chain(launch.env)
+            // every member builds into the project's one shared target folder (see `shared_build_env`)
+            .chain(crate::launch::shared_build_env(&team.project.path))
             .collect();
         // Drivers report from anywhere — including inside `send`/`kill`, which we call while holding
         // the team lock that on_event needs. So events go through a queue to this member's own
@@ -2547,10 +2922,18 @@ impl TeamManager {
             }
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
+                // a turn ended: checked for a huge conversation and for a burst of turns (see tokens.rs)
+                let (name, task) = team.agent(aid).map(|a| (a.name.clone(), a.task_id.clone())).unwrap_or_default();
+                self.tokens.lock().unwrap().turn_end(pid, aid, &name, task.as_deref(), now_ms());
                 let permission_turn = self.permission_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 // stopped on purpose (paused, clocked out, finished): a turn cut off by that isn't a problem to report
                 let stopped = team.agent(aid).is_some_and(|a| a.status == "off" || a.status == "done");
+                // a 작업자·팀장 being handed over: this turn was the stopped one, or it's the summary
+                if role != "lead" && self.handover_turn_end(team, aid, &result, error) {
+                    self.emit(team);
+                    return;
+                }
                 if stopped && error {
                     if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
                         drop(teams);
@@ -2610,7 +2993,22 @@ impl TeamManager {
                 if let Some(a) = team.agent_mut(aid) {
                     a.context = n;
                 }
+                self.tokens.lock().unwrap().note_context(pid, aid, n);
+                // a worker's card grown too big: hand it over to a new conversation (mid-turn is fine: it's stopped)
+                if team.agent(aid).is_some_and(|a| handover_due(a, &team.tasks)) && !self.handovers.lock().unwrap().contains_key(&format!("{pid}/{aid}")) {
+                    self.begin_handover(team, aid);
+                    self.emit(team);
+                }
                 return; // nothing to show: no need to wake the screen
+            }
+            Event::Tokens { model, input, output, cache_read, cache_write, context } => {
+                // a model the CLI didn't name is the member's own
+                if let Some(a) = team.agent(aid) {
+                    let model = if model.is_empty() { a.model.clone() } else { model };
+                    let b = crate::tokens::Bucket { input, output, cache_read, cache_write };
+                    self.tokens.lock().unwrap().add(pid, aid, &a.name, a.task_id.as_deref(), &model, b, context);
+                }
+                return; // the turn's end (next) shows it
             }
             Event::Exit(_) => {}
         }
@@ -2620,6 +3018,13 @@ impl TeamManager {
     fn on_exit(&self, pid: &str, aid: &str, code: Option<u32>) {
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
+        // it died while its conversation was being handed over: the card goes on in a new one (the board keeps it working)
+        let handing = self.handovers.lock().unwrap().remove(&format!("{pid}/{aid}")).is_some();
+        if handing && team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+            self.finish_handover(team, aid, None);
+            self.emit(team);
+            return;
+        }
         let name = team.name_of(aid);
         if let Some(a) = team.agent_mut(aid) {
             a.pty_id = None;
@@ -2896,6 +3301,106 @@ impl TeamManager {
         }
     }
 
+    /// A 작업자·팀장 whose conversation grew past `WORKER_CONTEXT` on its card: its turn is stopped (the
+    /// folder and branch stay), it writes a summary, and a new conversation takes over the card. The
+    /// member stays "작업 중" on the board the whole time.
+    fn begin_handover(&self, team: &mut Team, aid: &str) {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let started = now_ms();
+        self.handovers.lock().unwrap().insert(key.clone(), Handover { phase: HandoverPhase::Stopping, started });
+        let name = team.name_of(aid);
+        team.log(format!("{name}의 대화가 길어져 새 대화로 이어간다."), None);
+        let driver = self.drivers.lock().unwrap().get(&key).cloned();
+        if let Some(d) = driver {
+            d.cancel(); // ends the turn it's on; the end is handled in `handover_turn_end`
+        }
+        self.arm_handover_timeout(&pid, aid, started);
+    }
+
+    /// A turn ended while its conversation is being handed over. The stopped turn is followed by the
+    /// summary request; the summary's end starts the new conversation. Returns false when nothing is
+    /// handed over (or the card is over meanwhile), so the turn is handled as usual.
+    fn handover_turn_end(&self, team: &mut Team, aid: &str, result: &Option<String>, error: bool) -> bool {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let current = self.handovers.lock().unwrap().get(&key).copied();
+        let Some(h) = current else { return false };
+        match h.phase {
+            HandoverPhase::Stopping => {
+                if !team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+                    self.handovers.lock().unwrap().remove(&key);
+                    return false;
+                }
+                let started = now_ms();
+                self.handovers.lock().unwrap().insert(key, Handover { phase: HandoverPhase::Summarizing, started });
+                if self.inject(team, aid, prompts::worker_handover_request()) {
+                    self.arm_handover_timeout(&pid, aid, started);
+                } else {
+                    self.finish_handover(team, aid, None);
+                }
+            }
+            HandoverPhase::Summarizing => {
+                let memo = if error { None } else { result.clone() };
+                self.finish_handover(team, aid, memo);
+            }
+        }
+        true
+    }
+
+    fn arm_handover_timeout(&self, pid: &str, aid: &str, started: u64) {
+        let app = self.app.clone();
+        let (pid2, aid2) = (pid.to_string(), aid.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(HANDOVER_WAIT);
+            if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                m.handover_timeout(&pid2, &aid2, started);
+            }
+        });
+    }
+
+    /// The summary didn't come in time: the new conversation starts with the card alone.
+    fn handover_timeout(&self, pid: &str, aid: &str, started: u64) {
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        let key = format!("{pid}/{aid}");
+        if self.handovers.lock().unwrap().get(&key).map(|h| h.started) != Some(started) {
+            return; // it moved on, or a later handover replaced this one
+        }
+        if team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+            self.finish_handover(team, aid, None);
+        } else {
+            // paused or finished meanwhile: nothing to carry on
+            self.handovers.lock().unwrap().remove(&key);
+        }
+        self.emit(team);
+    }
+
+    /// Ends the member's old conversation and starts a new one on the same card (same folder and
+    /// branch), with its summary `memo` (if any) as the note after the card. Status and card stay.
+    fn finish_handover(&self, team: &mut Team, aid: &str, memo: Option<String>) {
+        let pid = team.project.id.clone();
+        self.handovers.lock().unwrap().remove(&format!("{pid}/{aid}"));
+        self.kill_driver(&pid, aid);
+        let memo = handover_memo(memo);
+        if let Some(a) = team.agent_mut(aid) {
+            start_fresh_conversation(a, prompts::worker_handover_start(memo.as_deref()));
+        }
+        let name = team.name_of(aid);
+        match self.launch_agent(team, aid, None) {
+            Ok(()) => team.log(
+                if memo.is_some() { format!("{name}이(가) 새 대화로 이어서 한다 (요약 전달).") } else { format!("{name}이(가) 새 대화로 이어서 한다 (요약 없이 카드만).") },
+                None,
+            ),
+            Err(e) => {
+                if let Some(a) = team.agent_mut(aid) {
+                    a.stuck = Some("새 대화를 시작하지 못했어요".into());
+                }
+                team.log(format!("{name}: 새 대화를 시작하지 못했어요 ({e})."), Some("block"));
+            }
+        }
+    }
+
     pub fn lead_send(&self, pid: &str, text: String) -> Result<(), String> {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
@@ -2949,6 +3454,10 @@ impl TeamManager {
     fn deliver(&self, team: &mut Team, aid: &str, text: &str) -> Result<Delivery, String> {
         let pid = team.project.id.clone();
         let key = format!("{pid}/{aid}");
+        // a message sent now would land in the summary turn (and be lost with the old conversation)
+        if self.handovers.lock().unwrap().contains_key(&key) {
+            return Err("이 팀원은 지금 대화를 이어가는 중이에요. 잠시 뒤에 다시 전해 주세요.".into());
+        }
         let name = team.name_of(aid);
         let worker = team.agent(aid).is_some_and(|a| a.role == "worker");
         let live = self.drivers.lock().unwrap().contains_key(&key) || team.agent(aid).is_some_and(|a| a.pty_id.is_some());
@@ -3143,8 +3652,58 @@ impl TeamManager {
                 }
             }
             team.log(format!("{}이(가) {}분 쉬어서 퇴근했다.", names.join(", "), REST_MAX_MS / 60_000), None);
+            // a clocked-out 작업자 no longer holds its copy
+            self.sweep_copies(team);
             self.emit(team);
         }
+    }
+
+    /// Deletes the work copies nobody needs (see `removable_copies`) in the background, once the member
+    /// that just left one has let go of its folder. Branches stay.
+    fn sweep_copies(&self, team: &Team) {
+        let paths = removable_copies(&team.project.path, Some(team), now_ms(), false);
+        if paths.is_empty() {
+            return;
+        }
+        let repo = team.project.path.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            remove_copies(&repo, &paths);
+        });
+    }
+
+    /// The project's folder, for the work-copy cleanup.
+    fn project_path(&self, pid: &str) -> Result<String, String> {
+        self.app.try_state::<Projects>().and_then(|p| p.get(pid)).map(|p| p.path).ok_or_else(|| "프로젝트가 없어요".to_string())
+    }
+
+    /// How much disk the work copies and the shared build folder take, and what the cleanup would remove.
+    pub fn storage(&self, pid: &str) -> Result<StorageInfo, String> {
+        let repo = self.project_path(pid)?;
+        let reclaim = {
+            let teams = self.teams.lock().unwrap();
+            removable_copies(&repo, teams.get(pid), now_ms(), true)
+        };
+        let reclaimable_bytes = reclaim.iter().map(|p| sys::disk_bytes(p)).sum();
+        Ok(StorageInfo {
+            copies: sys::work_copies(&repo).len(),
+            copies_bytes: sys::disk_bytes(&worktrees_dir(&repo).to_string_lossy()),
+            build_bytes: sys::disk_bytes(&crate::launch::build_cache_dir(&repo).to_string_lossy()),
+            reclaimable: reclaim.len(),
+            reclaimable_bytes,
+        })
+    }
+
+    /// Removes what `storage` lists as reclaimable, now (the cleanup button). The team lock is held so
+    /// nobody takes a copy between the check and the removal.
+    pub fn cleanup(&self, pid: &str) -> Result<CleanupReport, String> {
+        let repo = self.project_path(pid)?;
+        let teams = self.teams.lock().unwrap();
+        let paths = removable_copies(&repo, teams.get(pid), now_ms(), true);
+        let sizes: Vec<(String, u64)> = paths.iter().map(|p| (p.clone(), sys::disk_bytes(p))).collect();
+        let gone = remove_copies(&repo, &paths);
+        let freed_bytes = sizes.iter().filter(|(p, _)| gone.contains(p)).map(|(_, b)| b).sum();
+        Ok(CleanupReport { removed: gone.len(), freed_bytes })
     }
 
     pub fn kill_agent(&self, pid: &str, aid: &str) {
@@ -3207,12 +3766,17 @@ impl TeamManager {
             Some(b) => {
                 let boss_name = team.name_of(b);
                 team.log(format!("{name}이(가) {boss_name}에게 허락을 구한다: {tool} {}", short(&detail, 50)), None);
-                self.permission_turns.lock().unwrap().insert(format!("{pid}/{b}"));
-                self.inject(
-                    team,
-                    b,
-                    format!("[Prism 허락 요청 #{id}] {name}: {tool} {}\ndecide_permission(request_id: {id}, decision: allow|deny|ask_user)", short(&detail, 200)),
-                );
+                // the first request of a burst opens a short window; the boss hears about the whole burst at its end
+                if self.perm_batches.lock().unwrap().add(&format!("{pid}/{aid}"), id) {
+                    let app = self.app.clone();
+                    let (pid2, aid2) = (pid.to_string(), aid.to_string());
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(PERM_BATCH_MS));
+                        if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                            m.flush_permission_batch(&pid2, &aid2);
+                        }
+                    });
+                }
                 // a busy boss mustn't stall the team: hand it to the user after a while
                 let app = self.app.clone();
                 let pid2 = pid.to_string();
@@ -3230,6 +3794,40 @@ impl TeamManager {
         }
         self.emit(team);
         PermWait::Wait(id, rx)
+    }
+
+    /// Sends the boss the requests one member made in one window, as a single message (see `PermBatches`).
+    fn flush_permission_batch(&self, pid: &str, aid: &str) {
+        let ids = self.perm_batches.lock().unwrap().take(&format!("{pid}/{aid}"));
+        if ids.is_empty() {
+            return;
+        }
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        // only the ones still waiting on the boss: answered or handed to the user are left out
+        let open: Vec<(u64, String, String, String)> = ids
+            .iter()
+            .filter_map(|id| {
+                let p = team.chat.iter().find(|m| m.id == *id)?.permission.as_ref()?;
+                let boss = p.decider.clone()?;
+                p.answer.is_none().then(|| (*id, p.tool.clone(), p.detail.clone(), boss))
+            })
+            .collect();
+        let Some((_, _, _, boss)) = open.first().cloned() else { return };
+        let items: Vec<(u64, String, String)> = open.iter().map(|(id, tool, detail, _)| (*id, tool.clone(), detail.clone())).collect();
+        if !self.drivers.lock().unwrap().contains_key(&format!("{pid}/{boss}")) {
+            // the boss is no longer running: the user takes them
+            let waiting: Vec<u64> = items.iter().map(|(id, ..)| *id).collect();
+            drop(teams);
+            for id in waiting {
+                self.escalate_permission(pid, id, "윗선이 없어요");
+            }
+            return;
+        }
+        let name = team.name_of(aid);
+        self.permission_turns.lock().unwrap().insert(format!("{pid}/{boss}"));
+        self.inject(team, &boss, permission_batch_text(&name, &items));
+        self.emit(team);
     }
 
     /// Hand a request the boss is holding over to the user (boss asked, or took too long).
@@ -3421,12 +4019,13 @@ impl TeamManager {
         });
         let decide = json!({
             "name": "decide_permission",
-            "description": "아래 팀원이 보낸 '[Prism 허락 요청 #번호]'에 답한다. 평범한 개발 작업이면 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.",
+            "description": "아래 팀원이 보낸 '[Prism 허락 요청 #번호]'에 답한다. 여러 번호가 한 메시지로 왔으면 request_ids에 모아 한 번에 답할 수 있다. 평범한 개발 작업이면 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.",
             "inputSchema": { "type": "object", "properties": {
                 "request_id": { "type": "integer" },
+                "request_ids": { "type": "array", "items": { "type": "integer" }, "description": "같은 결정을 줄 번호들" },
                 "decision": { "type": "string", "enum": ["allow", "deny", "ask_user"] },
                 "reason": { "type": "string", "description": "한 줄 이유 (기록용)" }
-            }, "required": ["request_id", "decision"] }
+            }, "required": ["decision"] }
         });
         match role.as_str() {
             "lead" => vec![delegate, list, message, complete, decide, approve],
@@ -3491,25 +4090,51 @@ impl TeamManager {
                 }
             }
             "decide_permission" => {
-                let id = args.get("request_id").and_then(Value::as_u64).ok_or("request_id 필요")?;
+                // one number (`request_id`) or several at once (`request_ids`), all with the same decision
+                let ids: Vec<u64> = match args.get("request_ids").and_then(Value::as_array) {
+                    Some(list) => list.iter().filter_map(Value::as_u64).collect(),
+                    None => args.get("request_id").and_then(Value::as_u64).into_iter().collect(),
+                };
+                if ids.is_empty() {
+                    return Err("request_id 또는 request_ids 필요".into());
+                }
                 let decision = s("decision").unwrap_or_default();
-                let perm = team.chat.iter().find(|m| m.id == id).and_then(|m| m.permission.clone()).ok_or("그런 허락 요청이 없어요")?;
-                if perm.answer.is_some() {
-                    "이미 처리된 요청이에요. 하던 일을 이어서 하세요.".to_string()
-                } else if perm.decider.as_deref() != Some(aid) {
-                    return Err("네가 판단할 요청이 아니에요".into());
-                } else {
+                // every number must be one of this boss's before any is settled
+                for id in &ids {
+                    let perm = team.chat.iter().find(|m| m.id == *id).and_then(|m| m.permission.clone()).ok_or("그런 허락 요청이 없어요")?;
+                    if perm.answer.is_none() && perm.decider.as_deref() != Some(aid) {
+                        return Err("네가 판단할 요청이 아니에요".into());
+                    }
+                }
+                let mut settled = 0;
+                let mut to_user = Vec::new();
+                for id in &ids {
+                    let answered = team.chat.iter().find(|m| m.id == *id).and_then(|m| m.permission.as_ref()).is_none_or(|p| p.answer.is_some());
+                    if answered {
+                        continue;
+                    }
                     match decision.as_str() {
                         "allow" | "deny" => {
-                            self.resolve_permission(team, id, &decision, &me.name)?;
-                            format!("{} 처리했어요. 하던 일을 이어서 하세요.", if decision == "allow" { "허락" } else { "거부" })
+                            self.resolve_permission(team, *id, &decision, &me.name)?;
+                            settled += 1;
                         }
-                        _ => {
-                            drop(teams);
-                            self.escalate_permission(pid, id, &s("reason").unwrap_or_else(|| "윗선이 사용자 판단을 요청".into()));
-                            return Ok("사용자에게 넘겼어요. 답은 그 팀원에게 바로 가요. 하던 일을 이어서 하세요.".into());
-                        }
+                        _ => to_user.push(*id),
                     }
+                }
+                if !to_user.is_empty() {
+                    let reason = s("reason").unwrap_or_else(|| "윗선이 사용자 판단을 요청".into());
+                    drop(teams);
+                    for id in &to_user {
+                        self.escalate_permission(pid, *id, &reason);
+                    }
+                    let others = if settled > 0 { format!(" 나머지 {settled}건은 처리했어요.") } else { String::new() };
+                    return Ok(format!("사용자에게 {}건 넘겼어요.{others} 답은 그 팀원에게 바로 가요. 하던 일을 이어서 하세요.", to_user.len()));
+                }
+                if settled == 0 {
+                    "이미 처리된 요청이에요. 하던 일을 이어서 하세요.".to_string()
+                } else {
+                    let verb = if decision == "allow" { "허락" } else { "거부" };
+                    format!("{}{verb} 처리했어요. 하던 일을 이어서 하세요.", if settled > 1 { format!("{settled}건 ") } else { String::new() })
                 }
             }
             "list_tasks" => {
@@ -3534,47 +4159,8 @@ impl TeamManager {
             }
             "complete_task" => {
                 let tid = s("task_id").ok_or("task_id 필요")?;
-                let t = team.task_mut(&tid).ok_or("그런 작업 카드가 없어요")?;
-                t.stage = "done".into();
-                t.updated_at = now_ms();
-                // clock the member out only if this is still the card it holds: after a follow-up
-                // ("이어서") it is already busy with the next one in the same folder
-                let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid.as_str())));
-                if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
-                    if let Some(p) = a.pty_id {
-                        self.pty.kill(p);
-                    }
-                    // a 작업자 rests in the lounge for the next card; a 팀장 is done
-                    if a.role == "worker" {
-                        rest_agent(a, now_ms());
-                    } else {
-                        a.status = "done".into();
-                        a.status_since = now_ms();
-                    }
-                }
-                if let Some(a) = assignee.as_deref() {
-                    self.kill_driver(pid, a);
-                    // its work is merged: drop the work copy (the branch stays, so results remain viewable)
-                    let wt = team.agent(a).map(|x| x.cwd.clone()).filter(|c| c.contains("/.prism/worktrees/"));
-                    if let Some(wt) = wt {
-                        let repo = team.project.path.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_secs(3));
-                            // no --force: anything left uncommitted keeps the folder
-                            let _ = sys::git(&repo, &["worktree", "remove", &wt]);
-                        });
-                    }
-                }
-                team.log(format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default()), None);
-                // the finished member leaves the list once enough newer ones are on record
-                let removed = prune_finished(&mut team.agents, &mut team.tasks);
-                if !removed.is_empty() {
-                    let mut tr = self.transcripts.lock().unwrap();
-                    for a in &removed {
-                        tr.remove(&format!("{pid}/{a}"));
-                    }
-                }
-                self.process_queue(team);
+                let log = format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default());
+                self.finish_card(team, &tid, log)?;
                 format!("{tid} 완료 처리했어요.")
             }
             "report" => {
@@ -3624,6 +4210,132 @@ impl TeamManager {
         };
         self.emit(team);
         Ok(out)
+    }
+
+    /// Closes a card: it is done, its member rests (a 작업자) or is done (a 팀장), and its work copy goes.
+    /// The same whether the 총괄 calls complete_task or the user merges or completes it from a report.
+    fn finish_card(&self, team: &mut Team, tid: &str, log: String) -> Result<(), String> {
+        let pid = team.project.id.clone();
+        let t = team.task_mut(tid).ok_or("그런 작업 카드가 없어요")?;
+        t.stage = "done".into();
+        t.updated_at = now_ms();
+        // clock the member out only if this is still the card it holds: after a follow-up
+        // ("이어서") it is already busy with the next one in the same folder
+        let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid)));
+        if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
+            if let Some(p) = a.pty_id {
+                self.pty.kill(p);
+            }
+            // a 작업자 rests in the lounge for the next card; a 팀장 is done
+            if a.role == "worker" {
+                rest_agent(a, now_ms());
+            } else {
+                a.status = "done".into();
+                a.status_since = now_ms();
+            }
+        }
+        if let Some(a) = assignee.as_deref() {
+            self.kill_driver(&pid, a);
+        }
+        // a finished card's copy goes once its work is in the team branch (the branch stays);
+        // a resting 작업자 keeps its folder for a follow-up
+        self.sweep_copies(team);
+        team.log(log, None);
+        // the finished member leaves the list once enough newer ones are on record
+        let removed = prune_finished(&mut team.agents, &mut team.tasks);
+        if !removed.is_empty() {
+            let mut tr = self.transcripts.lock().unwrap();
+            for a in &removed {
+                tr.remove(&format!("{pid}/{a}"));
+            }
+        }
+        self.process_queue(team);
+        Ok(())
+    }
+
+    /// What merging a card would bring in: the commits its branch has over the team's branch, and the files.
+    pub fn merge_check(&self, pid: &str, tid: &str) -> Result<MergeCheck, String> {
+        let (repo, into, branch) = {
+            let teams = self.teams.lock().unwrap();
+            let team = teams.get(pid).ok_or("팀이 없어요")?;
+            let t = team.tasks.iter().find(|t| t.id == tid).ok_or("그런 작업 카드가 없어요")?;
+            (team.project.path.clone(), team.branch.clone(), card_branch(team, t))
+        };
+        match (into, branch) {
+            (Some(into), Some(branch)) => {
+                let (commits, files) = merge_scope(&repo, &into, &branch)?;
+                Ok(MergeCheck { into: Some(into), commits, files })
+            }
+            (into, _) => Ok(MergeCheck { into, commits: 0, files: 0 }),
+        }
+    }
+
+    /// The user's 합치기: each card's branch goes into the team's branch, one after another. A clean
+    /// merge completes the card; a conflict is taken back out and handed to the 총괄 to resolve.
+    pub fn merge_cards(&self, pid: &str, tids: &[String]) -> Result<Vec<MergeOutcome>, String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let into = team.branch.clone().ok_or("팀 브랜치가 없어서 합칠 수 없어요")?;
+        // the merge happens where the team's branch is checked out, with nothing unsaved in the way
+        let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
+        if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
+            return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
+        }
+        if !sys::changes(&dir).is_empty() {
+            return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
+        }
+        let out = tids.iter().map(|tid| self.merge_card(team, &dir, &into, tid)).collect();
+        self.emit(team);
+        Ok(out)
+    }
+
+    fn merge_card(&self, team: &mut Team, dir: &str, into: &str, tid: &str) -> MergeOutcome {
+        let outcome = |result: &str, message: String| MergeOutcome { task_id: tid.into(), result: result.into(), message };
+        let Some(t) = team.tasks.iter().find(|t| t.id == tid) else { return outcome("failed", "그런 작업 카드가 없어요".into()) };
+        if t.stage != "review" {
+            return outcome("failed", "검토 중인 보고만 합칠 수 있어요".into());
+        }
+        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "합칠 브랜치가 없어요".into()) };
+        match merge_scope(dir, into, &branch) {
+            Ok((0, _)) => return outcome("nothing", "합칠 변경이 없어요".into()),
+            Ok(_) => {}
+            Err(e) => return outcome("failed", e),
+        }
+        match git_merge(dir, &branch) {
+            Merge::Merged => {
+                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 합쳐 완료 처리했다.")) {
+                    return outcome("failed", e);
+                }
+                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 합쳤어요. 이 알림에는 — 한 글자로만 답하세요."));
+                outcome("merged", format!("{tid}를 합쳤어요."))
+            }
+            Merge::Conflict => {
+                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 합치기를 취소했다."), Some("block"));
+                let told = self.inject(team, "lead", format!(
+                    "[Prism 알림] 사용자가 {tid}를 합치려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 합치기를 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
+                ));
+                if told {
+                    outcome("conflict", "겹치는 부분이 있어 총괄에게 맡겼어요.".into())
+                } else {
+                    outcome("conflict", "겹치는 부분이 있어 합치지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
+                }
+            }
+            Merge::Failed(e) => outcome("failed", format!("합치지 못했어요: {e}")),
+        }
+    }
+
+    /// 완료 on a report with nothing to merge: the card closes without a merge.
+    pub fn complete_card(&self, pid: &str, tid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let t = team.tasks.iter().find(|t| t.id == tid).ok_or("그런 작업 카드가 없어요")?;
+        if t.stage != "review" {
+            return Err("보고가 온 카드만 완료할 수 있어요".into());
+        }
+        self.finish_card(team, tid, format!("사용자가 {tid}를 완료 처리했다."))?;
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(합칠 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
+        self.emit(team);
+        Ok(())
     }
 
     /// Starts queued cards while the role and team limits allow.
@@ -3951,6 +4663,37 @@ pub struct BranchList {
     pub list: Vec<String>,
 }
 
+/// The disk the work copies take (bytes) and what the cleanup would remove now.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfo {
+    /// work copies on disk (the 총괄's included)
+    pub copies: usize,
+    pub copies_bytes: u64,
+    /// the project's shared build folder (`CARGO_TARGET_DIR`)
+    pub build_bytes: u64,
+    /// copies the cleanup would delete: merged ones, and unmerged ones finished over a week ago
+    pub reclaimable: usize,
+    pub reclaimable_bytes: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupReport {
+    pub removed: usize,
+    pub freed_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn team_storage(app: AppHandle, project_id: String) -> Result<StorageInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().storage(&project_id)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn team_cleanup(app: AppHandle, project_id: String) -> Result<CleanupReport, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().cleanup(&project_id)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn team_branches(app: AppHandle, project_id: String) -> Result<BranchList, String> {
     tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().branches(&project_id)).await.map_err(|e| e.to_string())?
@@ -4012,8 +4755,153 @@ struct TaskSpot {
     branch: Option<String>,
 }
 
+/// What merging a report's card would bring into the team's branch.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeCheck {
+    /// the team's branch the card would merge into (None: the team has none)
+    pub into: Option<String>,
+    /// commits on the card's branch that the team's branch doesn't have (0: nothing to merge)
+    pub commits: usize,
+    /// files those commits change (`.prism/` aside)
+    pub files: usize,
+}
+
+/// One card's outcome of 합치기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub task_id: String,
+    pub result: String,
+    pub message: String,
+}
+
+/// The branch a card's work is on: the card's own, else its member's.
+fn card_branch(team: &Team, t: &Task) -> Option<String> {
+    t.branch.clone().or_else(|| t.assignee.as_deref().and_then(|a| team.agent(a)).and_then(|a| a.branch.clone()))
+}
+
+/// Commits on `branch` that `into` doesn't have yet, and the files they change (outside `.prism/`).
+fn merge_scope(repo: &str, into: &str, branch: &str) -> Result<(usize, usize), String> {
+    let commits: usize = sys::git(repo, &["rev-list", "--count", &format!("{into}..{branch}")])?
+        .trim()
+        .parse()
+        .map_err(|_| "커밋 수를 읽지 못했어요".to_string())?;
+    if commits == 0 {
+        return Ok((0, 0));
+    }
+    let out = sys::git(repo, &["diff", "--numstat", &format!("{into}...{branch}")])?;
+    let files = out.lines().filter(|l| l.splitn(3, '\t').nth(2).is_some_and(|p| !p.starts_with(".prism/"))).count();
+    Ok((commits, files))
+}
+
+/// How a merge of a card's branch ended. A conflict is taken back out, so the folder is as it was.
+enum Merge {
+    Merged,
+    Conflict,
+    Failed(String),
+}
+
+fn git_merge(dir: &str, branch: &str) -> Merge {
+    match sys::git(dir, &["merge", "--no-edit", branch]) {
+        Ok(_) => Merge::Merged,
+        Err(e) => {
+            // a conflict leaves MERGE_HEAD behind; any other refusal leaves nothing to undo
+            let merging = sys::git(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok();
+            if !merging {
+                return Merge::Failed(e);
+            }
+            match sys::git(dir, &["merge", "--abort"]) {
+                Ok(_) => Merge::Conflict,
+                Err(a) => Merge::Failed(format!("합치기를 취소하지 못했어요: {a}")),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn task_merge_check(teams: Teams<'_>, project_id: String, task_id: String) -> Result<MergeCheck, String> {
+    teams.merge_check(&project_id, &task_id)
+}
+
+#[tauri::command]
+pub async fn task_merge(app: AppHandle, project_id: String, task_ids: Vec<String>) -> Result<Vec<MergeOutcome>, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().merge_cards(&project_id, &task_ids)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn task_complete(teams: Teams<'_>, project_id: String, task_id: String) -> Result<(), String> {
+    teams.complete_card(&project_id, &task_id)
+}
+
 /// The biggest file the task-file commands read or write.
 const TASK_FILE_MAX: u64 = 100 * 1024 * 1024;
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn write(dir: &str, file: &str, text: &str) {
+        std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+    }
+
+    /// A fresh repo with one commit; returns (folder, its branch — the team's).
+    fn repo(name: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join(format!("prism-merge-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().into_owned();
+        sys::git(&d, &["init", "-q"]).unwrap();
+        sys::git(&d, &["config", "user.name", "tester"]).unwrap();
+        sys::git(&d, &["config", "user.email", "tester@example.com"]).unwrap();
+        write(&d, "a.txt", "one\n");
+        sys::git(&d, &["add", "-A"]).unwrap();
+        sys::git(&d, &["commit", "-q", "-m", "init"]).unwrap();
+        let team = sys::current_branch(&d).unwrap();
+        (d, team)
+    }
+
+    /// A card's branch off the team's, with one commit writing `file`; the folder ends on the team's branch.
+    fn card(dir: &str, team: &str, branch: &str, file: &str, text: &str) {
+        sys::git(dir, &["checkout", "-q", "-b", branch, team]).unwrap();
+        write(dir, file, text);
+        sys::git(dir, &["add", "-A"]).unwrap();
+        sys::git(dir, &["commit", "-q", "-m", branch]).unwrap();
+        sys::git(dir, &["checkout", "-q", team]).unwrap();
+    }
+
+    #[test]
+    fn clean_merge_brings_the_card_in() {
+        let (dir, team) = repo("clean");
+        card(&dir, &team, "prism/t-1", "b.txt", "two\n");
+        assert_eq!(merge_scope(&dir, &team, "prism/t-1").unwrap(), (1, 1));
+        assert!(matches!(git_merge(&dir, "prism/t-1"), Merge::Merged));
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("b.txt")).unwrap(), "two\n");
+        assert_eq!(merge_scope(&dir, &team, "prism/t-1").unwrap(), (0, 0));
+        assert!(sys::changes(&dir).is_empty());
+    }
+
+    #[test]
+    fn conflict_is_taken_back_out() {
+        let (dir, team) = repo("conflict");
+        card(&dir, &team, "prism/t-2", "a.txt", "card\n");
+        write(&dir, "a.txt", "team\n");
+        sys::git(&dir, &["commit", "-q", "-am", "team edit"]).unwrap();
+        assert_eq!(merge_scope(&dir, &team, "prism/t-2").unwrap().0, 1);
+        assert!(matches!(git_merge(&dir, "prism/t-2"), Merge::Conflict));
+        assert!(sys::git(&dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err());
+        assert!(sys::changes(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "team\n");
+    }
+
+    #[test]
+    fn card_without_commits_has_nothing_to_merge() {
+        let (dir, team) = repo("empty");
+        sys::git(&dir, &["branch", "prism/t-3", &team]).unwrap();
+        assert_eq!(merge_scope(&dir, &team, "prism/t-3").unwrap(), (0, 0));
+    }
+}
+
 
 #[tauri::command]
 pub fn task_files(teams: Teams<'_>, project_id: String, task_id: String) -> Result<Vec<FileStat>, String> {
@@ -4656,6 +5544,34 @@ mod rest_tests {
     }
 
     #[test]
+    fn a_resting_worker_survives_an_app_restart_and_returns_to_the_lounge() {
+        // the app flow: delegate → report (card in review, member "done") → complete_task (rests)
+        let mut agents = vec![worker("W7", "W1", "T-1")];
+        let mut tasks = vec![card("T-1", "표", "review", "W7", None)];
+        agents[0].status = "done".into(); // what `report` does
+        tasks[0].stage = "done".into(); // complete_task
+        rest_agent(&mut agents[0], 1_000);
+        // its session is killed on purpose; a stale-member sweep leaves it alone
+        assert_eq!(settle_stale(&mut agents, &tasks, &|_| false, 2_000), 0);
+        assert!(prune_finished(&mut agents, &mut tasks).is_empty());
+        assert_eq!((agents[0].status.as_str(), agents[0].rest_since), ("wait", Some(1_000)));
+
+        // the app restarts (update / quit): everyone not done is off, the saved team is tidied
+        mark_suspended(&mut agents, &mut None, "update");
+        agents[0].status = "off".into();
+        let removed = prune_finished(&mut agents, &mut tasks);
+        assert!(removed.is_empty());
+        assert_eq!(agents[0].status, "off", "not turned into a finished member");
+        assert_eq!(agents[0].rest_since, Some(1_000), "still resting");
+        assert!(restore_plan(&agents, &tasks).is_empty(), "no session to bring back");
+
+        // the team clocks in again: it is in the lounge, ready for the next card
+        back_to_lounge(&mut agents);
+        assert_eq!(agents[0].status, "wait");
+        assert_eq!(pick_resting(&agents, "lead").as_deref(), Some("W7"));
+    }
+
+    #[test]
     fn resting_over_thirty_minutes_clocks_out() {
         let mut agents = vec![worker("W7", "W1", "T-1"), worker("W8", "W2", "T-2"), worker("W9", "W3", "T-3")];
         let mut tasks = vec![card("T-1", "a", "done", "W7", None), card("T-2", "b", "done", "W8", None), card("T-3", "c", "running", "W9", None)];
@@ -4845,5 +5761,179 @@ mod engine_file_tests {
     #[test]
     fn a_task_without_a_work_copy_lists_nothing() {
         assert!(engine_files_of(None, &[".figcraft".to_string()]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod copy_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_goes_when_merged_or_when_unmerged_and_finished_a_week_ago_on_request() {
+        assert!(copy_removable(true, None, false, false, 0));
+        assert!(!copy_removable(true, None, true, false, 0), "a copy in use stays, merged or not");
+        assert!(!copy_removable(false, Some(0), false, false, COPY_KEEP_MS + 1), "the automatic sweep never takes unmerged work");
+        assert!(copy_removable(false, Some(0), false, true, COPY_KEEP_MS + 1), "a manual cleanup takes it after a week");
+        assert!(!copy_removable(false, Some(0), false, true, COPY_KEEP_MS), "not before a week");
+        assert!(!copy_removable(false, None, false, true, u64::MAX), "no finished card, no end");
+    }
+
+    fn git_as_test(cwd: &str, args: &[&str]) {
+        let mut all = vec!["-c", "user.name=prism-test", "-c", "user.email=test@prism.invalid"];
+        all.extend_from_slice(args);
+        sys::git(cwd, &all).unwrap();
+    }
+
+    #[test]
+    fn only_finished_copies_whose_work_landed_are_listed_and_the_team_copy_never_is() {
+        let root = std::env::temp_dir().join(format!("prism-t53-{}", now_ms()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let r = repo.to_string_lossy().into_owned();
+        sys::git(&r, &["init", "-b", "main"]).unwrap();
+        git_as_test(&r, &["commit", "--allow-empty", "-m", "first"]);
+        let copy = |name: &str| worktrees_dir(&r).join(name);
+        let name_of = |p: &String| std::path::Path::new(p).file_name().unwrap().to_string_lossy().into_owned();
+
+        // a card whose commit is merged into main
+        sys::add_worktree(&r, &copy("run-t-1"), "prism/run/t-1").unwrap();
+        git_as_test(&copy("run-t-1").to_string_lossy(), &["commit", "--allow-empty", "-m", "work"]);
+        git_as_test(&r, &["merge", "--ff-only", "prism/run/t-1"]);
+        // a card whose commit is not in main
+        sys::add_worktree(&r, &copy("run-t-2"), "prism/run/t-2").unwrap();
+        git_as_test(&copy("run-t-2").to_string_lossy(), &["commit", "--allow-empty", "-m", "more"]);
+        // the 총괄's own copy: its branch is merged too, but it must never be listed
+        sys::add_worktree(&r, &copy("team-run"), "prism/team-run").unwrap();
+
+        let listed: Vec<String> = removable_copies(&r, None, now_ms(), false).iter().map(name_of).collect();
+        assert_eq!(listed, vec!["run-t-1".to_string()]);
+
+        let gone = remove_copies(&r, &[copy("run-t-1").to_string_lossy().into_owned()]);
+        assert_eq!(gone.len(), 1);
+        assert!(!copy("run-t-1").exists(), "its folder is deleted");
+        assert!(sys::git(&r, &["rev-parse", "--verify", "--quiet", "refs/heads/prism/run/t-1"]).is_ok(), "its branch stays");
+        assert!(copy("run-t-2").exists(), "unmerged work keeps its folder");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod handover_tests {
+    use super::*;
+
+    fn worker(role: &str, status: &str, stage: &str, context: u64) -> (Agent, Vec<Task>) {
+        let agent = Agent {
+            id: "w1".into(),
+            name: "W1".into(),
+            role: role.into(),
+            kind: "claude".into(),
+            model: String::new(),
+            effort: String::new(),
+            status: status.into(),
+            task_id: Some("t-1".into()),
+            parent_id: None,
+            pty_id: None,
+            cwd: "/work/t-1".into(),
+            branch: Some("prism/run/t-1".into()),
+            session_id: "old-session".into(),
+            cost_usd: 0.0,
+            started_at: 0,
+            status_since: 0,
+            last_note: None,
+            structured: true,
+            activity: vec![],
+            thought: None,
+            last_active: 0,
+            stuck: None,
+            resume_as: None,
+            context,
+            rest_since: None,
+            handoff: None,
+            ready: true,
+            pending: vec![],
+            children: 0,
+        };
+        let task = Task {
+            id: "t-1".into(),
+            title: "카드".into(),
+            goal: "목표".into(),
+            files: vec![],
+            done_when: vec![],
+            requested_by: "lead".into(),
+            assignee: Some("w1".into()),
+            role: "worker".into(),
+            model: None,
+            stage: stage.into(),
+            summary: None,
+            branch: None,
+            base: None,
+            created_at: 0,
+            updated_at: 0,
+            follow_of: None,
+            who: None,
+        };
+        (agent, vec![task])
+    }
+
+    #[test]
+    fn a_worker_on_a_running_card_past_the_limit_is_handed_over() {
+        let (a, tasks) = worker("worker", "work", "running", WORKER_CONTEXT);
+        assert!(handover_due(&a, &tasks));
+        let (mgr, tasks) = worker("mgr", "work", "running", WORKER_CONTEXT + 1);
+        assert!(handover_due(&mgr, &tasks), "팀장도 같은 상한을 따른다");
+    }
+
+    #[test]
+    fn nothing_is_handed_over_below_the_limit_or_when_it_should_not_be() {
+        let (under, tasks) = worker("worker", "work", "running", WORKER_CONTEXT - 1);
+        assert!(!handover_due(&under, &tasks));
+        let (lead, tasks) = worker("lead", "work", "running", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&lead, &tasks), "총괄은 자기 규칙(RENEW_CONTEXT)으로 간다");
+        let (waiting, tasks) = worker("worker", "block", "running", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&waiting, &tasks), "허락을 기다리는 중에는 멈추지 않는다");
+        let (reported, tasks) = worker("worker", "work", "review", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&reported, &tasks), "보고가 끝난 카드는 넘기지 않는다");
+    }
+
+    #[test]
+    fn the_summary_is_trimmed_capped_and_dropped_when_empty() {
+        assert_eq!(handover_memo(None), None);
+        assert_eq!(handover_memo(Some(" \n  ".into())), None);
+        assert_eq!(handover_memo(Some("  요약  ".into())), Some("요약".into()));
+        let long = handover_memo(Some("가".repeat(HANDOVER_MEMO_MAX + 500))).unwrap();
+        assert_eq!(long.chars().count(), HANDOVER_MEMO_MAX + 1, "상한 뒤에 … 하나");
+    }
+
+    #[test]
+    fn the_new_conversation_keeps_the_card_folder_branch_and_status() {
+        let (mut a, _) = worker("worker", "work", "running", WORKER_CONTEXT + 10_000);
+        start_fresh_conversation(&mut a, "NOTE".into());
+        assert!(a.session_id.is_empty(), "예전 대화는 이어 붙지 않는다");
+        assert_eq!(a.context, 0);
+        assert_eq!(a.handoff.as_deref(), Some("NOTE"));
+        assert_eq!(a.status, "work", "사무실에서 계속 일하는 것으로 보여야 한다");
+        assert_eq!(a.task_id.as_deref(), Some("t-1"));
+        assert_eq!(a.cwd, "/work/t-1");
+        assert_eq!(a.branch.as_deref(), Some("prism/run/t-1"));
+        assert!(a.stuck.is_none());
+    }
+
+    #[test]
+    fn the_note_says_whether_a_summary_came_and_the_request_asks_for_paths_not_images() {
+        let with = prompts::worker_handover_start(Some("바꾼 파일: src/a.rs"));
+        assert!(with.contains("바꾼 파일: src/a.rs") && with.contains("git"));
+        let without = prompts::worker_handover_start(None);
+        assert!(without.contains("새로 시작") && !without.contains("요약을"));
+        let ask = prompts::worker_handover_request();
+        assert!(ask.contains("파일 경로") && ask.contains("이미지"));
+    }
+
+    #[test]
+    fn on_a_running_card_means_working_on_it_now() {
+        let (a, tasks) = worker("worker", "off", "running", 0);
+        assert!(!on_running_card(&a, &tasks), "일시정지된 팀원은 아니다");
+        let (b, _) = worker("worker", "work", "running", 0);
+        assert!(!on_running_card(&b, &[]), "카드가 없으면 아니다");
     }
 }

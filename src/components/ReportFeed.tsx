@@ -3,7 +3,7 @@
 // are gathered into a single card on top so the user answers them in one place.
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp, useShownTeams } from "../store";
+import { useApp, useOfficeTeams, useShownTeams } from "../store";
 import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
 import { TeamTag } from "./TeamTag";
 import { elapsed } from "../data/types";
@@ -14,6 +14,8 @@ import { ENGINE_EXTS, engineFor } from "../engines/registry";
 import type { EngineDef } from "../engines/types";
 import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
+import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
+import { CardUsageText } from "./TokenUse";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -39,13 +41,13 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
       <div className="flex items-center gap-2">
         {mine.length > 0 && <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />}
         {multi && <TeamTag project={project} className="text-[12px]" />}
-        <h3 className="m-0 flex-auto text-[14px] font-semibold">
+        <h3 className="m-0 min-w-0 flex-auto text-[14px] font-semibold">
           {mine.length ? `허락이 필요해요 · ${mine.length}건` : `윗선이 판단 중 · ${items.length}건`}
         </h3>
         {mine.length > 1 && (
           <button
             onClick={() => mine.forEach((m) => void answer(m.id, "allow"))}
-            className="min-h-8 rounded-full border-0 px-3.5 text-[12.5px] font-semibold"
+            className="min-h-8 shrink-0 whitespace-nowrap rounded-full border-0 px-3.5 text-[12.5px] font-semibold"
             style={{ background: "var(--amber)", color: "#2B2520" }}
           >
             모두 허용
@@ -56,17 +58,17 @@ function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; te
         {items.map((m) => {
           const p = m.permission!;
           return (
-            <motion.div key={m.id} data-critter-anchor={`ask:${project.id}:${m.permission?.agentId}`} layout exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
+            <motion.div key={m.id} data-critter-anchor={`ask:${project.id}:${m.permission?.agentId}`} layout="position" exit={{ opacity: 0, height: 0 }} className="flex min-w-0 flex-wrap items-center gap-2 overflow-hidden rounded-xl px-3 py-2.5" style={{ background: "var(--glass2)" }}>
               <span className="shrink-0 text-[12.5px] font-semibold">{name(p.agentId)}</span>
               {p.decider && <span className="shrink-0 text-[11.5px] text-ink-2">{name(p.decider)}가 판단 중</span>}
-              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:basis-full max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
+              <code className="min-w-0 flex-[1_1_200px] truncate rounded-md px-2 py-1 font-mono text-[11.5px] select-text max-[820px]:max-h-32 max-[820px]:basis-full max-[820px]:overflow-y-auto max-[820px]:break-all max-[820px]:whitespace-pre-wrap" style={{ background: "var(--term-bg)", color: "#efe6d8" }} title={p.detail}>
                 {p.tool === "Bash" ? `명령 실행 · ${p.detail}` : `${p.tool} · ${p.detail}`}
               </code>
-              <span className="flex shrink-0 gap-1">
-                <button onClick={() => answer(m.id, "allow")} className="min-h-7 rounded-full border-0 px-3 text-[12px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
+              <span className="ml-auto flex shrink-0 gap-1">
+                <button onClick={() => answer(m.id, "allow")} className="min-h-7 whitespace-nowrap rounded-full border-0 px-3 text-[12px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
                   허용
                 </button>
-                <button onClick={() => answer(m.id, "always")} className="min-h-7 rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
+                <button onClick={() => answer(m.id, "always")} className="min-h-7 whitespace-nowrap rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--tile)" }}>
                   항상 허용
                 </button>
                 <button onClick={() => answer(m.id, "deny")} className="min-h-7 rounded-full px-2.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--block-ink)" }}>
@@ -394,7 +396,7 @@ function FollowUp({ project, target, who }: { project: Project; target: Task; wh
 /** A finished piece of work folds to one line unless opened; `fold` is absent while work is still going. */
 type Fold = { open: boolean; toggle: () => void };
 
-function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project; fold?: Fold }) {
+function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project; fold?: Fold; pick?: Pick }) {
   const openIn = useApp((s) => s.openIn);
   const open = (id: string) => openIn(project.id, { name: "agent", id });
   const st = stateOf(task, team);
@@ -458,6 +460,7 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
         ) : (
           <span>맡을 사람을 기다려요</span>
         )}
+        <CardUsageText team={team} taskId={task.id} />
         {!finished && last && (
           <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11.5px]">
             <span aria-hidden="true">›</span>
@@ -484,6 +487,8 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
         </div>
       )}
       {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? task.who ?? "작업자"} />}
+      {/* a report waiting for review: 합치기 into the team's branch, or 완료 when there's nothing to merge */}
+      <MergeActions project={project} task={task} pick={pick} />
 
       {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
@@ -533,6 +538,13 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   // a piece of work is a finished report once nothing on it is still going; reports fold unless opened
   const settled = (x: Task) => x.stage === "review" || x.stage === "done" || x.stage === "failed";
   const isSettled = (t: Task) => settled(t) && subsOf(t).every(settled);
+  // 여러 장 고르기: picked report cards merge together (null: not picking)
+  const [picking, setPicking] = useState<string[] | null>(null);
+  const toMerge = sorted.filter((t) => t.stage === "review");
+  const pickOf = (t: Task): Pick | undefined =>
+    picking && t.stage === "review"
+      ? { on: picking.includes(t.id), toggle: () => setPicking((p) => (p ?? []).includes(t.id) ? (p ?? []).filter((x) => x !== t.id) : [...(p ?? []), t.id]) }
+      : undefined;
   const [opened, setOpened] = useState<Record<string, boolean>>({});
   const isOpen = (t: Task) => !isSettled(t) || !!opened[t.id];
   const reports = sorted.filter(isSettled);
@@ -550,14 +562,27 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
           </span>
         </h2>
       )}
-      {reports.length > 1 && (
-        <button onClick={() => setAll(!anyOpen)} className="self-end border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
-          {anyOpen ? "완료된 보고 모두 접기" : "완료된 보고 모두 펼치기"}
-        </button>
+      {(reports.length > 1 || toMerge.length > 1) && (
+        <div className="flex items-center justify-end gap-3 px-1 text-[12px] text-ink-2">
+          {toMerge.length > 1 &&
+            (picking ? (
+              <span>고르는 중</span>
+            ) : (
+              <button onClick={() => setPicking([])} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 underline">
+                여러 장 고르기
+              </button>
+            ))}
+          {reports.length > 1 && (
+            <button onClick={() => setAll(!anyOpen)} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 underline">
+              {anyOpen ? "완료된 보고 모두 접기" : "완료된 보고 모두 펼치기"}
+            </button>
+          )}
+        </div>
       )}
       {[...active, ...shownDone].map((t) => (
-        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} fold={foldOf(t)} />
+        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} fold={foldOf(t)} pick={pickOf(t)} />
       ))}
+      {picking && <MergeBulk project={project} taskIds={picking} onClose={() => setPicking(null)} />}
       {done.length > 3 && (
         <button onClick={() => setAllDone((v) => !v)} className="self-start border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
           {allDone ? "완료된 일 접기" : `완료된 일 ${done.length - 3}개 더 보기`}
@@ -570,7 +595,9 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
 /** `only`: one team's reports (the office's team tab); default every team on screen */
 export function ReportFeed({ only }: { only?: string } = {}) {
   const all = useShownTeams();
-  const shown = only ? all.filter((x) => x.project.id === only) : all;
+  // one team from the office's tabs: it may be a team nobody is in, with cats left in the lounge
+  const inOffice = useOfficeTeams();
+  const shown = only ? inOffice.filter((x) => x.project.id === only) : all;
   if (!shown.length) return null;
   const multi = shown.length > 1;
   const permGroups = shown

@@ -1,10 +1,17 @@
-// A round little teammate: a cat drawn in code (poses.tsx). The state picks the pose and the motion
-// (critters.css), the name (or colorKey) picks the color. No role props: a role shows as its name tag and colour.
-import { memo } from "react";
+// A little teammate: a pixel cat (pixel/). The pose picks the motion — a row of its sprite sheet,
+// played with CSS steps — the state its feeling (face and the sign over its head), the name (or
+// colorKey) its coat. No role props: a role shows as its name tag.
+import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
-import { CatBody } from "./poses";
-import { colorOf, critterState, POSE_OF, STATE_WORD, type CritterState, type Pose } from "./state";
+import { FH, FW, type Row } from "./pixel/art";
+import { coatOf } from "./pixel/coats";
+import type { Feel } from "./pixel/faces";
+import { strip } from "./pixel/render";
+import { critterState, POSE_OF, STATE_WORD, type CritterState, type Pose } from "./state";
 import "./critters.css";
+
+/** which way a walking cat is seen */
+export type WalkDir = "front" | "back" | "side";
 
 export interface CritterLook {
   name: string;
@@ -28,107 +35,124 @@ interface Props {
   size?: number;
   /** face left (walking back) */
   flip?: boolean;
+  /** which way it walks: toward you, away, or sideways (`flip` for left) */
+  dir?: WalkDir;
   /** decorative next to a text label (default): hidden from screen readers */
   labelled?: boolean;
   className?: string;
 }
 
-/** Bits that float around the critter for some states. */
-function Overlay({ state }: { state: CritterState }) {
+/** what each pose plays: a row of the sprite sheet, which of its frames, and how long one round takes */
+const MOTION: Record<Pose, { row: Row; frames: number[]; ms: number }> = {
+  walk: { row: "side", frames: [0, 1, 2, 3], ms: 560 },
+  type: { row: "sit", frames: [2, 3], ms: 2600 },
+  think: { row: "look", frames: [0, 1, 2, 3], ms: 5200 },
+  raise: { row: "sit", frames: [2, 3], ms: 1400 },
+  sad: { row: "sit", frames: [2, 3], ms: 3200 },
+  cheer: { row: "sit", frames: [2, 3], ms: 1200 },
+  sit: { row: "look", frames: [0, 1, 2, 3], ms: 6400 },
+  coffee: { row: "lie", frames: [2, 3], ms: 3000 },
+  sleep: { row: "sleep", frames: [0, 1, 2, 3], ms: 3600 },
+};
+
+/** how it feels, by what it's doing: at work focused, stuck asking (?), done happy (♥ or ♫), failed in tears, resting sleepy */
+function feelOf(state: CritterState, name: string): Feel {
   switch (state) {
-    case "think":
-      return (
-        <g className="cr-think">
-          <circle cx="36.6" cy="15.6" r="1.1" fill="var(--cr-bubble)" stroke="var(--cr-bubble-line)" strokeWidth="0.6" />
-          <rect x="32.4" y="3" width="14.6" height="8.6" rx="4.3" fill="var(--cr-bubble)" stroke="var(--cr-bubble-line)" strokeWidth="0.6" />
-          {[36, 39.7, 43.4].map((x, i) => (
-            <circle key={x} className="cr-dot" style={{ animationDelay: `${i * 0.22}s` }} cx={x} cy="7.3" r="1.1" fill="var(--text2)" />
-          ))}
-        </g>
-      );
     case "block":
-      return (
-        <g className="cr-ask">
-          <circle cx="40" cy="8" r="5.6" fill="#e2b866" />
-          <text x="40" y="11" textAnchor="middle" fontSize="8.4" fontWeight="800" fill="#5c400c" fontFamily="system-ui, sans-serif">
-            ?
-          </text>
-        </g>
-      );
-    case "done":
-      return (
-        <g>
-          {[
-            [7, 12, 0],
-            [41, 9, 0.35],
-            [38, 20, 0.7],
-          ].map(([x, y, d]) => (
-            <path
-              key={x}
-              className="cr-spark"
-              style={{ animationDelay: `${d}s` }}
-              d={`M${x} ${y - 3.4} Q${x + 0.6} ${y - 0.6} ${x + 3.4} ${y} Q${x + 0.6} ${y + 0.6} ${x} ${y + 3.4} Q${x - 0.6} ${y + 0.6} ${x - 3.4} ${y} Q${x - 0.6} ${y - 0.6} ${x} ${y - 3.4} Z`}
-              fill="#f2c14e"
-            />
-          ))}
-        </g>
-      );
+      return "ask";
     case "fail":
-      return <path className="cr-drop" d="M36.4 17.4 Q38.6 20.6 38.6 22 a2.2 2.2 0 0 1 -4.4 0 Q34.2 20.6 36.4 17.4 Z" fill="#8fc1e8" />;
+      return "tears";
+    case "done": {
+      let h = 0;
+      for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
+      return h % 2 ? "heart" : "notes";
+    }
+    case "idle":
     case "off":
-      return (
-        <text className="cr-z" x="35" y="13" fontSize="7" fontWeight="700" fill="var(--text2)" fontFamily="system-ui, sans-serif">
-          z
-        </text>
-      );
-    case "work":
-      return (
-        <path className="cr-tap" d="M5 33 L3 31.6 M5.4 30.6 L3.6 28.6 M43 33 L45 31.6 M42.6 30.6 L44.4 28.6" stroke="var(--text2)" strokeWidth="0.9" strokeLinecap="round" />
-      );
+      return "sleepy";
     default:
-      return null;
+      return "plain";
   }
 }
 
-function CritterSvg({ name, role, state, pose, size, flip, label, className, colorKey }: CritterLook & { pose: Pose; size: number; flip?: boolean; label?: string; className?: string; colorKey?: string }) {
-  const [fill, shade] = colorOf(colorKey ?? name, role);
+/** sprite strips already decoded, ready to paint at once */
+const decoded = new Set<string>();
+
+/**
+ * The strip to show: `url` once the browser has decoded it, the last decoded one until then.
+ * (A cat's picture changes with its state — at work, asking, done. Swapped in before it was decoded,
+ * the app's web view (WebKit) sometimes painted the cat's layer empty and never repainted it: a cat
+ * at its desk vanished until something redrew the whole screen, like going to another tab.)
+ */
+function useDecoded(url: string, n: number, ms: number): { url: string; n: number; ms: number } {
+  const want = { url, n, ms };
+  const [shown, setShown] = useState(want);
+  const ready = !url || decoded.has(url);
+  useEffect(() => {
+    if (ready) {
+      if (shown.url !== url || shown.n !== n || shown.ms !== ms) setShown({ url, n, ms });
+      return;
+    }
+    let live = true;
+    const img = new Image();
+    img.src = url;
+    const done = () => {
+      decoded.add(url);
+      if (live) setShown({ url, n, ms });
+    };
+    img.decode().then(done, done);
+    return () => {
+      live = false;
+    };
+  }, [url, n, ms, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  return ready ? want : shown;
+}
+
+function PixelCat({ name, role, state, pose, size, flip, dir, label, className, colorKey }: CritterLook & { pose: Pose; size: number; flip?: boolean; dir?: WalkDir; label?: string; className?: string; colorKey?: string }) {
+  const coat = coatOf(colorKey ?? name, role);
+  const m = MOTION[pose];
+  const row: Row = pose === "walk" ? (dir ?? "side") : m.row;
+  const feel = feelOf(state, name);
+  const { url, n, ms } = useDecoded(strip(coat, row, m.frames, feel), m.frames.length, m.ms);
+  // whole pixels only: each dot of the drawing is s × s screen pixels. `size` is how tall the cat
+  // should look; the drawn cat is about 20 of the frame's FH dots (the rest is room for the signs)
+  const s = Math.max(1, Math.round(size / 20));
+  const style: CSSProperties = {
+    width: FW * s,
+    height: FH * s,
+    backgroundImage: `url(${url})`,
+    backgroundSize: `${n * 100}% 100%`,
+    animationDuration: `${ms}ms`,
+  };
   return (
-    <svg
-      viewBox="0 0 48 48"
-      width={size}
-      height={size}
-      className={`critter cr-${state} cr-pose-${pose} cr-r-${role}${className ? ` ${className}` : ""}`}
+    <span
+      className={`critter px-cat cr-${state} cr-pose-${pose} cr-r-${role}${className ? ` ${className}` : ""}`}
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
-      focusable="false"
+      style={{ width: FW * s, height: FH * s }}
     >
-      <g className={flip ? "cr-flip" : undefined}>
-        <ellipse className="cr-shadow" cx="24" cy="44" rx="12" ry="2" fill="#000" opacity="0.12" />
-        <g className="cr-whole">
-          <g className="cr-body">
-            <CatBody pose={pose} fill={fill} shade={shade} />
-          </g>
-        </g>
-        <Overlay state={state} />
-      </g>
-    </svg>
+      <span className={`cr-whole${flip && row !== "front" && row !== "back" ? " px-flip" : ""}`}>
+        <span className={`cr-body px-sprite${n > 1 ? ` px-run-${n}` : ""}`} style={style} />
+      </span>
+    </span>
   );
 }
 
 /** `<Critter agent={a} />` — state comes from the agent unless `state` says otherwise; `pose` overrides the state's pose. */
-export const Critter = memo(function Critter({ agent, task, look, colorKey, state, pose, size = 28, flip, labelled, className }: Props) {
+export const Critter = memo(function Critter({ agent, task, look, colorKey, state, pose, size = 28, flip, dir, labelled, className }: Props) {
   const name = look?.name ?? agent?.name ?? "";
   const role = look?.role ?? agent?.role ?? "worker";
   const st = state ?? look?.state ?? (agent ? critterState(agent, task) : "idle");
   return (
-    <CritterSvg
+    <PixelCat
       name={name}
       role={role}
       state={st}
       pose={pose ?? POSE_OF[st]}
       size={size}
       flip={flip}
+      dir={dir}
       label={labelled ? `${name} · ${STATE_WORD[st]}` : undefined}
       className={className}
       colorKey={colorKey}

@@ -9,6 +9,8 @@ import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
 import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
+import { MergeActions } from "./MergeActions";
+import { TeamUsageBox } from "./TokenUse";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -81,6 +83,8 @@ export function TaskBoard() {
     .map(({ project, team }) => ({ project, team, list: finishedCrew(team) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
+  // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
+  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review").map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
     .flatMap(({ project, team }) => team.events.map((e) => ({ ...e, project })))
@@ -98,6 +102,14 @@ export function TaskBoard() {
       </div>
 
       <div className="flex min-h-0 flex-auto flex-col overflow-y-auto px-2 pb-3">
+        {/* tokens used today, per team (opens to models, members and warnings) */}
+        {shown.length > 0 && (
+          <div className="flex flex-col py-1" style={{ borderBottom: "1px solid var(--line)" }}>
+            {shown.map(({ project, team }) => (
+              <TeamUsageBox key={project.id} team={team} label={multi ? project.name : undefined} />
+            ))}
+          </div>
+        )}
         {shown.length === 0 && <span className="px-2 py-3 text-[12px] text-ink-2">출근한 팀이 없어요</span>}
         {shown.length > 0 && FLOORS.map((f) => {
           const groups = shown.map(({ project, team }) => ({ project, team, list: members(team, f.role) })).filter((g) => g.list.length);
@@ -121,6 +133,24 @@ export function TaskBoard() {
             </div>
           );
         })}
+
+        {reports.length > 0 && (
+          <div className="flex flex-col gap-1.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>
+            <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
+              보고함 <span className="font-normal">{reports.length}</span>
+            </span>
+            {reports.map(({ t, project }) => (
+              <div key={`${project.id}-${t.id}`} className="flex flex-col gap-1 rounded-lg px-2 py-1.5" style={{ background: "var(--glass2)" }}>
+                <span className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
+                  <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
+                  <span className="min-w-0 flex-auto truncate">{t.title}</span>
+                  {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
+                </span>
+                <MergeActions project={project} task={t} />
+              </div>
+            ))}
+          </div>
+        )}
 
         {doneN > 0 && (
           <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>

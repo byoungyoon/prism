@@ -135,6 +135,18 @@ pub fn build(c: &Ctx) -> Result<Launch, String> {
     }
 }
 
+/// Where every member of a project builds: one shared cargo target folder, so a work copy doesn't
+/// grow its own (3–8 GB each) and a build a teammate already did is reused. Sent to each member's
+/// process as `CARGO_TARGET_DIR`.
+pub fn shared_build_env(project: &str) -> Vec<(String, String)> {
+    vec![("CARGO_TARGET_DIR".into(), build_cache_dir(project).to_string_lossy().into_owned())]
+}
+
+/// `<project>/.prism/cargo-target`: the shared build folder of a project's team.
+pub fn build_cache_dir(project: &str) -> PathBuf {
+    PathBuf::from(project).join(".prism").join("cargo-target")
+}
+
 /// Pre-accept the CLI's "trust this folder?" prompt for `dir`.
 pub fn trust(kind: &str, dir: &str, home: Option<&str>) {
     match kind {

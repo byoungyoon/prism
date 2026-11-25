@@ -109,11 +109,14 @@ pub struct Settings {
     /// no matter `auto_resume`) | "quit". Cleared once the start-up clock-in is done.
     #[serde(default)]
     pub restart: Option<String>,
+    /// ask before closing the window or quitting while members are at work
+    #[serde(default = "yes")]
+    pub confirm_quit: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true, restart: None }
+        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true, restart: None, confirm_quit: true }
     }
 }
 
@@ -153,6 +156,11 @@ impl Projects {
             }
         }
         Self { list: Mutex::new(list), file: Mutex::new(file), root: Mutex::new(root), settings, prefs: Mutex::new(prefs) }
+    }
+
+    /// Ask before closing or quitting while members are at work (the "정말 끌까요?" question).
+    pub fn confirm_quit(&self) -> bool {
+        self.prefs.lock().unwrap().confirm_quit
     }
 
     /// Remember which teams are clocked in (for "지난번 팀 다시 출근").
@@ -426,6 +434,13 @@ pub fn prefs_set(projects: State<'_, Projects>, providers: Vec<String>, onboarde
 #[tauri::command]
 pub fn prefs_set_auto_resume(projects: State<'_, Projects>, on: bool) -> Settings {
     projects.prefs.lock().unwrap().auto_resume = on;
+    projects.save_prefs();
+    projects.prefs.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn prefs_set_confirm_quit(projects: State<'_, Projects>, on: bool) -> Settings {
+    projects.prefs.lock().unwrap().confirm_quit = on;
     projects.save_prefs();
     projects.prefs.lock().unwrap().clone()
 }

@@ -1,6 +1,6 @@
 [package]
 name = "prism"
-version = "0.3.0"
+version = "0.3.1"
 description = "Custom Orca: parallel AI coding agents in git worktrees"
 authors = ["byoungyoon"]
 edition = "2024"
@@ -33,6 +33,7 @@ sha2 = "0.11.1"
 base64 = "0.22"
 tauri-plugin-updater = "2.14.1"
 tauri-plugin-process = "2.4.0"
+chrono = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

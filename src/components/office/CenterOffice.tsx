@@ -2,7 +2,7 @@
 // cards are running, in review, done — and below it the office where the team's cats work. Picking
 // a team's tab shows that team's full report list instead; the 사무실 tab brings the office back.
 import { useState } from "react";
-import { useShownTeams, waitsForMe } from "../../store";
+import { useOfficeTeams, waitsForMe } from "../../store";
 import type { TeamSnapshot } from "../../lib/api";
 import { ReportFeed } from "../ReportFeed";
 import { Office } from "./Office";
@@ -12,7 +12,7 @@ import "./office.css";
 const count = (t: TeamSnapshot, stage: string) => t.tasks.filter((x) => x.stage === stage).length;
 
 export function CenterOffice() {
-  const shown = useShownTeams();
+  const shown = useOfficeTeams();
   const [open, setOpen] = useState<string | null>(null);
   // a team that left the screen: back to the office
   const pick = open && shown.some((s) => s.project.id === open) ? open : null;
