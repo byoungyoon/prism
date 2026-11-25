@@ -606,11 +606,14 @@
 /* ── T-85: a bigger, cosier lounge — a bookcase, a lamp, a picture, a sunny patch, a box to hide in,
    a scratcher, yarn, bowls and a second rug. Positions are in dots (--u) and a share of the height. ── */
 .of-lounge {
-  width: 360px;
-  min-height: 420px;
+  width: 400px;
+  height: 420px;
+  min-height: 0;
+  flex: none;
+  align-self: flex-start;
 }
 .of-lounge-quiet {
-  min-height: 300px;
+  height: 300px;
 }
 .of-frame {
   top: calc(var(--u) * 3);
@@ -619,15 +622,21 @@
 }
 .of-bookcase {
   top: calc(var(--u) * 10);
-  left: calc(var(--u) * 4);
+  right: calc(var(--u) * 4);
 }
 .of-lamp {
   top: calc(var(--u) * 10);
-  right: calc(var(--u) * 20);
+  left: calc(50% + var(--u) * 26);
 }
+/* the sunny patch is by the top wall, where the windows are */
 .of-sunspot {
-  top: 40%;
+  top: calc(var(--u) * 6);
   left: calc(var(--u) * 3);
+}
+.of-plant-1 {
+  top: calc(var(--u) * 27);
+  right: auto;
+  left: calc(var(--u) * 4);
 }
 .of-catbox {
   top: 40%;
@@ -652,17 +661,20 @@
 @media (max-width: 820px) {
   .of-lounge {
     width: auto;
-    min-height: 380px;
+    height: 380px;
+    align-self: stretch;
   }
   .of-lounge-quiet {
-    min-height: 260px;
+    height: 260px;
   }
 }
 @container office (max-width: 760px) {
   .of-lounge {
-    min-height: 380px;
+    width: auto;
+    height: 400px;
+    align-self: stretch;
   }
   .of-lounge-quiet {
-    min-height: 260px;
+    height: 260px;
   }
 }

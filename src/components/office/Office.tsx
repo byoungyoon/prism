@@ -200,7 +200,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
-  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; door: Spot; w: number } | null>(null);
+  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; door: Spot; w: number } | null>(null);
   useLayoutEffect(() => {
     const el = content.current;
     if (!el) return;
@@ -223,10 +223,15 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
           ? clamp({ x: r.left - o.left + r.width / 2, y: r.top - o.top + r.height * 0.75 })
           : clamp({ x: r.left - o.left + r.width / 2, y: r.bottom - o.top + 8 });
       });
+      // tall decor (bookcase, lamp, plants): no cat stands on or right in front of it
+      const blocks = [...(le?.querySelectorAll<HTMLElement>("[data-block]") ?? [])].map((m) => {
+        const r = m.getBoundingClientRect();
+        return { x: r.left - o.left - size * 0.4, y: r.top - o.top, w: r.width + size * 0.8, h: r.height + size * 0.5 };
+      });
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
       setRoom((prev) => {
-        const next = { seats, lounge, marks, door, w: el.clientWidth };
+        const next = { seats, lounge, marks, blocks, door, w: el.clientWidth };
         return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
       });
     };
@@ -253,26 +258,28 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
       for (const k of movers) {
         const others = keys.filter((o) => o !== k && next[o]).map((o) => next[o]);
         const free = (p: Spot) => others.every((o) => Math.hypot(o.x - p.x, o.y - p.y) > size * 1.3);
+        const clear = (p: Spot) => !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
         let best: Spot | null = null;
-        for (let t = 0; t < 16; t++) {
+        for (let t = 0; t < 30; t++) {
           const mark = room.marks.length && Math.random() < 0.6 ? room.marks[Math.floor(Math.random() * room.marks.length)] : null;
           const p = mark
             ? { x: Math.min(L.x + L.w, Math.max(L.x, mark.x + (Math.random() - 0.5) * size)), y: Math.min(L.y + L.h, Math.max(L.y, mark.y + (Math.random() - 0.5) * size * 0.4)) }
             : { x: L.x + Math.random() * L.w, y: L.y + Math.random() * L.h };
           // somewhere new, not where it already stands
+          if (!clear(p)) continue;
           if (free(p) && (!cur[k] || Math.hypot(cur[k].x - p.x, cur[k].y - p.y) > size)) {
             best = p;
             break;
           }
           best ??= p;
         }
-        next[k] = best!;
+        next[k] = best ?? cur[k] ?? { x: L.x + L.w / 2, y: L.y + L.h / 2 };
       }
       return next;
     };
     // newcomers (and everyone, when the lounge moved) get a spot right away
     setStrolls((cur) => {
-      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && p.x >= L.x - 1 && p.x <= L.x + L.w + 1 && p.y >= L.y - 1 && p.y <= L.y + L.h + 1));
+      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && p.x >= L.x - 1 && p.x <= L.x + L.w + 1 && p.y >= L.y - 1 && p.y <= L.y + L.h + 1 && !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h)));
       return pickFor(keys.filter((k) => !kept[k]), kept);
     });
     if (still || !keys.length) return;
@@ -423,8 +430,8 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
             <span className="of-frame px-frame" />
-            <span className="of-bookcase px-bookcase" data-spot />
-            <span className="of-lamp px-lamp" />
+            <span className="of-bookcase px-bookcase" data-block />
+            <span className="of-lamp px-lamp" data-block />
             <span className="of-sunspot px-sunspot" data-spot data-on />
             <span className="of-rug px-rug" data-spot />
             <span className="of-rug2 px-rug2" />
@@ -436,8 +443,8 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
             <span className="of-bowls px-bowls" data-spot />
             <span className="of-coffee px-coffee" data-spot />
             <span className="of-tower px-tower" data-spot />
-            <span className="of-plant px-plant" data-spot />
-            <span className="of-plant of-plant-2 px-plant" data-spot />
+            <span className="of-plant of-plant-1 px-plant" data-block />
+            <span className="of-plant of-plant-2 px-plant" data-block />
           </div>
         </div>
         <div className="of-cats">
