@@ -1415,6 +1415,41 @@ fn retire_resting(agents: &mut Vec<Agent>, tasks: &mut [Task], now: u64) -> Vec<
     gone
 }
 
+/// Is this member's card over (done or failed)?
+fn card_over(a: &Agent, tasks: &[Task]) -> bool {
+    a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "done" || t.stage == "failed")
+}
+
+/// The member a name means ("W1" is reused for every new card, so several may carry it): among the
+/// unfinished ones, the one with a session running, then the one on an open card, then the newest;
+/// failing that, an id, then any member of that name.
+fn member_by_name(agents: &[Agent], tasks: &[Task], target: &str, alive: &dyn Fn(&str) -> bool) -> Option<String> {
+    agents
+        .iter()
+        .filter(|a| a.name == target && a.status != "done")
+        .max_by_key(|a| (alive(&a.id), !card_over(a, tasks), a.status_since))
+        .or_else(|| agents.iter().find(|a| a.id == target))
+        .or_else(|| agents.iter().find(|a| a.name == target))
+        .map(|a| a.id.clone())
+}
+
+/// A 팀장·작업자 still marked busy ("work", "wait", "block") though its session is gone and its card is
+/// over: it is finished — otherwise the board shows a stale "W1 · T-9 완료" next to the real W1.
+/// (A resting 작업자 is left alone.) Returns how many were settled.
+fn settle_stale(agents: &mut [Agent], tasks: &[Task], alive: &dyn Fn(&str) -> bool, now: u64) -> usize {
+    let mut n = 0;
+    for a in agents.iter_mut() {
+        let stale = a.role != "lead" && a.rest_since.is_none() && matches!(a.status.as_str(), "work" | "wait" | "block") && !alive(&a.id) && card_over(a, tasks);
+        if stale {
+            a.status = "done".into();
+            a.status_since = now;
+            a.stuck = None;
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Note what each member in the team was doing as the app goes away (`why`). False when nobody
 /// was in (nothing to bring back; the team is left as it is).
 fn mark_suspended(agents: &mut [Agent], restarted: &mut Option<String>, why: &str) -> bool {
@@ -2539,6 +2574,14 @@ impl TeamManager {
                 drop(teams);
                 return;
             }
+        }
+        // a 팀장·작업자 whose card is over just finished: no "unexpectedly stopped" note
+        let over = team.agent(aid).is_some_and(|a| a.role != "lead" && card_over(a, &team.tasks));
+        if let Some(a) = team.agent_mut(aid) {
+            if over && a.status != "off" {
+                a.status = "done".into();
+                a.status_since = now_ms();
+            }
             let finished = a.status == "done";
             let paused = a.status == "off";
             a.status = if finished { "done".into() } else { "off".into() };
@@ -2889,6 +2932,7 @@ impl TeamManager {
     fn check_stalls(&self) {
         let now = now_ms();
         self.retire_rested(now);
+        self.settle_stale_members(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -2915,6 +2959,19 @@ impl TeamManager {
                 }
             }
             self.emit(team);
+        }
+    }
+
+    /// Members still marked busy whose session is gone and card is over become finished (see `settle_stale`).
+    fn settle_stale_members(&self, now: u64) {
+        let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+        let mut teams = self.teams.lock().unwrap();
+        for team in teams.values_mut() {
+            let pid = team.project.id.clone();
+            let alive = |a: &str| running.contains(&format!("{pid}/{a}"));
+            if settle_stale(&mut team.agents, &team.tasks, &alive, now) > 0 {
+                self.emit(team);
+            }
         }
     }
 
@@ -3309,18 +3366,18 @@ impl TeamManager {
             }
             "message_agent" => {
                 let target = s("agent").ok_or("agent 필요")?;
-                // a recycled name ("W1") may belong to a finished worker too: the unfinished one wins, then ids
-                let target = team.agents.iter().find(|a| a.name == target && a.status != "done")
-                    .or_else(|| team.agents.iter().find(|a| a.id == target))
-                    .or_else(|| team.agents.iter().find(|a| a.name == target))
-                    .map(|a| a.id.clone())
-                    .ok_or("그런 에이전트가 없어요")?;
+                // a recycled name ("W1") may belong to older members too: the one with a live session wins
+                let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+                let alive = |a: &str| running.contains(&format!("{pid}/{a}"));
+                let target = member_by_name(&team.agents, &team.tasks, &target, &alive).ok_or("그런 에이전트가 없어요")?;
                 // a resting 작업자 has no session: nothing is sent (it would cost tokens to wake it)
                 if team.agent(&target).is_some_and(|a| a.rest_since.is_some()) {
                     return Ok(format!("{}은(는) 쉬는 중이에요. 새 카드를 delegate하면 그 작업자가 다시 맡아요.", team.name_of(&target)));
                 }
-                self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default()));
-                team.set_status(&target, "work");
+                // marked busy only when it really got the message (a session that's gone would stay "work" forever)
+                if !self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default())) {
+                    return Ok(format!("{}의 세션이 없어서 전달하지 못했어요. 이 일이 필요하면 새 카드로 delegate하세요.", team.name_of(&target)));
+                }
                 format!("{}에게 전달했어요.", team.name_of(&target))
             }
             "complete_task" => {
@@ -4459,6 +4516,59 @@ mod rest_tests {
         assert!(agents.iter().any(|a| a.id == "W8" && a.rest_since.is_some()), "a short rest stays");
         assert!(agents.iter().any(|a| a.id == "W9" && a.status == "work"), "working members untouched");
         assert_eq!(tasks[0].who.as_deref(), Some("W1"), "its card keeps the name");
+    }
+}
+
+#[cfg(test)]
+mod stale_member_tests {
+    use super::*;
+
+    fn w(id: &str, name: &str, status: &str, task: &str, since: u64) -> Agent {
+        let mut a: Agent = serde_json::from_value(json!({
+            "id": id, "name": name, "role": "worker", "kind": "claude", "model": "", "effort": "", "status": status,
+            "taskId": task, "parentId": "lead", "ptyId": null, "cwd": "/tmp", "branch": null, "sessionId": "",
+            "costUsd": 0.0, "startedAt": 0, "statusSince": since, "lastNote": null, "structured": true, "activity": []
+        }))
+        .expect("agent json");
+        a.ready = true;
+        a
+    }
+    fn card(id: &str, stage: &str, assignee: &str) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "title": "", "goal": "", "files": [], "doneWhen": [], "requestedBy": "lead", "assignee": assignee,
+            "role": "worker", "model": null, "stage": stage, "summary": null, "branch": null, "base": null,
+            "createdAt": 0, "updatedAt": 0
+        }))
+        .expect("task json")
+    }
+
+    /// What the board showed: an old "W1" stuck on "work" with its long-done T-9, next to the real W1 on T-50.
+    #[test]
+    fn a_name_means_the_member_actually_working() {
+        let agents = vec![w("W1", "W1", "work", "T-9", 50), w("W13", "W1", "work", "T-50", 10)];
+        let tasks = vec![card("T-9", "done", "W1"), card("T-50", "running", "W13")];
+        let alive = |a: &str| a == "W13";
+        assert_eq!(member_by_name(&agents, &tasks, "W1", &alive).as_deref(), Some("W13"), "the live session wins");
+        let none = |_: &str| false;
+        assert_eq!(member_by_name(&agents, &tasks, "W1", &none).as_deref(), Some("W13"), "then the open card");
+        assert_eq!(member_by_name(&agents, &tasks, "W13", &none).as_deref(), Some("W13"), "an id works too");
+    }
+
+    #[test]
+    fn a_busy_mark_without_a_session_on_a_finished_card_settles_to_done() {
+        let mut agents = vec![w("W1", "W1", "work", "T-9", 50), w("W3", "W3", "wait", "T-3", 5), w("W13", "W1", "work", "T-50", 10), w("W14", "W2", "work", "T-51", 10)];
+        let mut resting = w("W15", "W4", "wait", "T-52", 5);
+        resting.rest_since = Some(5);
+        agents.push(resting);
+        let tasks = vec![card("T-9", "done", "W1"), card("T-3", "done", "W3"), card("T-50", "running", "W13"), card("T-51", "done", "W14"), card("T-52", "done", "W15")];
+        // W14's card is done but its session is still running (answering a message): left alone
+        let alive = |a: &str| a == "W13" || a == "W14";
+        assert_eq!(settle_stale(&mut agents, &tasks, &alive, 99), 2);
+        let st = |id: &str| agents.iter().find(|a| a.id == id).unwrap().status.clone();
+        assert_eq!((st("W1"), st("W3")), ("done".into(), "done".into()));
+        assert_eq!(st("W13"), "work", "the real W1 keeps working");
+        assert_eq!(st("W14"), "work", "a live session is never settled");
+        assert_eq!(st("W15"), "wait", "a resting worker stays in the lounge");
     }
 }
 

@@ -8,7 +8,7 @@ import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
-import { finishedCrew, liveCrew } from "../lib/crew";
+import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -20,12 +20,14 @@ const WORD: Record<string, string> = { queued: "대기", running: "진행 중", 
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
-  const task = a.taskId ? team.tasks.find((t) => t.id === a.taskId) : undefined;
+  // its card now (a card that is already over is not shown next to a member still at work)
+  const task = currentCard(team, a);
+  if (a.restSince) return { task: undefined, word: "휴게실", problem: false };
   if (a.status === "block") return { task, word: "막힘", problem: true };
   if (task?.stage === "failed") return { task, word: "실패", problem: true };
   if (a.role === "lead") return { task, word: a.status === "work" ? "지시를 나누는 중" : a.status === "off" ? "퇴근" : "지시를 기다려요", problem: false };
-  if (task) return { task, word: WORD[task.stage], problem: false };
-  return { task, word: a.status === "done" ? "끝남" : "대기", problem: false };
+  if (task) return { task, word: a.status === "done" && task.stage === "review" ? "보고함" : WORD[task.stage], problem: false };
+  return { task, word: a.status === "done" ? "끝남" : a.status === "work" ? "작업 중" : "대기", problem: false };
 }
 
 function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean }) {

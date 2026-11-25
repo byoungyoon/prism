@@ -7,7 +7,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useApp, useShownTeams, waitsForMe } from "../../store";
 import type { Agent, ChatMsg, Project, Task, TeamSnapshot } from "../../lib/api";
 import { plainAction } from "../../lib/plainAction";
-import { liveCrew } from "../../lib/crew";
+import { currentCard, liveCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 
@@ -121,7 +121,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     const pods: { project: Project; desks: Member[]; waiting: Member[] }[] = [];
     const resting: { project: Project; lead?: Agent; waiting: number }[] = [];
     for (const { project, team } of shown) {
-      const crew = liveCrew(team).map((a): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: a.taskId ? team.tasks.find((t) => t.id === a.taskId) : undefined }));
+      const crew = liveCrew(team).map((a): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: currentCard(team, a) }));
       const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || asks[m.key]?.length);
       if (!busy) {
         resting.push({ project, lead: crew.find((m) => m.agent.role === "lead")?.agent, waiting: crew.filter((m) => m.agent.role !== "lead").length });

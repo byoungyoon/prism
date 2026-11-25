@@ -12,6 +12,26 @@ const cardFinished = (a: Agent, tasks: Task[]) => {
   return !!t && (t.stage === "done" || t.stage === "failed");
 };
 
+/** Of two members with the same name: the busier one, then the one on an open card, then the newest. */
+const better = (a: Agent, b: Agent, tasks: Task[]) => {
+  if (RANK[a.status] !== RANK[b.status]) return RANK[a.status] < RANK[b.status];
+  const ao = !cardFinished(a, tasks);
+  const bo = !cardFinished(b, tasks);
+  if (ao !== bo) return ao;
+  return a.statusSince > b.statusSince;
+};
+
+/**
+ * The card a member is on now — none when the one it last held is already done or failed (it may be
+ * answering a message after that, or be a stale session the backend is about to settle).
+ */
+export function currentCard(team: TeamSnapshot, a: Agent): Task | undefined {
+  const t = a.taskId ? team.tasks.find((x) => x.id === a.taskId) : undefined;
+  if (!t) return undefined;
+  if ((t.stage === "done" || t.stage === "failed") && a.status !== "done") return undefined;
+  return t;
+}
+
 /**
  * The live members: on the clock, not finished, one per shown name (the busiest, then the newest),
  * 총괄 first. `withLead`: keep the 총괄 even when it's off (the board shows it as 퇴근).
@@ -28,7 +48,7 @@ export function liveCrew(team: TeamSnapshot, { withLead = false }: { withLead?: 
     }
     const k = `${a.role}:${a.name}`;
     const cur = by.get(k);
-    if (!cur || RANK[a.status] < RANK[cur.status] || (RANK[a.status] === RANK[cur.status] && a.statusSince > cur.statusSince)) by.set(k, a);
+    if (!cur || better(a, cur, team.tasks)) by.set(k, a);
   }
   return [...by.values()].sort((x, y) => ROLE_ORDER[x.role] - ROLE_ORDER[y.role] || x.name.localeCompare(y.name, "ko"));
 }
