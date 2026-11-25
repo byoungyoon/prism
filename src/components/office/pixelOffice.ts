@@ -412,6 +412,127 @@ const wall: Sprite = {
   },
 };
 
+/** a sunny patch of floor under the window (no outline: light on the tiles) */
+const sunspot: Sprite = {
+  w: 30,
+  h: 12,
+  draw: (d) => {
+    d.ellipse(15, 6, 15, 6, "sunEdge");
+    d.ellipse(15, 6, 12.5, 4.6, "sun");
+    d.rect(14, 0, 2, 12, "sunEdge");
+    d.rect(9, 3, 12, 1, "sun");
+  },
+};
+
+/** a cardboard hideout with a round door */
+const catbox: Sprite = {
+  w: 22,
+  h: 14,
+  solid: true,
+  draw: (d) => {
+    d.rect(0, 0, 22, 14, "cardboard");
+    d.rect(0, 0, 22, 2, "cardboardHi");
+    d.rect(0, 12, 22, 2, "cardboardDk");
+    d.rect(9, 0, 4, 2, "tape");
+    d.ellipse(11, 9, 4.2, 4.2, "line");
+    d.rect(7, 10, 8, 4, "line");
+    d.px(2, 6, "cardboardDk");
+    d.px(19, 5, "cardboardDk");
+  },
+};
+
+const scratcher: Sprite = {
+  w: 20,
+  h: 8,
+  solid: true,
+  draw: (d) => {
+    d.box(0, 0, 20, 8, "cardboard");
+    d.rect(0, 6, 20, 2, "cardboardDk");
+    for (let x = 2; x < 18; x += 2) d.rect(x, 1, 1, 4, "cardboardDk");
+    d.rect(1, 0, 18, 1, "cardboardHi");
+  },
+};
+
+const yarn: Sprite = {
+  w: 7,
+  h: 7,
+  solid: true,
+  draw: (d) => {
+    d.ellipse(3.5, 3.5, 3.5, 3.5, "yarn");
+    d.px(2, 2, "yarnHi");
+    d.rect(1, 4, 5, 1, "yarnDk");
+    d.rect(3, 1, 1, 5, "yarnDk");
+  },
+};
+
+const bowls: Sprite = {
+  w: 22,
+  h: 6,
+  solid: true,
+  draw: (d) => {
+    d.rect(0, 0, 22, 6, "mat");
+    d.box(1, 1, 9, 4, "bowl");
+    d.rect(2, 2, 7, 1, "kibble");
+    d.box(12, 1, 9, 4, "bowl");
+    d.rect(13, 2, 7, 1, "water");
+  },
+};
+
+const bookcase: Sprite = {
+  w: 16,
+  h: 24,
+  solid: true,
+  draw: (d) => {
+    d.rect(0, 0, 16, 24, "wood");
+    d.rect(1, 1, 14, 6, "woodDk");
+    d.rect(1, 9, 14, 6, "woodDk");
+    d.rect(1, 17, 14, 6, "woodDk");
+    const row = (y: number, ks: string[]) => ks.forEach((k, i) => d.rect(2 + i * 3, y + (i % 2), 2, 5 - (i % 2), k));
+    row(1, ["book1", "book3", "book4", "book2"]);
+    row(9, ["book5", "book2", "book1", "book3"]);
+    d.rect(2, 21, 5, 2, "book4");
+    d.rect(9, 19, 4, 4, "pot");
+  },
+};
+
+const frame: Sprite = {
+  w: 12,
+  h: 10,
+  solid: true,
+  draw: (d) => {
+    d.rect(0, 0, 12, 10, "wood");
+    d.rect(1, 1, 10, 8, "sky");
+    d.ellipse(6, 7.5, 4, 3, "leaf");
+    d.ellipse(8, 3.5, 1.4, 1.4, "gold");
+  },
+};
+
+const lamp: Sprite = {
+  w: 10,
+  h: 22,
+  solid: true,
+  draw: (d) => {
+    d.art(0, 0, ["..llllll..", ".llllllll.", "llllllllll"], { l: "shade" });
+    d.rect(4, 3, 2, 15, "metal");
+    d.rect(1, 18, 8, 4, "metalDk");
+    d.rect(1, 18, 8, 1, "metal");
+  },
+};
+
+const rug2: Sprite = {
+  w: 30,
+  h: 12,
+  solid: true,
+  draw: (d) => {
+    d.rect(0, 0, 30, 12, "rugTrim");
+    d.rect(1, 1, 28, 10, "carpet");
+    for (let x = 3; x < 27; x += 4) {
+      d.rect(x, 3, 2, 2, "carpetDk");
+      d.rect(x + 2, 7, 2, 2, "carpetDk");
+    }
+  },
+};
+
 /** the lounge floor: soft checker tiles */
 const tiles: Sprite = {
   w: 8,
@@ -444,6 +565,15 @@ export const SPRITES: Record<string, Sprite> = {
   plant,
   tower,
   rug,
+  sunspot,
+  catbox,
+  scratcher,
+  yarn,
+  bowls,
+  bookcase,
+  frame,
+  lamp,
+  rug2,
   floor,
   wall,
   tiles,
@@ -529,6 +659,20 @@ const LIGHT: Pal = {
   wallDot: "#ead8c0",
   tileA: "#f4ead9",
   tileB: "#eee1cd",
+  sun: "#fbeab8",
+  sunEdge: "#f7e1a3",
+  cardboard: "#e2b988",
+  cardboardHi: "#efcfa5",
+  cardboardDk: "#c99d6c",
+  tape: "#f3e3c3",
+  yarn: "#f19fb0",
+  yarnHi: "#f8c3cd",
+  yarnDk: "#d9808f",
+  mat: "#cfe1f3",
+  bowl: "#fff4ea",
+  kibble: "#c98e5e",
+  water: "#a9d6ee",
+  shade: "#fbe3a6",
 };
 
 const DARK: Pal = {
@@ -610,6 +754,20 @@ const DARK: Pal = {
   wallDot: "#3a3027",
   tileA: "#2f271f",
   tileB: "#2a231c",
+  sun: "#4a3f27",
+  sunEdge: "#41372a",
+  cardboard: "#9a7650",
+  cardboardHi: "#b08a62",
+  cardboardDk: "#7f5f3f",
+  tape: "#b9a27c",
+  yarn: "#b9707f",
+  yarnHi: "#d08c99",
+  yarnDk: "#9a5764",
+  mat: "#3e5470",
+  bowl: "#d9cfc0",
+  kibble: "#8f6540",
+  water: "#6a95b3",
+  shade: "#d9b868",
 };
 
 // ── drawing ───────────────────────────────────────────────

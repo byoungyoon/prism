@@ -53,7 +53,7 @@ const restPose = (key: string, turn: number): Pose => {
 };
 
 /** most cats shown in the lounge; the rest are a "+N" */
-const LOUNGE_MAX = 6;
+const LOUNGE_MAX = 10;
 
 function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
   const role = m.agent.role;
@@ -218,7 +218,10 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
       const clamp = (p: Spot) => ({ x: Math.min(lounge.x + lounge.w, Math.max(lounge.x, p.x)), y: Math.min(lounge.y + lounge.h, Math.max(lounge.y, p.y)) });
       const marks = [...(le?.querySelectorAll<HTMLElement>("[data-spot]") ?? [])].map((m) => {
         const r = m.getBoundingClientRect();
-        return clamp({ x: r.left - o.left + r.width / 2, y: r.bottom - o.top + 8 });
+        // a cat rests ON a box, a scratcher or the sunny patch (data-on), and otherwise stands in front of the piece
+        return m.hasAttribute("data-on")
+          ? clamp({ x: r.left - o.left + r.width / 2, y: r.top - o.top + r.height * 0.75 })
+          : clamp({ x: r.left - o.left + r.width / 2, y: r.bottom - o.top + 8 });
       });
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
@@ -419,9 +422,18 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
           <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
+            <span className="of-frame px-frame" />
+            <span className="of-bookcase px-bookcase" data-spot />
+            <span className="of-lamp px-lamp" />
+            <span className="of-sunspot px-sunspot" data-spot data-on />
             <span className="of-rug px-rug" data-spot />
+            <span className="of-rug2 px-rug2" />
             <span className="of-sofa px-sofa" data-spot />
             <span className="of-cushion px-cushion" />
+            <span className="of-catbox px-catbox" data-spot data-on />
+            <span className="of-scratcher px-scratcher" data-spot data-on />
+            <span className="of-yarn px-yarn" />
+            <span className="of-bowls px-bowls" data-spot />
             <span className="of-coffee px-coffee" data-spot />
             <span className="of-tower px-tower" data-spot />
             <span className="of-plant px-plant" data-spot />

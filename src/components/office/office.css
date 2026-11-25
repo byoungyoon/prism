@@ -353,30 +353,39 @@
 .of-lounge > .of-coffee,
 .of-lounge > .of-plant,
 .of-lounge > .of-tower,
-.of-lounge > .of-cushion {
+.of-lounge > .of-cushion,
+.of-lounge > .of-frame,
+.of-lounge > .of-bookcase,
+.of-lounge > .of-lamp,
+.of-lounge > .of-sunspot,
+.of-lounge > .of-rug2,
+.of-lounge > .of-catbox,
+.of-lounge > .of-scratcher,
+.of-lounge > .of-yarn,
+.of-lounge > .of-bowls {
   position: absolute;
 }
 /* the rug in the middle of the lounge, however tall it grows */
 .of-rug {
   left: 50%;
-  top: 58%;
+  top: 62%;
   transform: translate(-50%, -50%);
 }
 .of-sofa {
-  top: calc(var(--u) * 9);
+  top: calc(var(--u) * 17);
   left: 50%;
   transform: translateX(-50%);
 }
 .of-cushion {
   left: calc(50% + var(--u) * 8);
-  top: 58%;
+  top: 62%;
 }
 .of-coffee {
   bottom: calc(var(--u) * 4);
   right: calc(var(--u) * 4);
 }
 .of-plant {
-  top: calc(var(--u) * 8);
+  top: calc(var(--u) * 14);
   right: calc(var(--u) * 3);
 }
 .of-plant-2 {
@@ -591,5 +600,69 @@
   }
   .of-desk {
     animation: none;
+  }
+}
+
+/* ── T-85: a bigger, cosier lounge — a bookcase, a lamp, a picture, a sunny patch, a box to hide in,
+   a scratcher, yarn, bowls and a second rug. Positions are in dots (--u) and a share of the height. ── */
+.of-lounge {
+  width: 360px;
+  min-height: 420px;
+}
+.of-lounge-quiet {
+  min-height: 300px;
+}
+.of-frame {
+  top: calc(var(--u) * 3);
+  left: 50%;
+  transform: translateX(-50%);
+}
+.of-bookcase {
+  top: calc(var(--u) * 10);
+  left: calc(var(--u) * 4);
+}
+.of-lamp {
+  top: calc(var(--u) * 10);
+  right: calc(var(--u) * 20);
+}
+.of-sunspot {
+  top: 40%;
+  left: calc(var(--u) * 3);
+}
+.of-catbox {
+  top: 40%;
+  right: calc(var(--u) * 4);
+}
+.of-scratcher {
+  top: 64%;
+  right: calc(var(--u) * 4);
+}
+.of-yarn {
+  top: 76%;
+  left: calc(var(--u) * 38);
+}
+.of-bowls {
+  bottom: calc(var(--u) * 4);
+  right: calc(var(--u) * 22);
+}
+.of-rug2 {
+  bottom: calc(var(--u) * 14);
+  left: calc(var(--u) * 38);
+}
+@media (max-width: 820px) {
+  .of-lounge {
+    width: auto;
+    min-height: 380px;
+  }
+  .of-lounge-quiet {
+    min-height: 260px;
+  }
+}
+@container office (max-width: 760px) {
+  .of-lounge {
+    min-height: 380px;
+  }
+  .of-lounge-quiet {
+    min-height: 260px;
   }
 }
