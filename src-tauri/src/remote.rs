@@ -341,6 +341,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "lead_send" => ok(t::lead_send(teams(), arg(&a, "projectId")?, arg(&a, "text")?)?),
         "team_branches" => ok(t::team_branches(app.clone(), arg(&a, "projectId")?).await?),
         "team_set_branch" => ok(t::team_set_branch(app.clone(), arg(&a, "projectId")?, arg(&a, "branch")?, arg(&a, "create")?).await?),
+        "team_storage" => ok(t::team_storage(app.clone(), arg(&a, "projectId")?).await?),
+        "team_cleanup" => ok(t::team_cleanup(app.clone(), arg(&a, "projectId")?).await?),
         "task_follow_up" => ok(t::task_follow_up(teams(), arg(&a, "projectId")?, arg(&a, "taskId")?, arg(&a, "text")?)?),
         "escalation_answer" => ok(t::escalation_answer(teams(), arg(&a, "projectId")?, arg(&a, "msgId")?, arg(&a, "answer")?)?),
         "permission_answer" => ok(t::permission_answer(teams(), arg(&a, "projectId")?, arg(&a, "msgId")?, arg(&a, "answer")?)?),

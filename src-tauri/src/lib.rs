@@ -170,6 +170,8 @@ pub fn run() {
             team::task_follow_up,
             team::team_branches,
             team::team_set_branch,
+            team::team_storage,
+            team::team_cleanup,
             team::escalation_answer,
             team::permission_answer,
             team::task_files,
