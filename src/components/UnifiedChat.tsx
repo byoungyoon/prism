@@ -14,6 +14,7 @@ import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
+import { ReportMerge } from "./MergeActions";
 import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } from "./BatchCard";
 import { Markdown } from "./Markdown";
 
@@ -322,6 +323,7 @@ export function UnifiedChat() {
                     failed={team.team.tasks.find((t) => t.id === it.m.taskIds[0])?.stage === "failed"}
                     line={firstLine(it.m.text)}
                     text={it.m.text}
+                    footer={<ReportMerge project={team.project} team={team.team} taskId={it.m.taskIds[0]} />}
                   />
                 ) : (
                   <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={it.m.text} /></div>
