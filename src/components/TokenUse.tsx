@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Bucket, ModelUse, TeamSnapshot, UsageAlert } from "../lib/api";
 import { bucketTotal, clock, tokensText } from "../data/types";
 import { ChevronDown } from "./icons";
+import { useDismissed } from "../lib/crew";
 
 const MODEL_NAME: Record<string, string> = { fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
 const modelName = (m: string) => MODEL_NAME[m] ?? m;
@@ -33,14 +34,21 @@ function alertText(a: UsageAlert) {
 }
 
 /** The warnings, newest first; nothing when there are none. */
-export function UsageWarnings({ alerts }: { alerts: UsageAlert[] }) {
+const alertId = (teamKey: string, a: UsageAlert) => `alert:${teamKey}:${a.at}:${a.agentName}:${a.kind}`;
+
+export function UsageWarnings({ alerts, teamKey }: { alerts: UsageAlert[]; teamKey: string }) {
+  const { has, dismiss } = useDismissed();
+  alerts = alerts.filter((a) => !has(alertId(teamKey, a)));
   if (alerts.length === 0) return null;
   return (
     <ul className="m-0 flex list-none flex-col gap-1 p-0">
       {alerts.map((a, i) => (
         <li key={`${a.at}-${i}`} className="flex gap-2 rounded-lg px-2 py-1.5 text-[12px] leading-normal" style={{ background: "var(--block-bg)", color: "var(--block-ink)" }}>
           <span className="shrink-0 font-mono text-[11px]">{clock(a.at)}</span>
-          <span className="min-w-0">{alertText(a)}</span>
+          <span className="min-w-0 flex-auto">{alertText(a)}</span>
+          <button onClick={() => dismiss(alertId(teamKey, a))} aria-label="경고 닫기" title="이 경고 닫기" className="size-5 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 text-[12px] leading-none hover:bg-[var(--chip)]" style={{ color: "inherit" }}>
+            ✕
+          </button>
         </li>
       ))}
     </ul>
@@ -50,9 +58,11 @@ export function UsageWarnings({ alerts }: { alerts: UsageAlert[] }) {
 /** A team's usage today, one line that opens to its models and members. `label` names the team when several show. */
 export function TeamUsageBox({ team, label }: { team: TeamSnapshot; label?: string }) {
   const [open, setOpen] = useState(false);
+  const { has } = useDismissed();
   const u = team.usage;
   if (!u) return null;
-  const warn = u.alerts.length;
+  const teamKey = label ?? "team";
+  const warn = u.alerts.filter((a) => !has(alertId(teamKey, a))).length;
   return (
     <div className="flex flex-col">
       <button
@@ -75,7 +85,7 @@ export function TeamUsageBox({ team, label }: { team: TeamSnapshot; label?: stri
       {open && (
         <div className="flex flex-col gap-2 px-2 pt-1 pb-2">
           {u.models.length > 0 ? <ModelChips models={u.models} /> : <span className="text-[12px] text-ink-2">오늘 아직 쓴 토큰이 없어요</span>}
-          <UsageWarnings alerts={u.alerts} />
+          <UsageWarnings alerts={u.alerts} teamKey={teamKey} />
           {u.members.map((m) => (
             <div key={m.agentId} className="flex flex-col gap-1 text-[12px]">
               <span className="flex items-baseline gap-2">
