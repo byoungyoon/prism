@@ -6,7 +6,7 @@ import { TopBar } from "./components/TopBar";
 import { LeadChat } from "./components/LeadChat";
 import { UnifiedChat } from "./components/UnifiedChat";
 import { TaskBoard } from "./components/TaskBoard";
-import { ReportFeed } from "./components/ReportFeed";
+import { CenterOffice } from "./components/office/CenterOffice";
 import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -28,7 +28,7 @@ const page = {
 function CenterPanel() {
   return (
     <div className="relative flex min-w-0 flex-[999_1_480px] flex-col">
-      <ReportFeed />
+      <CenterOffice />
     </div>
   );
 }
@@ -76,7 +76,7 @@ function LeadColumn() {
 
 const PHONE_TABS = [
   { id: "chat", label: "총괄" },
-  { id: "feed", label: "보고" },
+  { id: "feed", label: "사무실" },
   { id: "board", label: "보드" },
 ] as const;
 
@@ -110,7 +110,7 @@ function MainView() {
         </div>
         {/* panels fill the phone width */}
         <div className="flex min-h-0 min-w-0 flex-auto flex-col [&>section]:max-w-none [&>section]:min-w-0 [&>section]:flex-auto">
-          {tab === "chat" ? <LeadColumn /> : tab === "feed" ? <ReportFeed /> : <TaskBoard />}
+          {tab === "chat" ? <LeadColumn /> : tab === "feed" ? <CenterOffice /> : <TaskBoard />}
         </div>
       </div>
     );
