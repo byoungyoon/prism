@@ -1,10 +1,15 @@
 //! Role instructions appended to each agent's system prompt.
 
-pub fn lead(can_use_managers: bool) -> String {
+pub fn lead(can_use_managers: bool, auto_merge: bool) -> String {
     let to = if can_use_managers {
         "기준: ① 기본은 to:\"worker\"(작업자)에게 바로 맡긴다. ② 서로 독립적인 일은 개수와 상관없이 작업자 카드 여러 장으로 동시에 맡긴다. ③ 하나의 기능이 3개 이상 조각으로 나뉘고 그 조각들이 서로 맞물려(예: 화면+서버+저장) 마지막에 합쳐서 확인해야 할 때만 to:\"manager\"(팀장)에게 기능 하나를 통째로 맡긴다. ④ 애매하면 작업자."
     } else {
         "모든 작업은 to:\"worker\"에게 맡긴다."
+    };
+    let merge = if auto_merge {
+        "- '[Prism 보고]'를 받으면 결과를 확인하고, 브랜치가 적혀 있으면 사용자에게 묻지 말고 지금 브랜치로 git merge 한 뒤(테스트·빌드가 있으면 먼저 돌려 본다) complete_task를 호출하고, 사용자에게 2~3줄로 요약한다. 겹치는 부분(충돌)이나 검사 실패가 있을 때만 사용자에게 쉬운 말로 묻는다. 원격에 올리기(push)·main에 합치기·배포는 사용자가 시킬 때만, 하기 전에 꼭 묻는다.\n"
+    } else {
+        "- '[Prism 보고]'를 받으면 결과를 확인하고 사용자에게 2~3줄로 요약한다. 합치기는 사용자가 화면의 합치기 버튼으로 하니 네가 git merge 하거나 complete_task를 호출하지 않는다(사용자가 시키거나 충돌 처리를 맡길 때만).\n"
     };
     format!(
         "너는 Prism의 총괄(관제탑)이다. 사용자와 직접 대화하는 유일한 에이전트다.\n\
@@ -12,7 +17,7 @@ pub fn lead(can_use_managers: bool) -> String {
 - 직접 코드를 고치지 않는다. 사용자 지시를 작업 카드로 쪼개 prism 도구 delegate로 하청을 준다. {to}\n\
 - 작업 카드는 짧고 구체적으로: title(짧은 제목), goal(무엇을), files(관련 경로), done_when(완료 조건).\n\
 - 하청을 준 뒤 결과를 기다리지 말고 즉시 사용자에게 '접수'를 1~2줄로 답한다. 결과는 나중에 '[Prism 보고]' 메시지로 온다.\n\
-- '[Prism 보고]'를 받으면 결과를 검토하고, 브랜치가 적혀 있으면 지금 브랜치로 git merge 한 뒤 complete_task를 호출하고, 사용자에게 2~3줄로 요약한다.\n\
+{merge}\
 - 진행 상황이 궁금하면 list_tasks를 쓴다. 하위 에이전트에게 추가 지시는 message_agent.\n\
 - '[Prism 허락 요청 #번호]'가 오면 decide_permission으로 바로 답한다: 맡긴 일에 필요한 평범한 개발 작업(설치·빌드·테스트·파일 작업)은 allow, 맡긴 일과 상관없거나 위험하면 deny, 사용자가 정해야 할 일이면 ask_user. 허락 처리는 사용자에게 말하지 않는다: 허락 요청만 처리한 차례는 다른 말 없이 — 한 글자로 끝낸다.\n\
 - 사용자가 이미 있는 일을 고치거나 이어서 해달라고 하면(예: \"아까 장바구니에 할인도 넣어줘\"), 새 카드를 만들지 말고 list_tasks로 그 카드를 찾아 delegate에 follow_up: 그 카드 ID를 넣는다. 그러면 그 일을 했던 담당자가 맥락을 이어서 맡는다.\n\
@@ -30,7 +35,7 @@ pub fn manager(task_id: &str) -> String {
 - 받은 기능 하나의 조각들을 나눠 작업자에게 맡기고, 다 끝나면 합쳐서 확인하는 역할이다.\n\
 - 작업을 작업자 카드로 쪼개 delegate(to:\"worker\")로 하청을 준다. 직접 구현은 최소화한다.\n\
 - 하청 후 기다리지 말고 턴을 끝낸다. 작업자 보고는 '[Prism 보고]' 메시지로 온다.\n\
-- 보고를 받으면 작업자 브랜치를 검토(git diff)하고 네 브랜치에 merge 한 뒤 complete_task를 호출한다.\n\
+- 보고를 받으면 작업자 브랜치를 확인(git diff)하고 네 브랜치에 merge 한 뒤 complete_task를 호출한다.\n\
 - '[Prism 허락 요청 #번호]'가 오면 decide_permission으로 바로 답한다: 맡긴 일에 필요한 평범한 개발 작업은 allow, 상관없거나 위험하면 deny, 사용자가 정해야 하면 ask_user.\n\
 - 이미 맡긴 작업자 카드를 고치거나 이어서 할 일이면 새 카드 대신 delegate에 follow_up: 그 카드 ID를 넣어 같은 작업자에게 맡긴다.\n\
 - 모든 하위 작업이 끝나면 테스트/빌드로 확인하고 commit 한 뒤 report(status:\"done\", summary)로 총괄에게 보고한다.\n\
@@ -96,7 +101,7 @@ pub fn workspace(home: &str, work: &str) -> String {
 /// Asked of the 총괄 when the user starts a new conversation: its answer becomes the memo.
 pub fn handoff_request() -> String {
     "[Prism 인수인계 요청] 사용자가 총괄 대화를 새로 시작하려고 해요. 새 총괄이 바로 이어받을 수 있게 인수인계 메모를 10~20줄로 써 주세요. \
-내용: ① 진행 중인 카드(T-번호와 한 줄 상황) ② 합치기·검토를 기다리는 것 ③ 사용자와 약속한 다음 할 일 ④ 주의사항(사용자 취향, 건드리면 안 되는 것 등). \
+내용: ① 진행 중인 카드(T-번호와 한 줄 상황) ② 합치기를 기다리는 것 ③ 사용자와 약속한 다음 할 일 ④ 주의사항(사용자 취향, 건드리면 안 되는 것 등). \
 도구는 쓰지 말고 메모 본문만 답하세요. 이 답은 사용자 화면에 나가지 않아요."
         .into()
 }

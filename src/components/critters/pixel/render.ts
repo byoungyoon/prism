@@ -4,7 +4,7 @@
 // The strip is drawn at K × K dots per drawing dot (art.ts), so the cat keeps its size on screen
 // but its dots are finer: fur, eyes, ears and outline all get more detail.
 import { FH, FW, K, frameOf, hires, letters, type Row } from "./art";
-import { dotColor, type Coat } from "./coats";
+import { dotColor, lift, type Coat } from "./coats";
 import { faceDots, INK, type Feel } from "./faces";
 
 /** shadow dots, down and to the right of the cat (the drop shadow of the drawings) */
@@ -40,7 +40,10 @@ function paint(g: CanvasRenderingContext2D, coat: Coat, row: Row, i: number, fee
       const ch = grid[y][x];
       let c = dotColor(coat, ch, x, y, f.top * K, faceX * K);
       if (!c) continue;
-      if ("kwctlp".includes(ch) && (edge(x + 1, y) || edge(x, y + 1))) c = shade(c);
+      // fur on the top silhouette catches the light: a lift along the top edge (lying and curled poses)
+      if ("kwt".includes(ch) && c.startsWith("#") && !filled(x, y - 1)) c = lift(c);
+      // (shade and lift work on #hex colours; a speckle already lifted is an rgb() string and is left as it is)
+      if ("kwctlp".includes(ch) && c.startsWith("#") && (edge(x + 1, y) || edge(x, y + 1))) c = shade(c);
       // gloom: a pale blue shadow over the forehead
       if (feel === "gloom" && f.front && "kwp".includes(ch) && y < f.front.eyeY * K) c = "#b9d3e0";
       g.fillStyle = c;

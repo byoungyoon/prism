@@ -10,8 +10,9 @@ import { plainAction } from "../../lib/plainAction";
 import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
-import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
+import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
+import { catName } from "../critters/pixel/coats";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
@@ -52,12 +53,12 @@ const restPose = (key: string, turn: number): Pose => {
 };
 
 /** most cats shown in the lounge; the rest are a "+N" */
-const LOUNGE_MAX = 6;
+const LOUNGE_MAX = 10;
 
-function Desk({ m, asking, onOpen }: { m: Member; asking?: boolean; onOpen: () => void }) {
+function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
   const role = m.agent.role;
   return (
-    <button className={`of-desk of-desk-${role}${asking ? " of-desk-asking" : ""}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
+    <button className={`of-desk of-desk-${role}`} onClick={onOpen} title={`${catName(m.agent)} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${catName(m.agent)} 책상 (${ROLE_WORD[role]})`}>
       <span className={`of-chair ${role === "lead" ? "px-chair-lead" : "px-chair"}`} />
       <span className="of-seat" data-seat={m.key} />
       <span className={`of-desk-top ${role === "lead" ? "px-desk-lead" : "px-desk"}`}>
@@ -81,7 +82,7 @@ function Desk({ m, asking, onOpen }: { m: Member; asking?: boolean; onOpen: () =
         <span className="of-keyboard px-keyboard" />
         <span className="of-mug px-mug" />
       </span>
-      <span className="of-plate">{m.agent.name}</span>
+      <span className="of-plate">{catName(m.agent)}</span>
     </button>
   );
 }
@@ -132,9 +133,9 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   // the tail points at the cat, but never off the bubble's rounded corners
   const tail = Math.max(-half + 14, Math.min(half - 14, at.x - left));
   return (
-    <div ref={box} className="of-ask" role="alertdialog" aria-label={`${m.agent.name} 허락 요청`} style={{ left, top, width: half * 2 }}>
-      <span className="of-ask-text" title={`${m.agent.name} · ${what}${p.detail ? `\n${p.detail}` : ""}`}>
-        <b>{m.agent.name}</b> · {what}
+    <div ref={box} className="of-ask" role="alertdialog" aria-label={`${catName(m.agent)} 허락 요청`} style={{ left, top, width: half * 2 }}>
+      <span className="of-ask-text" title={`${catName(m.agent)} · ${what}${p.detail ? `\n${p.detail}` : ""}`}>
+        <b>{catName(m.agent)}</b> · {what}
         {msgs.length > 1 && <span className="of-ask-more"> 외 {msgs.length - 1}건</span>}
       </span>
       <span className="of-ask-buttons">
@@ -150,8 +151,7 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   );
 }
 
-/** `onTeam`: open a team's reports (a click on a resting team's chip) */
-export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}) {
+export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
   // the furniture's pixel pictures (drawn once, kept in a <style>)
   ensurePixelOffice();
   const shown = useOfficeTeams();
@@ -169,11 +169,10 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   }, [shown]);
 
   // each team's live crew. A team with someone at work (or asking) gets desks: its 총괄 plus everyone
-  // working; a team where nobody works is folded into one small line ("쉬는 팀"), and its 팀장·작업자 between cards still rest in the lounge. Members who reported and
+  // working; a team where nobody works gets no area at all, and its 팀장·작업자 between cards still rest in the lounge. Members who reported and
   // wait for the 총괄's check are in the lounge too ("보고함").
-  const { pods, resting, idle } = useMemo(() => {
+  const { pods, idle } = useMemo(() => {
     const pods: { project: Project; desks: Member[]; waiting: Member[] }[] = [];
-    const resting: { project: Project; lead?: Agent; waiting: number }[] = [];
     const idle: Member[] = [];
     for (const { project, team } of shown) {
       const member = (a: Agent): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: currentCard(team, a) });
@@ -183,27 +182,25 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || asks[m.key]?.length);
       if (!busy) {
         const waiting = [...crew.filter((m) => m.agent.role !== "lead"), ...reported];
-        resting.push({ project, lead: crew.find((m) => m.agent.role === "lead")?.agent, waiting: waiting.length });
         idle.push(...waiting);
         continue;
       }
       const seated = (m: Member) => atDesk(m.agent) || !!asks[m.key]?.length;
       pods.push({ project, desks: crew.filter(seated), waiting: [...crew.filter((m) => !seated(m)), ...reported] });
     }
-    return { pods, resting, idle };
+    return { pods, idle };
   }, [shown, asks]);
   const deskMembers = pods.flatMap((p) => p.desks);
   const waitingAll = [...pods.flatMap((p) => p.waiting), ...idle];
   const lounging = waitingAll.slice(0, LOUNGE_MAX);
   const extra = waitingAll.length - lounging.length;
   const members = [...deskMembers, ...lounging];
-  // what the layout depends on: who is where, and which desks ask (an asking desk makes room above
-  // it, which moves the seats without changing who is in the room)
-  const shape = members.map((m) => m.key).join("|") + "#" + Object.keys(asks).sort().join("|");
+  // what the layout depends on: who is where (a permission bubble floats over the room and moves nothing)
+  const shape = members.map((m) => m.key).join("|");
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
-  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; door: Spot; w: number } | null>(null);
+  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; door: Spot; w: number } | null>(null);
   useLayoutEffect(() => {
     const el = content.current;
     if (!el) return;
@@ -221,12 +218,20 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       const clamp = (p: Spot) => ({ x: Math.min(lounge.x + lounge.w, Math.max(lounge.x, p.x)), y: Math.min(lounge.y + lounge.h, Math.max(lounge.y, p.y)) });
       const marks = [...(le?.querySelectorAll<HTMLElement>("[data-spot]") ?? [])].map((m) => {
         const r = m.getBoundingClientRect();
-        return clamp({ x: r.left - o.left + r.width / 2, y: r.bottom - o.top + 8 });
+        // a cat rests ON a box, a scratcher or the sunny patch (data-on), and otherwise stands in front of the piece
+        return m.hasAttribute("data-on")
+          ? clamp({ x: r.left - o.left + r.width / 2, y: r.top - o.top + r.height * 0.75 })
+          : clamp({ x: r.left - o.left + r.width / 2, y: r.bottom - o.top + 8 });
+      });
+      // tall decor (bookcase, lamp, plants): no cat stands on or right in front of it
+      const blocks = [...(le?.querySelectorAll<HTMLElement>("[data-block]") ?? [])].map((m) => {
+        const r = m.getBoundingClientRect();
+        return { x: r.left - o.left - size * 0.4, y: r.top - o.top, w: r.width + size * 0.8, h: r.height + size * 0.5 };
       });
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
       setRoom((prev) => {
-        const next = { seats, lounge, marks, door, w: el.clientWidth };
+        const next = { seats, lounge, marks, blocks, door, w: el.clientWidth };
         return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
       });
     };
@@ -253,26 +258,28 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       for (const k of movers) {
         const others = keys.filter((o) => o !== k && next[o]).map((o) => next[o]);
         const free = (p: Spot) => others.every((o) => Math.hypot(o.x - p.x, o.y - p.y) > size * 1.3);
+        const clear = (p: Spot) => !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
         let best: Spot | null = null;
-        for (let t = 0; t < 16; t++) {
+        for (let t = 0; t < 30; t++) {
           const mark = room.marks.length && Math.random() < 0.6 ? room.marks[Math.floor(Math.random() * room.marks.length)] : null;
           const p = mark
             ? { x: Math.min(L.x + L.w, Math.max(L.x, mark.x + (Math.random() - 0.5) * size)), y: Math.min(L.y + L.h, Math.max(L.y, mark.y + (Math.random() - 0.5) * size * 0.4)) }
             : { x: L.x + Math.random() * L.w, y: L.y + Math.random() * L.h };
           // somewhere new, not where it already stands
+          if (!clear(p)) continue;
           if (free(p) && (!cur[k] || Math.hypot(cur[k].x - p.x, cur[k].y - p.y) > size)) {
             best = p;
             break;
           }
           best ??= p;
         }
-        next[k] = best!;
+        next[k] = best ?? cur[k] ?? { x: L.x + L.w / 2, y: L.y + L.h / 2 };
       }
       return next;
     };
     // newcomers (and everyone, when the lounge moved) get a spot right away
     setStrolls((cur) => {
-      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && p.x >= L.x - 1 && p.x <= L.x + L.w + 1 && p.y >= L.y - 1 && p.y <= L.y + L.h + 1));
+      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && p.x >= L.x - 1 && p.x <= L.x + L.w + 1 && p.y >= L.y - 1 && p.y <= L.y + L.h + 1 && !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h)));
       return pickFor(keys.filter((k) => !kept[k]), kept);
     });
     if (still || !keys.length) return;
@@ -339,8 +346,8 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   for (const k of Object.keys(cameIn.current)) if (!lounging.some((m) => m.key === k)) delete cameIn.current[k];
   for (const m of lounging) cameIn.current[m.key] ??= Date.now();
   const settled = (k: string) => Date.now() - (cameIn.current[k] ?? 0) > 6000;
-  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a neighbour
-  // asks and makes room above its desk, a desk joins the row) moves with the desk, instantly —
+  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a desk
+  // joins the row) moves with the desk, instantly —
   // walking there would leave the cat behind, under the desk, for a moment
   const wasAtDesk = useRef<Set<string>>(new Set());
   const prevDesk = wasAtDesk.current;
@@ -400,18 +407,6 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
           <span className="of-shelf px-shelf" />
           <span className="of-door px-door" data-door />
         </div>
-        {resting.length > 0 && (
-          <div className="of-resting" aria-label="쉬는 팀">
-            <span className="of-resting-title">쉬는 팀</span>
-            {resting.map(({ project, lead, waiting }) => (
-              <button key={project.id} className="of-resting-team" onClick={() => onTeam?.(project.id)} title={`${project.name} 보고 보기`}>
-                {lead && <Critter agent={lead} colorKey={project.name} state="off" size={narrow ? 24 : 28} />}
-                <span className="of-resting-name">{project.name}</span>
-                <span className="of-resting-sub">{waiting ? `대기 ${waiting}명` : "쉬는 중"}</span>
-              </button>
-            ))}
-          </div>
-        )}
         <div className="of-floor">
           <div className="of-pods">
             {pods.map(({ project, desks }) => (
@@ -422,25 +417,34 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
                   return row.length ? (
                     <div key={role} className={`of-row of-row-${role}`}>
                       {row.map((m) => (
-                        <Desk key={m.key} m={m} asking={!!asks[m.key]?.length} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
+                        <Desk key={m.key} m={m} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
                       ))}
                     </div>
                   ) : null;
                 })}
               </div>
             ))}
-            {!pods.length && <span className="of-empty">{resting.length ? "지금 일하는 팀원이 없어요. 총괄에게 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
+            {!pods.length && <span className="of-empty">{shown.length ? "지금 일하는 팀이 없어요. 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
           </div>
           <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
+            <span className="of-frame px-frame" />
+            <span className="of-bookcase px-bookcase" data-block />
+            <span className="of-lamp px-lamp" data-block />
+            <span className="of-sunspot px-sunspot" data-spot data-on />
             <span className="of-rug px-rug" data-spot />
+            <span className="of-rug2 px-rug2" />
             <span className="of-sofa px-sofa" data-spot />
             <span className="of-cushion px-cushion" />
+            <span className="of-catbox px-catbox" data-spot data-on />
+            <span className="of-scratcher px-scratcher" data-spot data-on />
+            <span className="of-yarn px-yarn" />
+            <span className="of-bowls px-bowls" data-spot />
             <span className="of-coffee px-coffee" data-spot />
             <span className="of-tower px-tower" data-spot />
-            <span className="of-plant px-plant" data-spot />
-            <span className="of-plant of-plant-2 px-plant" data-spot />
+            <span className="of-plant of-plant-1 px-plant" data-block />
+            <span className="of-plant of-plant-2 px-plant" data-block />
           </div>
         </div>
         <div className="of-cats">

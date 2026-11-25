@@ -30,6 +30,8 @@ export interface TeamConfig {
   isolate: boolean;
   /** work in a copy on a team branch; the original folder is never touched (results leave as a PR) */
   safe: boolean;
+  /** the 총괄 merges finished work into the team branch itself (asks only on a clash or failing check) */
+  autoMerge: boolean;
 }
 
 export interface Project {

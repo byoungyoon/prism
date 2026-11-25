@@ -37,6 +37,10 @@ pub struct TeamConfig {
     /// user presses "결과 반영하기". Off: work (and merge) right in the original folder.
     #[serde(default = "yes")]
     pub safe: bool,
+    /// The 총괄 merges finished work into the team branch by itself (asking only on a clash or a
+    /// failing check). Off: the user presses 합치기 on each report.
+    #[serde(default = "yes")]
+    pub auto_merge: bool,
 }
 
 fn yes() -> bool {
@@ -56,6 +60,7 @@ impl Default for TeamConfig {
             permission_mode: "acceptEdits".into(),
             isolate: true,
             safe: true,
+            auto_merge: true,
         }
     }
 }

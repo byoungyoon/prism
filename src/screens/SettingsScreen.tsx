@@ -17,7 +17,7 @@ const PRESETS: { id: Exclude<PresetName, "custom">; label: string; note: string;
 type RoleKey = "lead" | "managers" | "workers";
 const ROLES: { key: RoleKey; name: string; desc: string; Icon: typeof Tower }[] = [
   { key: "lead", name: "총괄", desc: "나와 대화하고 일을 나눠요", Icon: Tower },
-  { key: "managers", name: "팀장", desc: "작업을 나누고 결과를 검토해 합쳐요", Icon: Briefcase },
+  { key: "managers", name: "팀장", desc: "작업을 나누고 결과를 확인해 합쳐요", Icon: Briefcase },
   { key: "workers", name: "작업자", desc: "실제 작업을 하고 결과를 저장해요", Icon: Bot },
 ];
 
@@ -389,9 +389,17 @@ export function SettingsScreen() {
             </span>
           </Card>
 
+          <Card title="끝난 일 자동으로 합치기" aside={<Switch on={draft.autoMerge} onChange={(autoMerge) => setDraft({ ...draft, autoMerge })} label="끝난 일 자동으로 합치기" />}>
+            <span className="text-[12px] leading-relaxed text-ink-2">
+              {draft.autoMerge
+                ? "팀원이 일을 마치고 보고하면 총괄이 확인한 뒤 알아서 팀 작업에 합쳐요. 겹치는 부분이 있거나 검사에 실패할 때만 물어봐요. main에 올리기와 배포는 언제나 먼저 물어봐요."
+                : "보고가 오면 '합치기 대기'에 쌓이고, 사용자가 합치기 버튼을 눌러야 합쳐져요."}
+            </span>
+          </Card>
+
           <Card title="작업 공간 분리" aside={<Switch on={draft.isolate} onChange={(isolate) => setDraft({ ...draft, isolate })} label="작업 공간 분리" />}>
             <span className="text-[12px] leading-relaxed text-ink-2">
-              팀장과 작업자가 각자 따로 복사한 작업 공간에서 일하고, 끝나면 윗선이 검토해서 합쳐요. 끄면 같은 폴더를 함께 써서 서로 덮어쓸 수 있어요.
+              팀장과 작업자가 각자 따로 복사한 작업 공간에서 일하고, 끝나면 윗선이 확인해서 합쳐요. 끄면 같은 폴더를 함께 써서 서로 덮어쓸 수 있어요.
             </span>
           </Card>
         </div>

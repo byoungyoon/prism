@@ -7,10 +7,10 @@ import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
-import { Critter } from "./critters";
 import { currentCard, finishedCrew, liveCrew, useDismissed } from "../lib/crew";
 import { MergeActions, MergeAllButton } from "./MergeActions";
 import { TeamUsageBox } from "./TokenUse";
+import { catName } from "./critters/pixel/coats";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -18,7 +18,7 @@ const FLOORS: { role: Role; name: string }[] = [
   { role: "worker", name: "작업자" },
 ];
 
-const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "검토", done: "완료", failed: "실패" };
+const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
@@ -34,18 +34,16 @@ function stateOf(a: Agent, team: TeamSnapshot) {
 
 function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean }) {
   const openIn = useApp((s) => s.openIn);
-  const critters = useApp((s) => s.critters);
   const st = stateOf(a, team);
   const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
   return (
     <button
       data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}
-      title={`${a.name} 작업 화면 · ${modelLabel(a.model)}`}
+      title={`${catName(a)} 작업 화면 · ${modelLabel(a.model)}`}
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
     >
-      {critters && <Critter agent={a} task={st.task} colorKey={a.role === "lead" ? project.name : undefined} size={24} className="-my-1 -ml-0.5" />}
-      <span className="w-[68px] shrink-0 truncate font-medium">{a.role === "lead" && multi ? project.name : a.name}</span>
+      <span className="w-[68px] shrink-0 truncate font-medium">{a.role === "lead" && multi ? project.name : catName(a)}</span>
       <span className="flex min-w-0 flex-auto items-baseline gap-1.5 text-ink-2">
         {st.task && <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--text)]">{st.task.id}</span>}
         <span className="truncate">{st.task ? st.task.title : a.role === "lead" ? "" : (a.lastNote ?? "")}</span>
@@ -118,6 +116,16 @@ export function TaskBoard() {
             <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
               보고함 <span className="font-normal">{reports.length}</span>
             </span>
+            {reports.length > 1 && (
+              <button
+                onClick={() => reports.forEach(({ t, project }) => dismiss(reportKey(project.id, t)))}
+                title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)"
+                className="mx-2 min-h-7 self-start rounded-full border-0 px-3 text-[12px] text-ink-2 hover:bg-[var(--chip)]"
+                style={{ background: "var(--chip)" }}
+              >
+                모두 치우기 ({reports.length}장)
+              </button>
+            )}
             {[...new Set(reports.map((r) => r.project))].map((p) => (
               <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p).map((r) => r.t)} />
             ))}

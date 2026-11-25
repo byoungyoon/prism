@@ -353,30 +353,39 @@
 .of-lounge > .of-coffee,
 .of-lounge > .of-plant,
 .of-lounge > .of-tower,
-.of-lounge > .of-cushion {
+.of-lounge > .of-cushion,
+.of-lounge > .of-frame,
+.of-lounge > .of-bookcase,
+.of-lounge > .of-lamp,
+.of-lounge > .of-sunspot,
+.of-lounge > .of-rug2,
+.of-lounge > .of-catbox,
+.of-lounge > .of-scratcher,
+.of-lounge > .of-yarn,
+.of-lounge > .of-bowls {
   position: absolute;
 }
 /* the rug in the middle of the lounge, however tall it grows */
 .of-rug {
   left: 50%;
-  top: 58%;
+  top: 62%;
   transform: translate(-50%, -50%);
 }
 .of-sofa {
-  top: calc(var(--u) * 9);
+  top: calc(var(--u) * 17);
   left: 50%;
   transform: translateX(-50%);
 }
 .of-cushion {
   left: calc(50% + var(--u) * 8);
-  top: 58%;
+  top: 62%;
 }
 .of-coffee {
   bottom: calc(var(--u) * 4);
   right: calc(var(--u) * 4);
 }
 .of-plant {
-  top: calc(var(--u) * 8);
+  top: calc(var(--u) * 14);
   right: calc(var(--u) * 3);
 }
 .of-plant-2 {
@@ -511,50 +520,11 @@
   font-size: 12px;
   font-weight: 600;
 }
-.of-resting {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 18px 0;
-}
-.of-resting-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text2);
-}
-.of-resting-team {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 3px 12px 3px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--glass2);
-  color: var(--text);
-}
-.of-resting-name {
-  overflow: hidden;
-  font-size: 12.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.of-resting-sub {
-  flex: none;
-  font-size: 11px;
-  color: var(--text2);
-}
 @media (max-width: 820px) {
   .of-lounge {
     width: auto;
   }
-  .of-resting {
-    padding: 8px 10px 0;
   }
-}
 /* the room scrolls; its content (and with it the cats' layer and the lounge) grows with the office
    instead of being stretched to one screen's height, so cats further down aren't cut off */
 .of-room {
@@ -606,16 +576,6 @@
     align-self: stretch;
   }
 }
-/* a desk whose cat asks for permission keeps room above it for the bubble (it would cover the row above) */
-.of-desk-asking {
-  margin-top: 94px;
-}
-/* desks in a row line up at the bottom: the room made above an asking desk is above its neighbours
-   too, so the bubble sits over everyone's heads instead of on a neighbour's face */
-.of-row {
-  align-items: flex-end;
-}
-
 /* T-52: the room is alive. The lounge grows and shrinks smoothly instead of jumping, desks fade in, and a door on the wall is
    where cats who clock out walk off to. */
 .of-lounge,
@@ -640,5 +600,81 @@
   }
   .of-desk {
     animation: none;
+  }
+}
+
+/* ── T-85: a bigger, cosier lounge — a bookcase, a lamp, a picture, a sunny patch, a box to hide in,
+   a scratcher, yarn, bowls and a second rug. Positions are in dots (--u) and a share of the height. ── */
+.of-lounge {
+  width: 400px;
+  height: 420px;
+  min-height: 0;
+  flex: none;
+  align-self: flex-start;
+}
+.of-lounge-quiet {
+  height: 300px;
+}
+.of-frame {
+  top: calc(var(--u) * 3);
+  left: 50%;
+  transform: translateX(-50%);
+}
+.of-bookcase {
+  top: calc(var(--u) * 10);
+  right: calc(var(--u) * 4);
+}
+.of-lamp {
+  top: calc(var(--u) * 10);
+  left: calc(50% + var(--u) * 26);
+}
+/* the sunny patch is by the top wall, where the windows are */
+.of-sunspot {
+  top: calc(var(--u) * 6);
+  left: calc(var(--u) * 3);
+}
+.of-plant-1 {
+  top: calc(var(--u) * 27);
+  right: auto;
+  left: calc(var(--u) * 4);
+}
+.of-catbox {
+  top: 40%;
+  right: calc(var(--u) * 4);
+}
+.of-scratcher {
+  top: 64%;
+  right: calc(var(--u) * 4);
+}
+.of-yarn {
+  top: 76%;
+  left: calc(var(--u) * 38);
+}
+.of-bowls {
+  bottom: calc(var(--u) * 4);
+  right: calc(var(--u) * 22);
+}
+.of-rug2 {
+  bottom: calc(var(--u) * 14);
+  left: calc(var(--u) * 38);
+}
+@media (max-width: 820px) {
+  .of-lounge {
+    width: auto;
+    height: 380px;
+    align-self: stretch;
+  }
+  .of-lounge-quiet {
+    height: 260px;
+  }
+}
+@container office (max-width: 760px) {
+  .of-lounge {
+    width: auto;
+    height: 400px;
+    align-self: stretch;
+  }
+  .of-lounge-quiet {
+    height: 260px;
   }
 }
