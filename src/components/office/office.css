@@ -729,3 +729,37 @@
 .of-tab {
   scroll-snap-align: start;
 }
+
+/* T-51: the office measures itself, not the window — in the 관제탑 it sits between the chat and the
+   board, often ~600px wide: then the lounge goes below the desks so a row of desks stays side by side */
+.of-room {
+  container-type: inline-size;
+  container-name: office;
+}
+@container office (max-width: 760px) {
+  .of-floor {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 22px;
+  }
+  .of-pods {
+    justify-content: center;
+  }
+  .of-lounge {
+    width: auto;
+    min-height: 200px;
+  }
+  .of-lounge-quiet {
+    min-height: 150px;
+    align-self: stretch;
+  }
+}
+/* a desk whose cat asks for permission keeps room above it for the bubble (it would cover the row above) */
+.of-desk-asking {
+  margin-top: 62px;
+}
+/* desks in a row line up at the bottom: the room made above an asking desk is above its neighbours
+   too, so the bubble sits over everyone's heads instead of on a neighbour's face */
+.of-row {
+  align-items: flex-end;
+}

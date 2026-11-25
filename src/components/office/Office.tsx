@@ -10,6 +10,7 @@ import { plainAction } from "../../lib/plainAction";
 import { currentCard, liveCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
+import type { Pose } from "../critters/state";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
@@ -39,13 +40,21 @@ function useNarrow() {
 /** at the desk: working, stuck or asking — and the 총괄 of a team at work */
 const atDesk = (a: Agent) => a.status === "work" || a.status === "block" || a.role === "lead";
 
+/** how a lounging cat rests: coffee, a nap, or just sitting — by cat, shuffled now and then */
+const REST_POSES: Pose[] = ["coffee", "sleep", "sit", "coffee", "sleep"];
+const restPose = (key: string, turn: number): Pose => {
+  let h = turn * 7;
+  for (const c of key) h = (h * 31 + c.charCodeAt(0)) | 0;
+  return REST_POSES[Math.abs(h) % REST_POSES.length];
+};
+
 /** most cats shown in the lounge; the rest are a "+N" */
 const LOUNGE_MAX = 6;
 
-function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
+function Desk({ m, asking, onOpen }: { m: Member; asking?: boolean; onOpen: () => void }) {
   const role = m.agent.role;
   return (
-    <button className={`of-desk of-desk-${role}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
+    <button className={`of-desk of-desk-${role}${asking ? " of-desk-asking" : ""}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
       <span className="of-chair" />
       <span className="of-seat" data-seat={m.key} />
       <span className="of-desk-top">
@@ -237,6 +246,14 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     };
   }, [still]);
 
+  // which way each lounging cat rests changes every minute or so
+  const [restTurn, setRestTurn] = useState(0);
+  useEffect(() => {
+    if (still) return;
+    const t = setInterval(() => setRestTurn((n) => n + 1), 70_000);
+    return () => clearInterval(t);
+  }, [still]);
+
   const items: PlacedCritter[] = [];
   for (const m of members) {
     const seat = room?.seats[m.key];
@@ -253,6 +270,8 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       y: spot.y,
       // a cat on a break naps now and then instead of hopping about
       state: desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
+      // the lounge isn't all coffee: each cat has its own way of resting (it changes now and then)
+      pose: desk ? undefined : restPose(m.key, restTurn),
       say: asks[m.key]?.length ? "" : (chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : "")),
     });
   }
@@ -288,7 +307,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
                   return row.length ? (
                     <div key={role} className={`of-row of-row-${role}`}>
                       {row.map((m) => (
-                        <Desk key={m.key} m={m} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
+                        <Desk key={m.key} m={m} asking={!!asks[m.key]?.length} onOpen={() => openIn(m.project.id, { name: "agent", id: m.agent.id })} />
                       ))}
                     </div>
                   ) : null;
