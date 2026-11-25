@@ -1228,6 +1228,8 @@ pub struct TeamManager {
     launches: Mutex<HashMap<String, u64>>,
     /// teams whose 총괄 is writing its hand-over memo ("새 대화") → when it was asked
     renewing: Mutex<HashMap<String, u64>>,
+    /// "project/agent" whose long conversation is being handed over to a new one (mid-card) → its state
+    handovers: Mutex<HashMap<String, Handover>>,
     watchdog: std::sync::Once,
 }
 
@@ -1690,6 +1692,55 @@ const RENEW_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 const RENEW_CONTEXT: u64 = 170_000;
 /// A worker's earlier conversation this big isn't continued for a follow-up: it starts fresh with a summary.
 const FRESH_CONTEXT: u64 = 150_000;
+/// A 작업자·팀장 whose conversation grows past this in the middle of its card is handed over to a new
+/// one in the same folder (see `TeamManager::begin_handover`). Every turn re-reads the whole conversation.
+const WORKER_CONTEXT: u64 = 150_000;
+/// How long a 작업자's hand-over waits for its summary before the new conversation starts without it.
+const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// The longest summary carried into the new conversation.
+const HANDOVER_MEMO_MAX: usize = 4000;
+
+/// Where a 작업자·팀장 conversation handover is: its turn is stopped first, then it writes the summary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HandoverPhase {
+    Stopping,
+    Summarizing,
+}
+
+/// A running handover, by "project/agent". `started` tells a late timeout apart from the current one.
+#[derive(Debug, Clone, Copy)]
+struct Handover {
+    phase: HandoverPhase,
+    started: u64,
+}
+
+/// The member is on its own card that is still running (not reported, not finished) and working now.
+fn on_running_card(a: &Agent, tasks: &[Task]) -> bool {
+    a.status == "work" && a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "running")
+}
+
+/// Whether a 작업자·팀장 should move its card to a new conversation now: its conversation is past
+/// `WORKER_CONTEXT` and it is still working on the card. (The 총괄 has its own rule, `RENEW_CONTEXT`.)
+fn handover_due(a: &Agent, tasks: &[Task]) -> bool {
+    a.role != "lead" && a.context >= WORKER_CONTEXT && on_running_card(a, tasks)
+}
+
+/// The summary a handover carries over: trimmed, and capped. Nothing usable → `None` (start with the card alone).
+fn handover_memo(memo: Option<String>) -> Option<String> {
+    memo.map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).map(|m| short(&m, HANDOVER_MEMO_MAX))
+}
+
+/// Back to a fresh conversation on the same card, same folder and branch: the session is cleared, and
+/// the first message carries `note`. The status, the card and the folder are left as they were.
+fn start_fresh_conversation(a: &mut Agent, note: String) {
+    a.session_id.clear();
+    a.context = 0;
+    a.handoff = Some(note);
+    a.activity.clear();
+    a.thought = None;
+    a.pending.clear();
+    a.stuck = None;
+}
 
 fn short(s: &str, n: usize) -> String {
     let s = s.trim();
@@ -1766,7 +1817,7 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), watchdog: std::sync::Once::new() }
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -2607,6 +2658,11 @@ impl TeamManager {
                 let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 // stopped on purpose (paused, clocked out, finished): a turn cut off by that isn't a problem to report
                 let stopped = team.agent(aid).is_some_and(|a| a.status == "off" || a.status == "done");
+                // a 작업자·팀장 being handed over: this turn was the stopped one, or it's the summary
+                if role != "lead" && self.handover_turn_end(team, aid, &result, error) {
+                    self.emit(team);
+                    return;
+                }
                 if stopped && error {
                     if let Some(text) = result.filter(|r| !r.trim().is_empty()) {
                         drop(teams);
@@ -2666,6 +2722,11 @@ impl TeamManager {
                 if let Some(a) = team.agent_mut(aid) {
                     a.context = n;
                 }
+                // a worker's card grown too big: hand it over to a new conversation (mid-turn is fine: it's stopped)
+                if team.agent(aid).is_some_and(|a| handover_due(a, &team.tasks)) && !self.handovers.lock().unwrap().contains_key(&format!("{pid}/{aid}")) {
+                    self.begin_handover(team, aid);
+                    self.emit(team);
+                }
                 return; // nothing to show: no need to wake the screen
             }
             Event::Exit(_) => {}
@@ -2676,6 +2737,13 @@ impl TeamManager {
     fn on_exit(&self, pid: &str, aid: &str, code: Option<u32>) {
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
+        // it died while its conversation was being handed over: the card goes on in a new one (the board keeps it working)
+        let handing = self.handovers.lock().unwrap().remove(&format!("{pid}/{aid}")).is_some();
+        if handing && team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+            self.finish_handover(team, aid, None);
+            self.emit(team);
+            return;
+        }
         let name = team.name_of(aid);
         if let Some(a) = team.agent_mut(aid) {
             a.pty_id = None;
@@ -2952,6 +3020,106 @@ impl TeamManager {
         }
     }
 
+    /// A 작업자·팀장 whose conversation grew past `WORKER_CONTEXT` on its card: its turn is stopped (the
+    /// folder and branch stay), it writes a summary, and a new conversation takes over the card. The
+    /// member stays "작업 중" on the board the whole time.
+    fn begin_handover(&self, team: &mut Team, aid: &str) {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let started = now_ms();
+        self.handovers.lock().unwrap().insert(key.clone(), Handover { phase: HandoverPhase::Stopping, started });
+        let name = team.name_of(aid);
+        team.log(format!("{name}의 대화가 길어져 새 대화로 이어간다."), None);
+        let driver = self.drivers.lock().unwrap().get(&key).cloned();
+        if let Some(d) = driver {
+            d.cancel(); // ends the turn it's on; the end is handled in `handover_turn_end`
+        }
+        self.arm_handover_timeout(&pid, aid, started);
+    }
+
+    /// A turn ended while its conversation is being handed over. The stopped turn is followed by the
+    /// summary request; the summary's end starts the new conversation. Returns false when nothing is
+    /// handed over (or the card is over meanwhile), so the turn is handled as usual.
+    fn handover_turn_end(&self, team: &mut Team, aid: &str, result: &Option<String>, error: bool) -> bool {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let current = self.handovers.lock().unwrap().get(&key).copied();
+        let Some(h) = current else { return false };
+        match h.phase {
+            HandoverPhase::Stopping => {
+                if !team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+                    self.handovers.lock().unwrap().remove(&key);
+                    return false;
+                }
+                let started = now_ms();
+                self.handovers.lock().unwrap().insert(key, Handover { phase: HandoverPhase::Summarizing, started });
+                if self.inject(team, aid, prompts::worker_handover_request()) {
+                    self.arm_handover_timeout(&pid, aid, started);
+                } else {
+                    self.finish_handover(team, aid, None);
+                }
+            }
+            HandoverPhase::Summarizing => {
+                let memo = if error { None } else { result.clone() };
+                self.finish_handover(team, aid, memo);
+            }
+        }
+        true
+    }
+
+    fn arm_handover_timeout(&self, pid: &str, aid: &str, started: u64) {
+        let app = self.app.clone();
+        let (pid2, aid2) = (pid.to_string(), aid.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(HANDOVER_WAIT);
+            if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                m.handover_timeout(&pid2, &aid2, started);
+            }
+        });
+    }
+
+    /// The summary didn't come in time: the new conversation starts with the card alone.
+    fn handover_timeout(&self, pid: &str, aid: &str, started: u64) {
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        let key = format!("{pid}/{aid}");
+        if self.handovers.lock().unwrap().get(&key).map(|h| h.started) != Some(started) {
+            return; // it moved on, or a later handover replaced this one
+        }
+        if team.agent(aid).is_some_and(|a| on_running_card(a, &team.tasks)) {
+            self.finish_handover(team, aid, None);
+        } else {
+            // paused or finished meanwhile: nothing to carry on
+            self.handovers.lock().unwrap().remove(&key);
+        }
+        self.emit(team);
+    }
+
+    /// Ends the member's old conversation and starts a new one on the same card (same folder and
+    /// branch), with its summary `memo` (if any) as the note after the card. Status and card stay.
+    fn finish_handover(&self, team: &mut Team, aid: &str, memo: Option<String>) {
+        let pid = team.project.id.clone();
+        self.handovers.lock().unwrap().remove(&format!("{pid}/{aid}"));
+        self.kill_driver(&pid, aid);
+        let memo = handover_memo(memo);
+        if let Some(a) = team.agent_mut(aid) {
+            start_fresh_conversation(a, prompts::worker_handover_start(memo.as_deref()));
+        }
+        let name = team.name_of(aid);
+        match self.launch_agent(team, aid, None) {
+            Ok(()) => team.log(
+                if memo.is_some() { format!("{name}이(가) 새 대화로 이어서 한다 (요약 전달).") } else { format!("{name}이(가) 새 대화로 이어서 한다 (요약 없이 카드만).") },
+                None,
+            ),
+            Err(e) => {
+                if let Some(a) = team.agent_mut(aid) {
+                    a.stuck = Some("새 대화를 시작하지 못했어요".into());
+                }
+                team.log(format!("{name}: 새 대화를 시작하지 못했어요 ({e})."), Some("block"));
+            }
+        }
+    }
+
     pub fn lead_send(&self, pid: &str, text: String) -> Result<(), String> {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
@@ -3005,6 +3173,10 @@ impl TeamManager {
     fn deliver(&self, team: &mut Team, aid: &str, text: &str) -> Result<Delivery, String> {
         let pid = team.project.id.clone();
         let key = format!("{pid}/{aid}");
+        // a message sent now would land in the summary turn (and be lost with the old conversation)
+        if self.handovers.lock().unwrap().contains_key(&key) {
+            return Err("이 팀원은 지금 대화를 이어가는 중이에요. 잠시 뒤에 다시 전해 주세요.".into());
+        }
         let name = team.name_of(aid);
         let worker = team.agent(aid).is_some_and(|a| a.role == "worker");
         let live = self.drivers.lock().unwrap().contains_key(&key) || team.agent(aid).is_some_and(|a| a.pty_id.is_some());
@@ -5268,5 +5440,125 @@ mod copy_cleanup_tests {
         assert!(copy("run-t-2").exists(), "unmerged work keeps its folder");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod handover_tests {
+    use super::*;
+
+    fn worker(role: &str, status: &str, stage: &str, context: u64) -> (Agent, Vec<Task>) {
+        let agent = Agent {
+            id: "w1".into(),
+            name: "W1".into(),
+            role: role.into(),
+            kind: "claude".into(),
+            model: String::new(),
+            effort: String::new(),
+            status: status.into(),
+            task_id: Some("t-1".into()),
+            parent_id: None,
+            pty_id: None,
+            cwd: "/work/t-1".into(),
+            branch: Some("prism/run/t-1".into()),
+            session_id: "old-session".into(),
+            cost_usd: 0.0,
+            started_at: 0,
+            status_since: 0,
+            last_note: None,
+            structured: true,
+            activity: vec![],
+            thought: None,
+            last_active: 0,
+            stuck: None,
+            resume_as: None,
+            context,
+            rest_since: None,
+            handoff: None,
+            ready: true,
+            pending: vec![],
+            children: 0,
+        };
+        let task = Task {
+            id: "t-1".into(),
+            title: "카드".into(),
+            goal: "목표".into(),
+            files: vec![],
+            done_when: vec![],
+            requested_by: "lead".into(),
+            assignee: Some("w1".into()),
+            role: "worker".into(),
+            model: None,
+            stage: stage.into(),
+            summary: None,
+            branch: None,
+            base: None,
+            created_at: 0,
+            updated_at: 0,
+            follow_of: None,
+            who: None,
+        };
+        (agent, vec![task])
+    }
+
+    #[test]
+    fn a_worker_on_a_running_card_past_the_limit_is_handed_over() {
+        let (a, tasks) = worker("worker", "work", "running", WORKER_CONTEXT);
+        assert!(handover_due(&a, &tasks));
+        let (mgr, tasks) = worker("mgr", "work", "running", WORKER_CONTEXT + 1);
+        assert!(handover_due(&mgr, &tasks), "팀장도 같은 상한을 따른다");
+    }
+
+    #[test]
+    fn nothing_is_handed_over_below_the_limit_or_when_it_should_not_be() {
+        let (under, tasks) = worker("worker", "work", "running", WORKER_CONTEXT - 1);
+        assert!(!handover_due(&under, &tasks));
+        let (lead, tasks) = worker("lead", "work", "running", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&lead, &tasks), "총괄은 자기 규칙(RENEW_CONTEXT)으로 간다");
+        let (waiting, tasks) = worker("worker", "block", "running", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&waiting, &tasks), "허락을 기다리는 중에는 멈추지 않는다");
+        let (reported, tasks) = worker("worker", "work", "review", WORKER_CONTEXT * 2);
+        assert!(!handover_due(&reported, &tasks), "보고가 끝난 카드는 넘기지 않는다");
+    }
+
+    #[test]
+    fn the_summary_is_trimmed_capped_and_dropped_when_empty() {
+        assert_eq!(handover_memo(None), None);
+        assert_eq!(handover_memo(Some(" \n  ".into())), None);
+        assert_eq!(handover_memo(Some("  요약  ".into())), Some("요약".into()));
+        let long = handover_memo(Some("가".repeat(HANDOVER_MEMO_MAX + 500))).unwrap();
+        assert_eq!(long.chars().count(), HANDOVER_MEMO_MAX + 1, "상한 뒤에 … 하나");
+    }
+
+    #[test]
+    fn the_new_conversation_keeps_the_card_folder_branch_and_status() {
+        let (mut a, _) = worker("worker", "work", "running", WORKER_CONTEXT + 10_000);
+        start_fresh_conversation(&mut a, "NOTE".into());
+        assert!(a.session_id.is_empty(), "예전 대화는 이어 붙지 않는다");
+        assert_eq!(a.context, 0);
+        assert_eq!(a.handoff.as_deref(), Some("NOTE"));
+        assert_eq!(a.status, "work", "사무실에서 계속 일하는 것으로 보여야 한다");
+        assert_eq!(a.task_id.as_deref(), Some("t-1"));
+        assert_eq!(a.cwd, "/work/t-1");
+        assert_eq!(a.branch.as_deref(), Some("prism/run/t-1"));
+        assert!(a.stuck.is_none());
+    }
+
+    #[test]
+    fn the_note_says_whether_a_summary_came_and_the_request_asks_for_paths_not_images() {
+        let with = prompts::worker_handover_start(Some("바꾼 파일: src/a.rs"));
+        assert!(with.contains("바꾼 파일: src/a.rs") && with.contains("git"));
+        let without = prompts::worker_handover_start(None);
+        assert!(without.contains("새로 시작") && !without.contains("요약을"));
+        let ask = prompts::worker_handover_request();
+        assert!(ask.contains("파일 경로") && ask.contains("이미지"));
+    }
+
+    #[test]
+    fn on_a_running_card_means_working_on_it_now() {
+        let (a, tasks) = worker("worker", "off", "running", 0);
+        assert!(!on_running_card(&a, &tasks), "일시정지된 팀원은 아니다");
+        let (b, _) = worker("worker", "work", "running", 0);
+        assert!(!on_running_card(&b, &[]), "카드가 없으면 아니다");
     }
 }
