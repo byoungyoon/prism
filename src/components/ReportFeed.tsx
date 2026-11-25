@@ -15,6 +15,7 @@ import type { EngineDef } from "../engines/types";
 import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
 import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
+import { CardUsageText } from "./TokenUse";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -459,6 +460,7 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
         ) : (
           <span>맡을 사람을 기다려요</span>
         )}
+        <CardUsageText team={team} taskId={task.id} />
         {!finished && last && (
           <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11.5px]">
             <span aria-hidden="true">›</span>

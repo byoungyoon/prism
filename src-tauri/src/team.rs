@@ -1172,6 +1172,8 @@ pub struct TeamSnapshot {
     pub chat: Vec<ChatMsg>,
     pub events: Vec<LogEvent>,
     pub cost_usd: f64,
+    /// tokens used: today's totals, and per card (filled in by `TeamManager::with_usage`)
+    pub usage: crate::tokens::TeamUsage,
 }
 
 /// What survives an app restart (agents come back stopped, with their session ids).
@@ -1228,6 +1230,8 @@ pub struct TeamManager {
     launches: Mutex<HashMap<String, u64>>,
     /// teams whose 총괄 is writing its hand-over memo ("새 대화") → when it was asked
     renewing: Mutex<HashMap<String, u64>>,
+    /// tokens each turn used, per day / team / card / member / model (saved in usage.json)
+    tokens: Mutex<crate::tokens::Ledger>,
     watchdog: std::sync::Once,
 }
 
@@ -1772,6 +1776,7 @@ impl Team {
             },
             events: self.events.iter().take(SNAPSHOT_EVENTS).cloned().collect(),
             cost_usd: self.cost(),
+            usage: Default::default(),
         }
     }
 }
@@ -1779,7 +1784,17 @@ impl Team {
 impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), watchdog: std::sync::Once::new() }
+        let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+    }
+
+    /// Adds the token figures a team's screens show to its snapshot.
+    fn with_usage(&self, mut snap: TeamSnapshot) -> TeamSnapshot {
+        let mut usage = self.tokens.lock().unwrap().summary(&snap.project_id);
+        // only the cards the team still lists: the snapshot goes out on every change
+        usage.cards.retain(|c| snap.tasks.iter().any(|t| t.id == c.task_id));
+        snap.usage = usage;
+        snap
     }
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
@@ -1787,7 +1802,7 @@ impl TeamManager {
     fn emit(&self, team: &Team) {
         let pid = team.project.id.clone();
         self.dirty.lock().unwrap().insert(pid.clone());
-        let first = self.outbox.lock().unwrap().insert(pid.clone(), team.snapshot()).is_none();
+        let first = self.outbox.lock().unwrap().insert(pid.clone(), self.with_usage(team.snapshot())).is_none();
         if !first {
             return;
         }
@@ -2000,14 +2015,15 @@ impl TeamManager {
     }
 
     pub fn snapshot(&self, pid: &str) -> Option<TeamSnapshot> {
-        self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())
+        let snap = self.teams.lock().unwrap().get(pid).map(|t| t.snapshot())?;
+        Some(self.with_usage(snap))
     }
 
     pub fn start(&self, project: Project, cwd: String, homes: HashMap<String, Option<String>>) -> Result<TeamSnapshot, String> {
         let mut teams = self.teams.lock().unwrap();
         if let Some(t) = teams.get_mut(&project.id) {
             if t.agents.iter().any(|a| a.role == "lead" && a.status != "off" && a.status != "done") {
-                return Ok(t.snapshot());
+                return Ok(self.with_usage(t.snapshot()));
             }
             // a saved (stopped) team: same history, sessions continue
             if t.agents.iter().any(|a| a.role == "lead") {
@@ -2019,7 +2035,7 @@ impl TeamManager {
                 }
                 t.homes = homes;
                 self.resume_team(t);
-                let snap = t.snapshot();
+                let snap = self.with_usage(t.snapshot());
                 self.emit(t);
                 return Ok(snap);
             }
@@ -2053,7 +2069,7 @@ impl TeamManager {
         team.homes = homes;
         self.spawn_agent(&mut team, "lead", None, None)?;
         team.log("팀이 출근했다. 총괄이 지시를 기다린다.", None);
-        let snap = team.snapshot();
+        let snap = self.with_usage(team.snapshot());
         let _ = self.app.emit("team://snapshot", &snap);
         teams.insert(team.project.id.clone(), team);
         Ok(snap)
@@ -2617,6 +2633,9 @@ impl TeamManager {
             }
             Event::TurnEnd { result, cost, error } => {
                 let role = team.agent(aid).map(|a| a.role.clone()).unwrap_or_default();
+                // a turn ended: checked for a huge conversation and for a burst of turns (see tokens.rs)
+                let (name, task) = team.agent(aid).map(|a| (a.name.clone(), a.task_id.clone())).unwrap_or_default();
+                self.tokens.lock().unwrap().turn_end(pid, aid, &name, task.as_deref(), now_ms());
                 let permission_turn = self.permission_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 let report = self.report_turns.lock().unwrap().remove(&format!("{pid}/{aid}"));
                 // stopped on purpose (paused, clocked out, finished): a turn cut off by that isn't a problem to report
@@ -2680,7 +2699,17 @@ impl TeamManager {
                 if let Some(a) = team.agent_mut(aid) {
                     a.context = n;
                 }
+                self.tokens.lock().unwrap().note_context(pid, aid, n);
                 return; // nothing to show: no need to wake the screen
+            }
+            Event::Tokens { model, input, output, cache_read, cache_write, context } => {
+                // a model the CLI didn't name is the member's own
+                if let Some(a) = team.agent(aid) {
+                    let model = if model.is_empty() { a.model.clone() } else { model };
+                    let b = crate::tokens::Bucket { input, output, cache_read, cache_write };
+                    self.tokens.lock().unwrap().add(pid, aid, &a.name, a.task_id.as_deref(), &model, b, context);
+                }
+                return; // the turn's end (next) shows it
             }
             Event::Exit(_) => {}
         }
