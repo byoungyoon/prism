@@ -247,11 +247,12 @@
   pointer-events: none;
   contain: layout paint;
 }
+/* (no standing will-change: a layer of its own for every cat, kept forever, is what WebKit sometimes
+   left unpainted — the walk itself still runs on the compositor while it lasts) */
 .cr-mover {
   position: absolute;
   left: 0;
   top: 0;
-  will-change: transform;
   transition-property: transform;
   transition-timing-function: linear;
 }
@@ -325,17 +326,18 @@
   91.5%, 96% { transform: scaleX(-1); }
   97.5% { transform: none; }
 }
-/* a cat that arrives pops in with a little bounce */
+/* a cat that arrives pops in with a little bounce — size only, never see-through: a pop that
+   stalls (a hidden window, a busy web view) leaves a small cat, not an invisible one */
 .cr-in {
   display: flex;
   flex-direction: column;
   align-items: center;
   transform-origin: 50% 100%;
-  animation: cr-in 0.5s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+  animation: cr-in 0.5s cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 @keyframes cr-in {
-  0% { opacity: 0; transform: translateY(6px) scale(0.6); }
-  100% { opacity: 1; transform: none; }
+  0% { transform: translateY(6px) scale(0.6); }
+  100% { transform: none; }
 }
 /* one that leaves walks to the door, fading on the way */
 .cr-leaving {

@@ -1,7 +1,7 @@
 // A little teammate: a pixel cat (pixel/). The pose picks the motion — a row of its sprite sheet,
 // played with CSS steps — the state its feeling (face and the sign over its head), the name (or
 // colorKey) its coat. No role props: a role shows as its name tag.
-import { memo, type CSSProperties } from "react";
+import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
 import { FH, FW, type Row } from "./pixel/art";
 import { coatOf } from "./pixel/coats";
@@ -75,13 +75,45 @@ function feelOf(state: CritterState, name: string): Feel {
   }
 }
 
+/** sprite strips already decoded, ready to paint at once */
+const decoded = new Set<string>();
+
+/**
+ * The strip to show: `url` once the browser has decoded it, the last decoded one until then.
+ * (A cat's picture changes with its state — at work, asking, done. Swapped in before it was decoded,
+ * the app's web view (WebKit) sometimes painted the cat's layer empty and never repainted it: a cat
+ * at its desk vanished until something redrew the whole screen, like going to another tab.)
+ */
+function useDecoded(url: string, n: number, ms: number): { url: string; n: number; ms: number } {
+  const want = { url, n, ms };
+  const [shown, setShown] = useState(want);
+  const ready = !url || decoded.has(url);
+  useEffect(() => {
+    if (ready) {
+      if (shown.url !== url || shown.n !== n || shown.ms !== ms) setShown({ url, n, ms });
+      return;
+    }
+    let live = true;
+    const img = new Image();
+    img.src = url;
+    const done = () => {
+      decoded.add(url);
+      if (live) setShown({ url, n, ms });
+    };
+    img.decode().then(done, done);
+    return () => {
+      live = false;
+    };
+  }, [url, n, ms, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  return ready ? want : shown;
+}
+
 function PixelCat({ name, role, state, pose, size, flip, dir, label, className, colorKey }: CritterLook & { pose: Pose; size: number; flip?: boolean; dir?: WalkDir; label?: string; className?: string; colorKey?: string }) {
   const coat = coatOf(colorKey ?? name, role);
   const m = MOTION[pose];
   const row: Row = pose === "walk" ? (dir ?? "side") : m.row;
   const feel = feelOf(state, name);
-  const url = strip(coat, row, m.frames, feel);
-  const n = m.frames.length;
+  const { url, n, ms } = useDecoded(strip(coat, row, m.frames, feel), m.frames.length, m.ms);
   // whole pixels only: each dot of the drawing is s × s screen pixels. `size` is how tall the cat
   // should look; the drawn cat is about 20 of the frame's FH dots (the rest is room for the signs)
   const s = Math.max(1, Math.round(size / 20));
@@ -90,7 +122,7 @@ function PixelCat({ name, role, state, pose, size, flip, dir, label, className, 
     height: FH * s,
     backgroundImage: `url(${url})`,
     backgroundSize: `${n * 100}% 100%`,
-    animationDuration: `${m.ms}ms`,
+    animationDuration: `${ms}ms`,
   };
   return (
     <span
