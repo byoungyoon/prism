@@ -30,6 +30,8 @@ export interface PlacedCritter {
   fidget?: boolean;
   /** the spot moved because the room's layout shifted (the cat stays at the same desk): jump with it instead of walking behind it */
   snap?: boolean;
+  /** where it comes in from when it first appears: it starts there and walks to its spot */
+  from?: { x: number; y: number };
 }
 
 const RM = "(prefers-reduced-motion: reduce)";
@@ -57,8 +59,17 @@ if (typeof document !== "undefined") {
 
 const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, still, width, leaving }: { item: PlacedCritter; layer?: string; size: number; speed: number; bubble: boolean; name: boolean; still: boolean; width?: number; leaving?: number }) {
   const o = useOverride(item.id, layer);
-  const x = o?.x ?? item.x;
-  const y = o?.y ?? item.y;
+  // a critter that comes in from somewhere starts there for one painted frame, then heads for its spot
+  const [entered, setEntered] = useState(!item.from || still);
+  useEffect(() => {
+    if (entered) return;
+    let b = 0;
+    const a = requestAnimationFrame(() => (b = requestAnimationFrame(() => setEntered(true))));
+    return () => (cancelAnimationFrame(a), cancelAnimationFrame(b));
+  }, [entered]);
+  const start = !entered && item.from;
+  const x = start ? start.x : (o?.x ?? item.x);
+  const y = start ? start.y : (o?.y ?? item.y);
   const tracing = !!o?.draw;
   const pace = o?.speed ?? item.speed ?? speed;
   // The walk is worked out while rendering, so the new spot and the time to get there reach the

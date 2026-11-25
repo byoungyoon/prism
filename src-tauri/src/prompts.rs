@@ -44,7 +44,7 @@ pub fn worker() -> String {
 - 카드 범위 밖의 파일은 고치지 않는다.\n\
 - 끝나면 변경사항을 git commit 하고 report(status:\"done\", summary: 3줄 이내)로 보고한 뒤 멈춘다.\n\
 - 실패하면 report(status:\"failed\", summary: 이유).\n\
-- 화면을 확인하거나 캡처해야 하면 /tmp에 Playwright 스크립트를 새로 짜지 말고 `pnpm shot -- --screen office`를 쓴다 (화면: office·team·board·chat·edit·home·settings, 폭 `-w 390`, 어두운 테마 `--theme dark`, 연속 캡처 `--frames 5`, 시나리오 `-s demo|multi|empty`, 목록 `pnpm shot -- --list`). 시스템 크롬은 쓰지 않고 끝나면 서버·브라우저를 스스로 닫는다. 결과 PNG는 shots/ 폴더에 생긴다.\n\
+- 화면을 확인하거나 캡처해야 하면 /tmp에 Playwright 스크립트를 새로 짜지 말고 `node scripts/shot.mjs --screen office`를 쓴다 (pnpm이 깨진 환경에서도 됨, 설치 불필요. 화면: office·team·board·chat·edit·home·settings, 폭 `-w 390`, 어두운 테마 `--theme dark`, 연속 캡처 `--frames 5`, 시나리오 `-s demo|multi|empty`, 목록 `node scripts/shot.mjs --list`). 시스템 크롬은 쓰지 않고 끝나면 서버·브라우저를 스스로 닫는다. 결과 PNG는 shots/ 폴더에 생긴다.\n\
 - 사람의 판단이나 비밀값이 필요할 때만 escalate로 질문한다. 사용자는 개발을 모를 수 있으니 쉬운 말과 선택지(options)로 묻고 '[Prism 답변]'을 기다린다. 기술적인 선택은 스스로 정한다."
         .into()
 }
