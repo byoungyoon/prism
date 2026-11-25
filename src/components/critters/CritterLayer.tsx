@@ -6,6 +6,7 @@ import type { Agent, Task } from "../../lib/api";
 import { Critter, type CritterLook, type WalkDir } from "./Critter";
 import { useOverride } from "./critterStore";
 import { critterLine, critterState, type CritterState, type Pose } from "./state";
+import { catName } from "./pixel/coats";
 
 export interface PlacedCritter {
   /** key for overrides (critters.send(id, …)); usually the agent id */
@@ -112,7 +113,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
   const real = item.state ?? (item.agent ? critterState(item.agent, item.task) : (item.look?.state ?? "idle"));
   const state: CritterState = moving ? "walk" : (o?.state ?? real);
   const say = o?.say ?? item.say ?? (item.agent ? critterLine(item.agent, item.task) : "");
-  const label = item.agent?.name ?? item.look?.name ?? "";
+  const label = (item.agent ? catName(item.agent) : item.look?.name) ?? "";
   const h = hash(item.id);
   // fidgets come every 9–16 s, each cat on its own beat
   const fidget = item.fidget && !moving ? { "--fd": `${-(h % 9000)}ms`, "--fdur": `${9 + (h % 8)}s` } : undefined;

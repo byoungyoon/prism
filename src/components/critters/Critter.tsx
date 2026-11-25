@@ -4,7 +4,7 @@
 import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
 import { FH, FW, type Row } from "./pixel/art";
-import { coatOf } from "./pixel/coats";
+import { catName, coatOf } from "./pixel/coats";
 import type { Feel } from "./pixel/faces";
 import { strip } from "./pixel/render";
 import { critterState, POSE_OF, STATE_WORD, type CritterState, type Pose } from "./state";
@@ -153,7 +153,7 @@ export const Critter = memo(function Critter({ agent, task, look, colorKey, stat
       size={size}
       flip={flip}
       dir={dir}
-      label={labelled ? `${name} · ${STATE_WORD[st]}` : undefined}
+      label={labelled ? `${agent ? catName(agent) : name} · ${STATE_WORD[st]}` : undefined}
       className={className}
       colorKey={colorKey}
     />

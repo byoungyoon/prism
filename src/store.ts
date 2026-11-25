@@ -5,6 +5,7 @@ import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
+import { catName } from "./components/critters/pixel/coats";
 
 export type View =
   | { name: "home" }
@@ -404,7 +405,8 @@ const announceAsks = (snap: TeamSnapshot, projectName: string) => {
   if (!fresh.length) return;
   fresh.forEach((m) => announced.add(keyOf(m.id)));
   const first = fresh[0].permission!;
-  const who = snap.agents.find((a) => a.id === first.agentId)?.name ?? "팀원";
+  const ag = snap.agents.find((a) => a.id === first.agentId);
+  const who = ag ? catName(ag) : "팀원";
   const body = fresh.length > 1 ? `허락이 필요한 일 ${fresh.length}건` : `${who} · ${plainAction(first.tool, first.detail)}`;
   void notifyUser(`${projectName} · 허락이 필요해요`, body);
 };
