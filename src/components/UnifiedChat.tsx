@@ -76,7 +76,7 @@ export function UnifiedChat() {
     const out: Item[] = cards.map((card) => ({ key: `batch-${card.batch.id}`, at: card.batch.sentAt, card }));
     for (const { project, team } of shown) {
       for (const m of team.chat) {
-        if (m.kind === "system" || m.kind === "permission" || absorbed.has(absorbKey(project.id, m))) continue;
+        if (m.kind === "system" || m.kind === "divider" || m.kind === "permission" || absorbed.has(absorbKey(project.id, m))) continue;
         if (m.kind === "me") {
           const text = m.text.split(ATTACH_MARK)[0];
           const twin = out.find(
@@ -225,6 +225,7 @@ export function UnifiedChat() {
 
   return (
     <section
+      data-critter-anchor="lead"
       aria-label="총괄 채팅"
       className="glass flex max-w-[520px] min-w-0 flex-[1_1_460px] flex-col overflow-hidden rounded-2xl"
       onDragOver={(e) => {

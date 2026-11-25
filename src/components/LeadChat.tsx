@@ -51,6 +51,7 @@ export function EscalationCard({ m, team, projectId }: { m: ChatMsg; team: TeamS
   const done = e.answer != null;
   return (
     <div
+      data-critter-anchor={done ? undefined : `ask:${projectId}:${e.agentId}`}
       className="flex flex-col gap-2.5 rounded-[14px] px-[13px] py-3"
       style={done ? { background: "var(--glass2)", border: "1px solid var(--line)", opacity: 0.75 } : { background: "var(--block-bg)", border: "1px solid var(--block)" }}
     >
@@ -342,6 +343,44 @@ export function BranchTag({ team }: { team?: TeamSnapshot }) {
   );
 }
 
+/** "총괄 대화 새로 시작": the 총괄 hands over to a fresh conversation (lighter on tokens). */
+function RenewLead({ projectId, className, label }: { projectId: string; className?: string; label?: string }) {
+  const setError = useApp((s) => s.setError);
+  const [busy, setBusy] = useState(false);
+  const renew = async () => {
+    setBusy(true);
+    try {
+      await api.renewLead(projectId);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      onClick={() => void renew()}
+      disabled={busy}
+      aria-label="총괄 대화 새로 시작"
+      title="총괄 대화 새로 시작 · 총괄이 인수인계 메모를 쓰고 새 대화로 이어가요 (카드·팀원은 그대로)"
+      className={className}
+    >
+      {busy ? "…" : (label ?? "↻")}
+    </button>
+  );
+}
+
+/** The chat has grown long: say so, and offer a fresh start. */
+const LONG_CHAT = 40;
+function LongChatBar({ projectId }: { projectId: string }) {
+  return (
+    <div role="status" className="mx-3 mt-2 flex items-center gap-2 rounded-xl px-3 py-2 text-[12.5px]" style={{ background: "var(--chip)" }}>
+      <span className="min-w-0 flex-auto">대화가 길어졌어요. 새로 시작하면 가벼워져요.</span>
+      <RenewLead projectId={projectId} label="새로 시작" className="shrink-0 rounded-full border-0 px-3 py-1 text-[12px] font-semibold disabled:opacity-60" />
+    </div>
+  );
+}
+
 /** The team's own controls, at the right of its 총괄 header: preset, settings, clock-out. */
 export function TeamControls({ project, team }: { project: Project; team?: TeamSnapshot }) {
   const stopTeam = useApp((s) => s.stopTeam);
@@ -352,6 +391,7 @@ export function TeamControls({ project, team }: { project: Project; team?: TeamS
   return (
     <div data-nodrag className="relative flex shrink-0 items-center gap-0.5">
       <PresetMenu project={project} />
+      {running && <RenewLead projectId={project.id} className={btn} />}
       <button onClick={() => openIn(project.id, { name: "settings" })} aria-label={`${project.name} 팀 설정`} title="팀 설정" className={btn}>
         <Gear size={15} />
       </button>
@@ -429,6 +469,9 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const pendingPerms = chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length;
   const waiting = pendingPerms + chat.filter((m) => m.escalation && !m.escalation.answer).length;
   const active = !multi || projectId === current;
+  // turns since the last "여기서부터 새 대화" divider
+  const sinceDivider = chat.length - 1 - chat.map((m) => m.kind).lastIndexOf("divider");
+  const longChat = live && sinceDivider >= LONG_CHAT;
   /** make this the team the report feed and board show */
   const openTeam = () => {
     if (multi && projectId && projectId !== current) switchTeam(projectId);
@@ -544,6 +587,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   return (
     <section
       ref={sectionRef}
+      data-critter-anchor={`lead:${projectId}`}
       aria-label={multi ? `${project?.name ?? ""} 총괄 채팅` : "총괄 채팅"}
       className={`glass flex min-w-0 flex-col overflow-hidden rounded-2xl transition-shadow ${multi ? "min-h-[240px] flex-[1_1_0]" : "max-w-[460px] flex-[1_1_400px]"}`}
       style={multi ? { boxShadow: active ? "0 0 0 1.5px var(--amber), var(--shadow-sm)" : "var(--shadow-sm), var(--hi)" } : undefined}
@@ -603,6 +647,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
         {project && <TeamControls project={project} team={team} />}
       </div>
 
+      {longChat && projectId && <LongChatBar projectId={projectId} />}
       {chat.some((m) => m.kind === "report") && <ChatFilter value={view} onChange={setView} />}
       <div ref={scrollRef} className="flex flex-auto flex-col gap-3 overflow-y-auto p-3.5">
         {chat.length === 0 && (
@@ -627,6 +672,14 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                   </motion.div>
                 );
               if (m.kind === "permission") return null; // gathered in the report feed
+              if (m.kind === "divider")
+                return (
+                  <div key={m.id} role="separator" className="flex items-center gap-2 text-[11.5px] text-ink-2">
+                    <span className="h-px flex-auto" style={{ background: "var(--line)" }} />
+                    {m.text}
+                    <span className="h-px flex-auto" style={{ background: "var(--line)" }} />
+                  </div>
+                );
               if (view === "chat" && m.kind === "report") return null;
               if (view === "report" && m.kind !== "report") return null;
               if (m.kind === "escalation")

@@ -138,7 +138,7 @@ export interface Permission {
 export interface ChatMsg {
   id: number;
   /** "report": the 총괄's reply to a worker's report (taskIds[0] is that card) */
-  kind: "me" | "lead" | "report" | "escalation" | "permission" | "system";
+  kind: "me" | "lead" | "report" | "escalation" | "permission" | "system" | "divider";
   text: string;
   taskIds: string[];
   at: number;
@@ -345,6 +345,8 @@ export const api = {
   stopTeam: (projectId: string) => call<void>("team_stop", { projectId }),
   getTeam: (projectId: string) => call<TeamSnapshot | null>("team_get", { projectId }),
   sendToLead: (projectId: string, text: string) => call<void>("lead_send", { projectId, text }),
+  /** end the 총괄's conversation and start a fresh one: it writes a hand-over memo first (cards and workers stay) */
+  renewLead: (projectId: string) => call<void>("lead_renew", { projectId }),
   /** one order to several teams: the batch keeps track of them and makes a summary when all are done */
   batchCreate: (projectIds: string[], text: string) => call<Batch>("batch_create", { projectIds, text }),
   batchList: () => call<Batch[]>("batch_list"),

@@ -2,7 +2,7 @@
 // each with the card they hold. (The work itself, with results, is in the report feed.)
 // Below: one merged progress log.
 import { useState } from "react";
-import { useApp, useShownTeams, waitsForMe } from "../store";
+import { isLive, useApp, useShownTeams, waitsForMe } from "../store";
 import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
@@ -34,6 +34,7 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
   const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
   return (
     <button
+      data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}
       title={`${a.name} 작업 화면 · ${modelLabel(a.model)}`}
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
@@ -59,7 +60,11 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
 /** Every shown team's people, floor by floor, and one merged progress log. */
 export function TaskBoard() {
   const openIn = useApp((s) => s.openIn);
-  const shown = useShownTeams();
+  // teams whose 총괄 went home (off) stay out of the whole board, counts included
+  const shown = useShownTeams().filter(({ team }) => {
+    const lead = team.agents.find((a) => a.role === "lead");
+    return lead ? lead.status !== "off" : isLive(team);
+  });
   const multi = shown.length > 1;
   const [logOpen, setLogOpen] = useState(true);
   const [doneOpen, setDoneOpen] = useState(false);
@@ -90,7 +95,8 @@ export function TaskBoard() {
       </div>
 
       <div className="flex min-h-0 flex-auto flex-col overflow-y-auto px-2 pb-3">
-        {FLOORS.map((f) => {
+        {shown.length === 0 && <span className="px-2 py-3 text-[12px] text-ink-2">출근한 팀이 없어요</span>}
+        {shown.length > 0 && FLOORS.map((f) => {
           const groups = shown.map(({ project, team }) => ({ project, team, list: members(team, f.role) })).filter((g) => g.list.length);
           const n = groups.reduce((k, g) => k + g.list.length, 0);
           return (
@@ -159,7 +165,7 @@ export function TaskBoard() {
         )}
       </div>
 
-      <div className="flex max-h-[38%] min-h-0 flex-col max-[820px]:max-h-[26%]" style={{ borderTop: "1px solid var(--line)" }}>
+      {shown.length > 0 && <div className="flex max-h-[38%] min-h-0 flex-col max-[820px]:max-h-[26%]" style={{ borderTop: "1px solid var(--line)" }}>
         <button onClick={() => setLogOpen((v) => !v)} aria-expanded={logOpen} className="flex items-center gap-1.5 border-0 bg-transparent px-4 pt-2.5 pb-1.5 text-left text-[13px] font-semibold">
           진행 기록
           <span className="text-[11.5px] font-normal text-ink-2">{events.length}</span>
@@ -181,7 +187,7 @@ export function TaskBoard() {
             {events.length === 0 && <li className="text-[12px] text-ink-2">아직 기록이 없어요</li>}
           </ol>
         )}
-      </div>
+      </div>}
     </section>
   );
 }

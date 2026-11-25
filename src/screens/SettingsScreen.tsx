@@ -332,7 +332,7 @@ export function SettingsScreen() {
 
         <Card title="캐릭터 보기" aside={<Switch on={critters} onChange={setCritters} label="팀원 캐릭터 보기" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">
-            팀원들을 동글동글한 캐릭터로 보여줘요. 작업 보드와 진행 표시에 나오고, 화면 아래 작업장에서 일하는 팀원들이 오가요. 이 기기에만 적용되고, 기기에서 &lsquo;동작 줄이기&rsquo;를 켜두면 움직임은 멈춰요.
+            팀원들을 동글동글한 캐릭터로 보여줘요. 앱 화면 곳곳을 돌아다니며 자기 일이 있는 곳(작업 보드, 보고, 허락 요청, 편집 화면)으로 걸어가요. 이 기기에만 적용되고, 기기에서 &lsquo;동작 줄이기&rsquo;를 켜두면 움직임은 멈춰요.
           </span>
         </Card>
 

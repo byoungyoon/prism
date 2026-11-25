@@ -9,13 +9,18 @@
 // stageDirector.after(frame) once loaded. Only that path (team changes) gets a show: the person's
 // own edits never go through it. Nothing happens unless an editor overlay attached a cast
 // (EditorCritters), which says whether critters are on and motion is allowed.
-import { critters } from "../components/critters";
+import type { CritterState } from "../components/critters";
 import { diff, readModel, restoreView, type Change, type Model } from "./changes";
 import { deckApi, engineView, figApi, type Box, type Spot } from "./locate";
 
 export interface ShowCast {
   engine: string;
-  layer: string;
+  /** moves the critters; positions are in the overlay box's pixels */
+  ctl: {
+    trace(id: string, x: number, y: number): void;
+    setState(id: string, state: CritterState | null): void;
+    say(id: string, text: string | null): void;
+  };
   /** the overlay box over the frame; the cover and ink canvases live in it */
   box: HTMLElement;
   cover: HTMLCanvasElement;
@@ -187,27 +192,27 @@ async function play(c: ShowCast, changes: Change[], show: { stopped: boolean }, 
     const r = ch.rect;
     const who = c.drawer(i);
     const ms = Math.max(320, want[i] * fit);
-    const trace = (p: Spot) => who && critters.trace(who.id, feet(p).x, feet(p).y, c.layer);
+    const trace = (p: Spot) => who && c.ctl.trace(who.id, feet(p).x, feet(p).y);
     const color = who?.color ?? "#e8a15a";
     if (who && !used.has(who.id)) {
       used.add(who.id);
       c.busy(who.id, true);
-      critters.say(who.id, "", c.layer);
+      c.ctl.say(who.id, "");
     }
 
     // walk over to where the pen starts
     const start: Spot = ch.kind === "type" ? { x: r.x, y: r.y + r.h / Math.max(1, ch.lines) } : ch.round && ch.kind === "draw" ? { x: r.x + r.w / 2, y: r.y } : { x: r.x, y: r.y };
     const from = (who && c.where(who.id)) || feet(start);
     if (who) {
-      critters.setState(who.id, "walk", c.layer);
+      c.ctl.setState(who.id, "walk");
       const d = Math.hypot(from.x - feet(start).x, from.y - feet(start).y);
       const go = clamp(d / 1.1, 120, 300 * fit + 60);
       await frameLoop(go, show, (t) => {
         const e = ease(t);
         const f = feet(start);
-        critters.trace(who.id, from.x + (f.x - from.x) * e, from.y + (f.y - from.y) * e, c.layer);
+        c.ctl.trace(who.id, from.x + (f.x - from.x) * e, from.y + (f.y - from.y) * e);
       });
-      critters.setState(who.id, "work", c.layer);
+      c.ctl.setState(who.id, "work");
     }
     if (show.stopped) break;
 
@@ -350,7 +355,7 @@ async function play(c: ShowCast, changes: Change[], show: { stopped: boolean }, 
 
   // a little hop from everyone who drew, then back to wandering
   for (const id of used) {
-    critters.setState(id, "done", c.layer);
+    c.ctl.setState(id, "done");
   }
   if (!show.stopped) await sleep(500);
 }
@@ -369,8 +374,8 @@ function finish(c: ShowCast, used: Set<string>) {
     }
   }, 240);
   for (const id of used) {
-    critters.setState(id, null, c.layer);
-    critters.say(id, null, c.layer);
+    c.ctl.setState(id, null);
+    c.ctl.say(id, null);
     c.busy(id, false);
   }
 }

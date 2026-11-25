@@ -48,7 +48,7 @@ interface AppState {
   startFailures: { id: string; name: string; reason: string }[];
   /** a group clock-in is running */
   clockingIn: boolean;
-  /** show the teammate characters (board, live work, 작업장 띠); kept on this device */
+  /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
 
   toggleDark(): void;
