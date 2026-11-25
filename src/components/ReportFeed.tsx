@@ -222,7 +222,7 @@ function Results({ task, pid, who }: { task: Task; pid: string; who: string }) {
           key={f.path}
           engine={f.engine}
           path={f.path}
-          status={f.editing && working ? `${who} · ${f.engine.verb}` : f.editing ? `${who} · 검토 중` : undefined}
+          status={f.editing && working ? `${who} · ${f.engine.verb}` : f.editing ? `${who} · 확인 중` : undefined}
           onOpen={() => openEdit({ projectId: pid, taskId: task.id, path: f.path, engine: f.engine })}
           onView={() => setOpen(f.path)}
         />
@@ -281,7 +281,7 @@ function Results({ task, pid, who }: { task: Task; pid: string; who: string }) {
 
 // ── one piece of work ─────────────────────────────
 
-const WORD: Record<Task["stage"], string> = { queued: "대기", running: "진행 중", review: "검토", done: "완료", failed: "실패" };
+const WORD: Record<Task["stage"], string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
 
 /** State in plain words; only problems get color. */
 function stateOf(task: Task, team: TeamSnapshot) {

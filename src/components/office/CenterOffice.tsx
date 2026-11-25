@@ -49,7 +49,7 @@ export function CenterOffice() {
                 )}
               </span>
               <span className="of-tab-sub">
-                진행 <b>{count(team, "running")}</b> · 검토 <b>{count(team, "review")}</b> · 완료 <b>{count(team, "done")}</b>
+                진행 <b>{count(team, "running")}</b> · 합치기 대기 <b>{count(team, "review")}</b> · 완료 <b>{count(team, "done")}</b>
               </span>
             </button>
           );

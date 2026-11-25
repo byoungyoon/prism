@@ -2677,7 +2677,7 @@ impl TeamManager {
         let a = team.agent(aid).cloned().ok_or("no agent")?;
         let task = a.task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).cloned();
         let mut system = match a.role.as_str() {
-            "lead" => prompts::lead(cfg.managers.max > 0),
+            "lead" => prompts::lead(cfg.managers.max > 0, cfg.auto_merge),
             "mgr" => prompts::manager(task.as_ref().map(|t| t.id.as_str()).unwrap_or("?")),
             _ => prompts::worker(),
         };
@@ -4196,14 +4196,37 @@ impl TeamManager {
                 }
                 team.set_status(aid, if ok { "done" } else { "block" });
                 team.log(format!("{}이(가) {tid}를 {}했다.", me.name, if ok { "보고" } else { "실패 보고" }), if ok { None } else { Some("block") });
+                // nothing was committed (a look-around or check): there is nothing to merge, so the card is done
+                let nothing = ok && me.parent_id.as_deref().is_some_and(|p| team.agent(p).is_some_and(|a| a.role == "lead")) && {
+                    let repo = team.project.path.clone();
+                    match (team.branch.clone(), branch.clone()) {
+                        (Some(into), Some(b)) => matches!(merge_scope(&repo, &into, &b), Ok((0, _))),
+                        _ => false,
+                    }
+                };
+                let closed = nothing && self.finish_card(team, &tid, format!("{tid}는 바뀐 파일이 없어 보고와 함께 완료 처리했다.")).is_ok();
                 if let Some(parent) = me.parent_id.clone() {
+                    let to_lead = team.agent(&parent).is_some_and(|a| a.role == "lead");
+                    let auto = team.project.team.auto_merge && to_lead;
                     let mut msg = format!("[Prism 보고] {tid} ({}) {}: {summary}", me.name, if ok { "완료" } else { "실패" });
-                    if let Some(b) = branch {
-                        msg += &format!(" — 브랜치 {b} 를 검토·머지한 뒤 complete_task(\"{tid}\")를 호출하세요.");
+                    if closed {
+                        msg += " — 바뀐 파일이 없어 이미 완료 처리했어요. 합치거나 complete_task 할 필요 없이 사용자에게 결과만 알려주세요.";
+                    } else if let Some(b) = branch {
+                        if auto {
+                            msg += &format!(" — 브랜치 {b} 를 확인한 뒤 사용자에게 묻지 말고 팀 브랜치에 git merge 하고 complete_task(\"{tid}\")를 호출하세요. 충돌이나 검사 실패가 있을 때만 사용자에게 물어보세요.");
+                        } else if to_lead {
+                            msg += " — 사용자가 화면의 합치기 버튼으로 합칠 거예요. 직접 합치거나 complete_task 하지 말고 결과만 알려주세요.";
+                        } else {
+                            msg += &format!(" — 브랜치 {b} 를 확인·머지한 뒤 complete_task(\"{tid}\")를 호출하세요.");
+                        }
+                    } else if to_lead && !auto {
+                        msg += " — 확인 후 사용자에게 결과를 알려주세요. 완료 처리는 사용자가 해요.";
                     } else {
                         msg += &format!(" — 확인 후 complete_task(\"{tid}\")를 호출하세요.");
                     }
-                    self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
+                    if !closed {
+                        self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
+                    }
                     team.set_status(&parent, "work");
                     self.inject(team, &parent, msg);
                 }
@@ -4313,7 +4336,7 @@ impl TeamManager {
         let outcome = |result: &str, message: String| MergeOutcome { task_id: tid.into(), result: result.into(), message };
         let Some(t) = team.tasks.iter().find(|t| t.id == tid) else { return outcome("failed", "그런 작업 카드가 없어요".into()) };
         if t.stage != "review" {
-            return outcome("failed", "검토 중인 보고만 합칠 수 있어요".into());
+            return outcome("failed", "합치기를 기다리는 보고만 합칠 수 있어요".into());
         }
         let Some(branch) = card_branch(team, t) else { return outcome("nothing", "합칠 브랜치가 없어요".into()) };
         match merge_scope(dir, into, &branch) {

@@ -18,7 +18,7 @@ const FLOORS: { role: Role; name: string }[] = [
   { role: "worker", name: "작업자" },
 ];
 
-const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "검토", done: "완료", failed: "실패" };
+const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
@@ -118,6 +118,16 @@ export function TaskBoard() {
             <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
               보고함 <span className="font-normal">{reports.length}</span>
             </span>
+            {reports.length > 1 && (
+              <button
+                onClick={() => reports.forEach(({ t, project }) => dismiss(reportKey(project.id, t)))}
+                title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)"
+                className="mx-2 min-h-7 self-start rounded-full border-0 px-3 text-[12px] text-ink-2 hover:bg-[var(--chip)]"
+                style={{ background: "var(--chip)" }}
+              >
+                모두 치우기 ({reports.length}장)
+              </button>
+            )}
             {[...new Set(reports.map((r) => r.project))].map((p) => (
               <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p).map((r) => r.t)} />
             ))}
