@@ -9,6 +9,8 @@
 
 export const FW = 24;
 export const FH = 28;
+/** the drawn cat has K × K times the dots of the drawing above (finer fur, eyes, ears, outline) */
+export const K = 2;
 
 /** a drawing: rows of letters */
 export type Art = string[];
@@ -358,3 +360,31 @@ export function letters(f: Frame): string[][] {
   }
   return g;
 }
+
+/**
+ * Scale2x (EPX): every dot becomes 2 × 2, and where a stair-step of one colour meets another the
+ * corner dot is taken from the neighbour, so diagonal outlines and the round head come out smooth
+ * instead of blocky. Works on letters, so the outline, fur and ear colours keep their meaning.
+ */
+export function scale2x(g: string[][]): string[][] {
+  const H = g.length;
+  const W = g[0].length;
+  const at = (x: number, y: number) => (y < 0 || y >= H || x < 0 || x >= W ? "." : g[y][x]);
+  const out = Array.from({ length: H * 2 }, () => Array<string>(W * 2).fill("."));
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const E = at(x, y);
+      const A = at(x, y - 1); // up
+      const B = at(x + 1, y); // right
+      const C = at(x - 1, y); // left
+      const D = at(x, y + 1); // down
+      out[y * 2][x * 2] = C === A && C !== D && A !== B ? A : E;
+      out[y * 2][x * 2 + 1] = A === B && A !== C && B !== D ? B : E;
+      out[y * 2 + 1][x * 2] = D === C && D !== B && C !== A ? C : E;
+      out[y * 2 + 1][x * 2 + 1] = B === D && B !== A && D !== C ? D : E;
+    }
+  return out;
+}
+
+/** the frame at K × K dots per drawing dot, smoothed (see scale2x) */
+export const hires = (f: Frame): string[][] => scale2x(letters(f));
