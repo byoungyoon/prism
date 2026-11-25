@@ -330,6 +330,10 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
   // desk, or sat down at a new one) stays put for that moment instead of leaving the layer — leaving
   // and coming back would make it pop up over there instead of walking
   const lastSpot = useRef<Record<string, Spot>>({});
+  // a cat that shows up after the first drawing walks in from the door; the first drawing stays put
+  const enterFrom = useRef<Record<string, Spot>>({});
+  const firstDrawn = useRef(false);
+  for (const k of Object.keys(enterFrom.current)) if (!members.some((m) => m.key === k)) delete enterFrom.current[k];
   // when each cat came to the lounge (gone once it's back at a desk)
   const cameIn = useRef<Record<string, number>>({});
   for (const k of Object.keys(cameIn.current)) if (!lounging.some((m) => m.key === k)) delete cameIn.current[k];
@@ -345,11 +349,15 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     wasAtDesk.current = new Set(deskKeys ? deskKeys.split("|") : []);
   }, [deskKeys]);
   const items: PlacedCritter[] = [];
+  useEffect(() => {
+    if (items.length) firstDrawn.current = true;
+  });
   for (const m of members) {
     const seat = room?.seats[m.key];
     const desk = deskMembers.includes(m);
     const spot = (desk ? seat && { x: seat.x, y: seat.y } : strolls[m.key]) ?? lastSpot.current[m.key];
     if (!spot) continue;
+    if (!lastSpot.current[m.key] && firstDrawn.current && room) enterFrom.current[m.key] ??= room.door;
     lastSpot.current[m.key] = spot;
     const st = critterState(m.agent, m.task);
     items.push({
@@ -359,6 +367,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
       colorKey: m.agent.role === "lead" ? m.project.name : undefined,
       x: spot.x,
       y: spot.y,
+      from: enterFrom.current[m.key],
       // a cat on a break naps now and then instead of hopping about
       state: desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
       // the lounge isn't all coffee: each cat has its own way of resting (it changes now and then)
