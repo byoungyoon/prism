@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp, useCurrent } from "../store";
+import { isLive, useApp, useCurrent } from "../store";
 import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, type TeamConfig } from "../lib/api";
 import { EffortPicker, ModelPicker } from "../components/ModelPicker";
 import { Bot, Briefcase, ChevronLeft, Tower } from "../components/icons";
@@ -200,7 +200,7 @@ export function SettingsScreen() {
     );
   }
 
-  const running = !!team?.agents.some((a) => a.status !== "off");
+  const running = isLive(team);
   const dirty = !same(draft, saved);
   const setRole = (key: RoleKey, patch: Partial<RoleConfig>) =>
     setDraft((d) => d && { ...d, preset: "custom", [key]: { ...d[key], ...patch } });

@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { isRemote } from "../lib/transport";
 import { modelLabel } from "../data/models";
 import { api, type PresetName, type Project } from "../lib/api";
-import { useApp } from "../store";
+import { isLive, useApp } from "../store";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -187,9 +187,9 @@ export function HomeScreen() {
   };
 
   const snap = cur ? teams[cur.id] : undefined;
-  const live = !!snap && snap.agents.some((a) => a.status !== "off");
+  const live = isLive(snap);
 
-  const isLiveId = (id: string) => !!teams[id]?.agents.some((a) => a.status !== "off");
+  const isLiveId = (id: string) => isLive(teams[id]);
   const crew = picked.filter((id) => !isLiveId(id));
   const lastToStart = lastTeams.filter((id) => !isLiveId(id) && projects.some((p) => p.id === id));
   const offCount = projects.filter((p) => !isLiveId(p.id)).length;
@@ -352,7 +352,7 @@ export function HomeScreen() {
                         <span className="flex min-w-0 flex-auto flex-col gap-0.5">
                           <span className="flex min-w-0 flex-wrap items-center gap-x-2 text-[15px] font-semibold">
                             <span className="min-w-0 break-words">{p.name}</span>
-                            {teams[p.id]?.agents.some((a) => a.status !== "off") && (
+                            {isLiveId(p.id) && (
                               <span className="flex shrink-0 items-center gap-1 rounded-full px-2 py-px text-[10.5px] font-medium whitespace-nowrap" style={{ background: "var(--chip)", color: "var(--work-ink)" }}>
                                 <span className="s-work size-1.5 rounded-full" style={{ background: "var(--work)" }} />
                                 출근 중

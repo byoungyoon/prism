@@ -270,7 +270,7 @@ export const useApp = create<AppState>((set, get) => {
       set((s) => ({
         projectId: id,
         teams: snap ? { ...s.teams, [id]: snap } : s.teams,
-        view: snap && snap.agents.some((a) => a.status !== "off") ? { name: "main" } : s.view,
+        view: isLive(snap ?? undefined) ? { name: "main" } : s.view,
       }));
     }),
 
@@ -367,7 +367,9 @@ export const useApp = create<AppState>((set, get) => {
   };
 });
 
-export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status !== "off");
+/** Someone still on the clock: finished ("done") members don't keep a stopped team clocked in. */
+export const isActive = (status: string) => status !== "off" && status !== "done";
+export const isLive = (t?: TeamSnapshot) => !!t && t.agents.some((a) => isActive(a.status));
 /** someone on the team is in the middle of a turn */
 export const isBusy = (t?: TeamSnapshot) => !!t && t.agents.some((a) => a.status === "work");
 
