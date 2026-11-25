@@ -111,7 +111,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
     >
       <div className={`cr-anchor${fidget ? " cr-fidget" : ""}`} style={fidget as CSSProperties | undefined}>
         {bubble && say && (
-          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.2, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
+          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.1, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
             {say}
           </span>
         )}
