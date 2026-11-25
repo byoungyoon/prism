@@ -93,6 +93,8 @@ export interface Agent {
   lastActive?: number;
   /** why it looks stuck (long silence, or its process ended unexpectedly): offer "멈추고 다시" */
   stuck?: string | null;
+  /** a 작업자 resting in the lounge between cards (session closed, takes the next card) — since when */
+  restSince?: number | null;
 }
 
 export interface Task {

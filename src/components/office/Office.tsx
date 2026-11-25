@@ -308,7 +308,7 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
           </div>
         </div>
         <div className="of-cats">
-          <CritterLayer id="office" items={items} size={size} speed={narrow ? 70 : 90} width={room?.w} />
+          <CritterLayer id="office" items={items} size={size} speed={narrow ? 110 : 160} width={room?.w} />
         </div>
         {members.map((m) => {
           const msgs = asks[m.key];

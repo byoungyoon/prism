@@ -63,6 +63,13 @@ pub struct Agent {
     /// session with a hand-over instead of being carried along every turn
     #[serde(default)]
     pub context: u64,
+    /// a 작업자 between cards, resting in the lounge: its card is done and its session is closed (no
+    /// process, no tokens); the next card for its 요청자 goes to it again (same name, a fresh session)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rest_since: Option<u64>,
+    /// a short note for a reused 작업자's fresh session: what its previous card was (see `wake_agent`)
+    #[serde(skip)]
+    handoff: Option<String>,
     #[serde(skip)]
     ready: bool,
     #[serde(skip)]
@@ -1245,6 +1252,27 @@ struct Restore {
     then: Then,
 }
 
+/// Where a member works: its own worktree on its own branch for a 팀장·작업자 card when isolation is on
+/// (cut from its requester's folder), the team's folder for the 총괄, else its requester's folder.
+fn work_dir(team: &mut Team, role: &str, task: Option<&Task>, parent: Option<&str>) -> Result<(String, Option<String>), String> {
+    let parent_cwd = parent.and_then(|p| team.agent(p)).map(|a| a.cwd.clone()).unwrap_or_else(|| team.cwd.clone());
+    match (task, role) {
+        (Some(t), "mgr" | "worker") if team.project.is_git && team.project.team.isolate => {
+            let slug = t.id.to_lowercase();
+            let branch = format!("prism/{}/{slug}", team.run);
+            let path = PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{slug}", team.run));
+            let base = sys::git(&parent_cwd, &["rev-parse", "HEAD"]).ok();
+            sys::add_worktree(&parent_cwd, &path, &branch)?;
+            if let Some(t) = team.task_mut(&t.id.clone()) {
+                t.base = base;
+            }
+            Ok((path.to_string_lossy().into_owned(), Some(branch)))
+        }
+        _ if role == "lead" => Ok((team.cwd.clone(), team.branch.clone())),
+        _ => Ok((parent_cwd, None)),
+    }
+}
+
 /// Who comes back when a stopped team clocks in. Everyone who was in when the app closed or
 /// restarted (`resume_as`) — 총괄, 팀장, 작업자 alike; otherwise (the user clocked the team out) the
 /// 총괄 and whoever has a card still running. The 총괄 first, so it's there when reports arrive.
@@ -1284,6 +1312,7 @@ fn prune_finished(agents: &mut Vec<Agent>, tasks: &mut [Task]) -> Vec<String> {
     for a in agents.iter_mut().filter(|a| ended.contains(&a.id)) {
         a.status = "done".into();
         a.resume_as = None;
+        a.rest_since = None;
     }
 
     let needed = |a: &Agent| {
@@ -1318,11 +1347,80 @@ fn prune_finished(agents: &mut Vec<Agent>, tasks: &mut [Task]) -> Vec<String> {
     drop
 }
 
+/// How long a 작업자 may rest in the lounge before it clocks out for good.
+const REST_MAX_MS: u64 = 30 * 60 * 1000;
+
+/// Its card is done: the 작업자 goes to the lounge instead of leaving — session closed (the caller
+/// kills the process), nothing sent to it any more, ready for the next card.
+fn rest_agent(a: &mut Agent, now: u64) {
+    a.status = "wait".into();
+    a.rest_since = Some(now);
+    a.status_since = now;
+    a.pty_id = None;
+    a.stuck = None;
+    a.thought = None;
+    a.activity.clear();
+    a.pending.clear();
+    a.resume_as = None;
+    a.ready = true;
+}
+
+/// A resting 작업자 that can take a new card from `parent` (the one resting the shortest: its
+/// folder and habits are freshest).
+fn pick_resting(agents: &[Agent], parent: &str) -> Option<String> {
+    agents
+        .iter()
+        .filter(|a| a.role == "worker" && a.rest_since.is_some() && a.parent_id.as_deref() == Some(parent))
+        .max_by_key(|a| a.rest_since)
+        .map(|a| a.id.clone())
+}
+
+/// What a reused 작업자's new session is told about its last card: title and a short result — not
+/// the old conversation (that stays closed: a long context would cost tokens on every turn).
+fn handoff_note(prev: Option<&Task>) -> Option<String> {
+    let t = prev?;
+    let result = t.summary.as_deref().map(|s| format!(" 결과: {}", short(s, 160))).unwrap_or_default();
+    Some(format!("[Prism] 참고로 바로 전에 맡았던 카드는 {} \"{}\"였어요.{result} 이번 카드는 새 일이고, 이전 대화는 이어지지 않아요.", t.id, short(&t.title, 40)))
+}
+
+/// A resting 작업자 takes card `tid`: back to work in a fresh session (empty session id = new) in the
+/// card's own folder, with a short note about the previous card.
+fn wake_agent(a: &mut Agent, tid: &str, cwd: String, branch: Option<String>, handoff: Option<String>, now: u64) {
+    a.task_id = Some(tid.into());
+    a.status = "work".into();
+    a.rest_since = None;
+    a.session_id = String::new();
+    a.cwd = cwd;
+    a.branch = branch;
+    a.started_at = now;
+    a.status_since = now;
+    a.last_active = now;
+    a.context = 0;
+    a.resume_as = None;
+    a.handoff = handoff;
+}
+
+/// 작업자 resting longer than `REST_MAX_MS` clock out: they leave the team (their cards keep the
+/// name). Returns the removed ids.
+fn retire_resting(agents: &mut Vec<Agent>, tasks: &mut [Task], now: u64) -> Vec<String> {
+    let gone: Vec<String> = agents.iter().filter(|a| a.rest_since.is_some_and(|r| now.saturating_sub(r) > REST_MAX_MS)).map(|a| a.id.clone()).collect();
+    for t in tasks.iter_mut() {
+        if let Some(a) = t.assignee.as_deref().filter(|a| gone.iter().any(|g| g == a)) {
+            if t.who.is_none() {
+                t.who = agents.iter().find(|x| x.id == a).map(|x| x.name.clone());
+            }
+        }
+    }
+    agents.retain(|a| !gone.contains(&a.id));
+    gone
+}
+
 /// Note what each member in the team was doing as the app goes away (`why`). False when nobody
 /// was in (nothing to bring back; the team is left as it is).
 fn mark_suspended(agents: &mut [Agent], restarted: &mut Option<String>, why: &str) -> bool {
     let mut any = false;
-    for a in agents.iter_mut().filter(|a| a.status != "off" && a.status != "done") {
+    // a resting 작업자 has no session to bring back
+    for a in agents.iter_mut().filter(|a| a.status != "off" && a.status != "done" && a.rest_since.is_none()) {
         a.resume_as = Some(a.status.clone());
         any = true;
     }
@@ -1496,7 +1594,7 @@ impl Team {
             .unwrap_or_else(|| id.to_string())
     }
     fn active(&self, role: &str) -> usize {
-        self.agents.iter().filter(|a| a.role == role && a.status != "done" && a.status != "off").count()
+        self.agents.iter().filter(|a| a.role == role && a.status != "done" && a.status != "off" && a.rest_since.is_none()).count()
     }
     fn cost(&self) -> f64 {
         self.agents.iter().map(|a| a.cost_usd).sum()
@@ -2032,23 +2130,7 @@ impl TeamManager {
         let task = task_id.as_deref().and_then(|t| team.tasks.iter().find(|x| x.id == t)).cloned();
         let model = task.as_ref().and_then(|t| t.model.clone()).unwrap_or(model);
 
-        // working directory: own worktree for managers/workers when isolation is on
-        let parent_cwd = parent.as_deref().and_then(|p| team.agent(p)).map(|a| a.cwd.clone()).unwrap_or_else(|| team.cwd.clone());
-        let (cwd, branch) = match (&task, role) {
-            (Some(t), "mgr" | "worker") if team.project.is_git && cfg.isolate => {
-                let slug = t.id.to_lowercase();
-                let branch = format!("prism/{}/{slug}", team.run);
-                let path = PathBuf::from(&team.project.path).join(".prism").join("worktrees").join(format!("{}-{slug}", team.run));
-                let base = sys::git(&parent_cwd, &["rev-parse", "HEAD"]).ok();
-                sys::add_worktree(&parent_cwd, &path, &branch)?;
-                if let Some(t) = team.task_mut(&t.id.clone()) {
-                    t.base = base;
-                }
-                (path.to_string_lossy().into_owned(), Some(branch))
-            }
-            _ if role == "lead" => (team.cwd.clone(), team.branch.clone()),
-            _ => (parent_cwd, None),
-        };
+        let (cwd, branch) = work_dir(team, role, task.as_ref(), parent.as_deref())?;
 
         let now = now_ms();
         team.agents.push(Agent {
@@ -2076,6 +2158,8 @@ impl TeamManager {
             stuck: None,
             resume_as: None,
             context: 0,
+            rest_since: None,
+            handoff: None,
             ready: true,
             pending: vec![],
             children: 0,
@@ -2085,6 +2169,26 @@ impl TeamManager {
             return Err(e);
         }
         Ok(id)
+    }
+
+    /// A resting 작업자 takes queued card `tid` (see `pick_resting`): fresh session, the card's own
+    /// folder, a short note about its previous card. On failure it goes back to resting.
+    fn reuse_agent(&self, team: &mut Team, aid: &str, tid: &str) -> Result<(), String> {
+        let task = team.tasks.iter().find(|t| t.id == tid).cloned().ok_or("no task")?;
+        let (parent, prev_card) = team.agent(aid).map(|a| (a.parent_id.clone(), a.task_id.clone())).ok_or("no agent")?;
+        let (cwd, branch) = work_dir(team, "worker", Some(&task), parent.as_deref())?;
+        let note = handoff_note(prev_card.as_deref().and_then(|p| team.tasks.iter().find(|t| t.id == p)));
+        let now = now_ms();
+        if let Some(a) = team.agent_mut(aid) {
+            wake_agent(a, tid, cwd, branch, note, now);
+        }
+        if let Err(e) = self.launch_agent(team, aid, None) {
+            if let Some(a) = team.agent_mut(aid) {
+                rest_agent(a, now);
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Start (or, with `resume`, continue) an existing member's AI session — terminal-less.
@@ -2116,9 +2220,17 @@ impl TeamManager {
         let home = team.homes.get(&a.kind).cloned().flatten();
         let resume = resume.filter(|sid| a.kind != "claude" || crate::launch::claude_session_exists(home.as_deref(), sid, &a.cwd));
         let session_id = resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        // a fresh session gets its task card; a resumed one already has it
+        // a fresh session gets its task card (and, for a reused 작업자, a line about its last card);
+        // a resumed one already has it
+        let handoff = team.agent_mut(aid).and_then(|x| x.handoff.take());
         let prompt = if resume.is_none() {
-            task.as_ref().map(|t| prompts::task_card(&t.id, &t.title, &t.goal, &t.files, &t.done_when, a.branch.as_deref()))
+            task.as_ref().map(|t| {
+                let card = prompts::task_card(&t.id, &t.title, &t.goal, &t.files, &t.done_when, a.branch.as_deref());
+                match &handoff {
+                    Some(h) => format!("{card}\n\n{h}"),
+                    None => card,
+                }
+            })
         } else {
             None
         };
@@ -2422,6 +2534,11 @@ impl TeamManager {
         let name = team.name_of(aid);
         if let Some(a) = team.agent_mut(aid) {
             a.pty_id = None;
+            // a 작업자 sent to rest: its session was closed on purpose, it stays in the lounge
+            if a.rest_since.is_some() {
+                drop(teams);
+                return;
+            }
             let finished = a.status == "done";
             let paused = a.status == "off";
             a.status = if finished { "done".into() } else { "off".into() };
@@ -2525,6 +2642,9 @@ impl TeamManager {
             let parent_alive = agent.parent_id.as_deref().is_some_and(&running);
             if let Some(a) = team.agent_mut(&aid) {
                 a.task_id = Some(fid.clone());
+                // back from the lounge for its own follow-up (its old conversation continues)
+                a.rest_since = None;
+                a.status = "work".into();
                 if !parent_alive {
                     a.parent_id = Some("lead".into());
                 }
@@ -2768,6 +2888,7 @@ impl TeamManager {
     /// so they can stop and restart it instead of watching "작업 중" forever.
     fn check_stalls(&self) {
         let now = now_ms();
+        self.retire_rested(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -2793,6 +2914,27 @@ impl TeamManager {
                     team.log(format!("{name}이(가) {mins}분째 응답이 없다."), Some("block"));
                 }
             }
+            self.emit(team);
+        }
+    }
+
+    /// 작업자 resting over `REST_MAX_MS` clock out (see `retire_resting`).
+    fn retire_rested(&self, now: u64) {
+        let mut teams = self.teams.lock().unwrap();
+        for team in teams.values_mut() {
+            let names: Vec<String> = team.agents.iter().filter(|a| a.rest_since.is_some_and(|r| now.saturating_sub(r) > REST_MAX_MS)).map(|a| a.name.clone()).collect();
+            let gone = retire_resting(&mut team.agents, &mut team.tasks, now);
+            if gone.is_empty() {
+                continue;
+            }
+            let pid = team.project.id.clone();
+            {
+                let mut tr = self.transcripts.lock().unwrap();
+                for a in &gone {
+                    tr.remove(&format!("{pid}/{a}"));
+                }
+            }
+            team.log(format!("{}이(가) {}분 쉬어서 퇴근했다.", names.join(", "), REST_MAX_MS / 60_000), None);
             self.emit(team);
         }
     }
@@ -3173,6 +3315,10 @@ impl TeamManager {
                     .or_else(|| team.agents.iter().find(|a| a.name == target))
                     .map(|a| a.id.clone())
                     .ok_or("그런 에이전트가 없어요")?;
+                // a resting 작업자 has no session: nothing is sent (it would cost tokens to wake it)
+                if team.agent(&target).is_some_and(|a| a.rest_since.is_some()) {
+                    return Ok(format!("{}은(는) 쉬는 중이에요. 새 카드를 delegate하면 그 작업자가 다시 맡아요.", team.name_of(&target)));
+                }
                 self.inject(team, &target, format!("[Prism {}] {}", me.name, s("message").unwrap_or_default()));
                 team.set_status(&target, "work");
                 format!("{}에게 전달했어요.", team.name_of(&target))
@@ -3186,10 +3332,15 @@ impl TeamManager {
                 // ("이어서") it is already busy with the next one in the same folder
                 let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid.as_str())));
                 if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
-                    a.status = "done".into();
-                    a.status_since = now_ms();
                     if let Some(p) = a.pty_id {
                         self.pty.kill(p);
+                    }
+                    // a 작업자 rests in the lounge for the next card; a 팀장 is done
+                    if a.role == "worker" {
+                        rest_agent(a, now_ms());
+                    } else {
+                        a.status = "done".into();
+                        a.status_since = now_ms();
                     }
                 }
                 if let Some(a) = assignee.as_deref() {
@@ -3281,7 +3432,17 @@ impl TeamManager {
             if team.active(&role) >= max || busy >= cfg.concurrent as usize {
                 continue;
             }
-            match self.spawn_agent(team, &role, Some(tid.clone()), Some(parent)) {
+            // a 작업자 resting in the lounge takes it (same name, fresh session) before a new one is made
+            let reused = if role == "worker" {
+                pick_resting(&team.agents, &parent).filter(|aid| self.reuse_agent(team, aid, &tid).is_ok())
+            } else {
+                None
+            };
+            let made = match reused {
+                Some(aid) => Ok(aid),
+                None => self.spawn_agent(team, &role, Some(tid.clone()), Some(parent)),
+            };
+            match made {
                 Ok(aid) => {
                     let name = team.name_of(&aid);
                     if let Some(t) = team.task_mut(&tid) {
@@ -4039,6 +4200,8 @@ mod restart_tests {
             stuck: None,
             resume_as: None,
             context: 0,
+            rest_since: None,
+            handoff: None,
             ready: true,
             pending: vec![],
             children: 0,
@@ -4208,6 +4371,94 @@ mod prune_tests {
         assert_eq!(agents.iter().find(|a| a.id == "w2").unwrap().status, "off", "a running card's member comes back");
         // and it isn't brought back on clock-in
         assert!(restore_plan(&agents, &tasks).iter().all(|r| r.id != "w1"));
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    fn worker(id: &str, name: &str, task: &str) -> Agent {
+        let mut a: Agent = serde_json::from_value(json!({
+            "id": id, "name": name, "role": "worker", "kind": "claude", "model": "", "effort": "", "status": "work",
+            "taskId": task, "parentId": "lead", "ptyId": 7, "cwd": "/w/old", "branch": "prism/r/t-1", "sessionId": "old-session",
+            "costUsd": 0.0, "startedAt": 0, "statusSince": 0, "lastNote": null, "structured": true,
+            "activity": [{ "at": 1, "text": "✏️ a.ts 수정" }], "context": 90000
+        }))
+        .expect("agent json");
+        a.ready = true;
+        a
+    }
+    fn card(id: &str, title: &str, stage: &str, assignee: &str, summary: Option<&str>) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "title": title, "goal": "아주 긴 목표 설명 ".repeat(50), "files": [], "doneWhen": [], "requestedBy": "lead",
+            "assignee": assignee, "role": "worker", "model": null, "stage": stage, "summary": summary, "branch": null, "base": null,
+            "createdAt": 0, "updatedAt": 0
+        }))
+        .expect("task json")
+    }
+
+    #[test]
+    fn a_finished_worker_rests_and_takes_the_next_card_in_a_fresh_session() {
+        let mut agents = vec![worker("W7", "W1", "T-1")];
+        let mut tasks = vec![card("T-1", "표 만들기", "done", "W7", Some("표 컴포넌트를 만들고 테스트를 붙였어요."))];
+
+        // card done → the lounge: no process, nothing pending, not counted as busy
+        rest_agent(&mut agents[0], 1_000);
+        let a = &agents[0];
+        assert_eq!(a.status, "wait");
+        assert_eq!(a.rest_since, Some(1_000));
+        assert!(a.pty_id.is_none() && a.pending.is_empty() && a.activity.is_empty());
+        let team_busy = agents.iter().filter(|a| a.role == "worker" && a.status != "done" && a.status != "off" && a.rest_since.is_none()).count();
+        assert_eq!(team_busy, 0, "a resting worker frees its slot");
+
+        // a new card from the same 요청자 picks it; another 요청자's card doesn't
+        assert_eq!(pick_resting(&agents, "lead").as_deref(), Some("W7"));
+        assert_eq!(pick_resting(&agents, "A"), None);
+
+        // it wakes with a fresh session and only a short note about the last card
+        tasks.push(card("T-2", "배너 그리기", "queued", "", None));
+        let note = handoff_note(tasks.iter().find(|t| t.id == "T-1")).expect("note");
+        assert!(note.contains("T-1") && note.contains("표 만들기") && note.contains("표 컴포넌트"), "{note}");
+        assert!(!note.contains("아주 긴 목표"), "the old card's goal (long context) is not carried");
+        assert!(note.chars().count() < 300);
+        wake_agent(&mut agents[0], "T-2", "/w/t-2".into(), Some("prism/r/t-2".into()), Some(note), 2_000);
+        let a = &agents[0];
+        assert_eq!((a.name.as_str(), a.id.as_str()), ("W1", "W7"), "same name, same cat");
+        assert_eq!(a.task_id.as_deref(), Some("T-2"));
+        assert_eq!(a.status, "work");
+        assert!(a.rest_since.is_none());
+        assert!(a.session_id.is_empty(), "empty id = a new session, not the old conversation");
+        assert_eq!(a.context, 0);
+        assert_eq!(a.cwd, "/w/t-2");
+        assert!(a.handoff.is_some());
+    }
+
+    #[test]
+    fn a_resting_worker_is_not_brought_back_when_the_app_restarts() {
+        let mut agents = vec![worker("W7", "W1", "T-1")];
+        let tasks = vec![card("T-1", "표", "done", "W7", None)];
+        rest_agent(&mut agents[0], 1_000);
+        let mut why = None;
+        let any = mark_suspended(&mut agents, &mut why, "restart");
+        assert!(!any && agents[0].resume_as.is_none(), "nothing to resume: no session runs");
+        agents[0].status = "off".into(); // what quitting does to everyone
+        assert!(restore_plan(&agents, &tasks).is_empty());
+    }
+
+    #[test]
+    fn resting_over_thirty_minutes_clocks_out() {
+        let mut agents = vec![worker("W7", "W1", "T-1"), worker("W8", "W2", "T-2"), worker("W9", "W3", "T-3")];
+        let mut tasks = vec![card("T-1", "a", "done", "W7", None), card("T-2", "b", "done", "W8", None), card("T-3", "c", "running", "W9", None)];
+        let now = 100 * 60_000;
+        rest_agent(&mut agents[0], now - 31 * 60_000); // rested 31 min
+        rest_agent(&mut agents[1], now - 5 * 60_000); // 5 min
+        let gone = retire_resting(&mut agents, &mut tasks, now);
+        assert_eq!(gone, vec!["W7".to_string()]);
+        assert!(agents.iter().all(|a| a.id != "W7"), "left the team");
+        assert!(agents.iter().any(|a| a.id == "W8" && a.rest_since.is_some()), "a short rest stays");
+        assert!(agents.iter().any(|a| a.id == "W9" && a.status == "work"), "working members untouched");
+        assert_eq!(tasks[0].who.as_deref(), Some("W1"), "its card keeps the name");
     }
 }
 

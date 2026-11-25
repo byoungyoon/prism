@@ -23,7 +23,8 @@ export function liveCrew(team: TeamSnapshot, { withLead = false }: { withLead?: 
       if (a.status === "off" && !withLead) continue;
     } else {
       if (a.status === "off" || a.status === "done") continue;
-      if (a.status === "wait" && cardFinished(a, team.tasks)) continue;
+      // idle on a finished card — unless it's resting in the lounge on purpose, waiting for the next card
+      if (a.status === "wait" && !a.restSince && cardFinished(a, team.tasks)) continue;
     }
     const k = `${a.role}:${a.name}`;
     const cur = by.get(k);
@@ -37,7 +38,7 @@ export function finishedCrew(team: TeamSnapshot): Agent[] {
   const live = new Set(liveCrew(team).map((a) => `${a.role}:${a.name}`));
   const seen = new Set<string>();
   return team.agents
-    .filter((a) => a.role !== "lead" && (a.status === "done" || (a.status === "wait" && cardFinished(a, team.tasks))))
+    .filter((a) => a.role !== "lead" && !a.restSince && (a.status === "done" || (a.status === "wait" && cardFinished(a, team.tasks))))
     .sort((x, y) => y.statusSince - x.statusSince)
     .filter((a) => {
       const k = `${a.role}:${a.name}`;
