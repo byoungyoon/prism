@@ -1308,6 +1308,11 @@ pub enum PermWait {
 /// Requests from the same member that arrive this close together reach the boss as one message.
 const PERM_BATCH_MS: u64 = 2_000;
 
+/// A member counts as at work unless clocked out ("off") or finished ("done").
+pub fn is_working(status: &str) -> bool {
+    status != "off" && status != "done"
+}
+
 /// Permission request numbers held back per member ("project/member") until their window closes.
 #[derive(Default)]
 struct PermBatches(HashMap<String, Vec<u64>>);
@@ -2504,11 +2509,16 @@ impl TeamManager {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off" && a.status != "done"))
+            .filter(|(_, t)| t.agents.iter().any(|a| is_working(&a.status)))
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();
         ids
+    }
+
+    /// How many team members are at work right now, across every team.
+    pub fn working_count(&self) -> usize {
+        self.teams.lock().unwrap().values().map(|t| t.agents.iter().filter(|a| is_working(&a.status)).count()).sum()
     }
 
     /// The app is going away (`why`: "update" | "quit"): note what everyone was doing, so the next

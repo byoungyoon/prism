@@ -50,6 +50,8 @@ interface AppState {
   clockingIn: boolean;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
+  /** ask before closing the window or quitting while members are at work */
+  confirmQuit: boolean;
 
   toggleDark(): void;
   toggleLeft(): void;
@@ -79,6 +81,7 @@ interface AppState {
   /** the teams from before the app closed that are not in yet */
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
+  setConfirmQuit(on: boolean): Promise<void>;
   dismissFailures(): void;
   setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
@@ -165,6 +168,7 @@ export const useApp = create<AppState>((set, get) => {
     startFailures: [],
     clockingIn: false,
     critters: savedCritters(),
+    confirmQuit: true,
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -213,7 +217,7 @@ export const useApp = create<AppState>((set, get) => {
         const prefs = await api.prefs().catch(() => null);
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
-          set({ lastTeams: known, autoResume: prefs.autoResume });
+          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit });
           // restarted for an update: everyone comes back, whatever the setting says
           const updated = prefs.restart === "update";
           if ((prefs.autoResume || updated) && !autoResumed) {
@@ -325,6 +329,14 @@ export const useApp = create<AppState>((set, get) => {
         await api.setAutoResume(on);
       } catch (e) {
         set({ autoResume: !on, error: msg(e) });
+      }
+    },
+    setConfirmQuit: async (on) => {
+      set({ confirmQuit: on });
+      try {
+        await api.setConfirmQuit(on);
+      } catch (e) {
+        set({ confirmQuit: !on, error: msg(e) });
       }
     },
     dismissFailures: () => set({ startFailures: [] }),

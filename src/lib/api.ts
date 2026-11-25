@@ -342,6 +342,16 @@ export interface Prefs {
   autoResume: boolean;
   /** the app closed with teams at work: "update" (they come back regardless of autoResume) | "quit" */
   restart?: "update" | "quit" | null;
+  /** ask before closing the window or quitting while members are at work */
+  confirmQuit: boolean;
+}
+
+/** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
+export type QuitKind = "window" | "quit";
+/** Sent when a close or quit would stop `working` members. */
+export interface QuitAsk {
+  kind: QuitKind;
+  working: number;
 }
 
 export interface RemoteStatus {
@@ -370,6 +380,9 @@ export const api = {
   remoteNewKey: () => call<RemoteStatus>("remote_new_key"),
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
+  setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
+  /** let the held-back window close (or quit) go through after the user pressed 끄기 */
+  quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),

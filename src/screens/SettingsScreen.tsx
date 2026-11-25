@@ -252,6 +252,8 @@ export function SettingsScreen() {
   const { go, saveTeam } = useApp(useShallow((s) => ({ go: s.go, saveTeam: s.saveTeam })));
   const autoResume = useApp((s) => s.autoResume);
   const setAutoResume = useApp((s) => s.setAutoResume);
+  const confirmQuit = useApp((s) => s.confirmQuit);
+  const setConfirmQuit = useApp((s) => s.setConfirmQuit);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -397,6 +399,12 @@ export function SettingsScreen() {
         <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">
             앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
+          </span>
+        </Card>
+
+        <Card title="창을 닫거나 앱을 끌 때 한 번 물어보기" aside={<Switch on={confirmQuit} onChange={(on) => void setConfirmQuit(on)} label="창을 닫거나 앱을 끌 때 한 번 물어보기" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            팀원이 일하는 중에 창을 닫거나(Cmd+W) 앱을 끄면(Cmd+Q) 먼저 물어봐요. 끄면 묻지 않고 바로 꺼요. 일하는 팀원이 없을 때와 업데이트로 다시 켤 때는 묻지 않아요.
           </span>
         </Card>
 
