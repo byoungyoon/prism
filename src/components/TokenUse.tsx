@@ -56,12 +56,12 @@ export function UsageWarnings({ alerts, teamKey }: { alerts: UsageAlert[]; teamK
 }
 
 /** A team's usage today, one line that opens to its models and members. `label` names the team when several show. */
-export function TeamUsageBox({ team, label }: { team: TeamSnapshot; label?: string }) {
+export function TeamUsageBox({ team, label, projectId }: { team: TeamSnapshot; label?: string; projectId: string }) {
   const [open, setOpen] = useState(false);
   const { has } = useDismissed();
   const u = team.usage;
   if (!u) return null;
-  const teamKey = label ?? "team";
+  const teamKey = projectId;
   const warn = u.alerts.filter((a) => !has(alertId(teamKey, a))).length;
   return (
     <div className="flex flex-col">

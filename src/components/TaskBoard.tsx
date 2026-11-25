@@ -63,6 +63,8 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
 }
 
 /** Every shown team's people, floor by floor, and one merged progress log. */
+const reportKey = (pid: string, t: { id: string; updatedAt: number }) => `report:${pid}:${t.id}:${t.updatedAt}`; // 새로 보고되면(updatedAt 변경) 키가 달라져 다시 보인다
+
 export function TaskBoard() {
   const openIn = useApp((s) => s.openIn);
   // teams whose 총괄 went home (off) stay out of the whole board, counts included
@@ -71,8 +73,9 @@ export function TaskBoard() {
     return lead ? lead.status !== "off" : isLive(team);
   });
   const multi = shown.length > 1;
-  const [logOpen, setLogOpen] = useState(true);
+  const [logOpen, setLogOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
   const { has: isDismissed, dismiss } = useDismissed();
 
   const tasks = shown.flatMap(({ team }) => team.tasks);
@@ -80,12 +83,16 @@ export function TaskBoard() {
   // finished 팀장·작업자 are folded into one line below; the 총괄 always stays on top
   // one rule for "who is on the team" (lib/crew): the same people the office and the team tabs show
   const members = (team: TeamSnapshot, role: Role) => liveCrew(team, { withLead: true }).filter((a) => a.role === role);
+  // only who is at work (or the 총괄) shows by default; idle and finished members fold into one line
+  const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
+  const crewOf = (team: TeamSnapshot) => FLOORS.flatMap((f) => members(team, f.role));
+  const activeList = shown.flatMap(({ project, team }) => crewOf(team).filter((a) => isActive(a, team)).map((a) => ({ a, team, project })));
   const doneGroups = shown
-    .map(({ project, team }) => ({ project, team, list: finishedCrew(team) }))
+    .map(({ project, team }) => ({ project, team, list: [...crewOf(team).filter((a) => !isActive(a, team)), ...finishedCrew(team)] }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
-  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(`report:${project.id}:${t.id}`)).map((t) => ({ t, project })));
+  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(reportKey(project.id, t))).map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
     .flatMap(({ project, team }) => team.events.map((e) => ({ ...e, project })))
@@ -97,46 +104,17 @@ export function TaskBoard() {
       <div className="flex flex-col gap-1 px-4 pt-3.5 pb-2">
         <h2 className="m-0 text-sm font-semibold">작업 보드</h2>
         <span className="text-[11.5px] text-ink-2">
-          진행 <b className="font-semibold text-[var(--text)]">{count("running")}</b> · 검토 <b className="font-semibold text-[var(--text)]">{count("review")}</b> · 대기{" "}
-          <b className="font-semibold text-[var(--text)]">{count("queued")}</b> · 완료 <b className="font-semibold text-[var(--text)]">{count("done")}</b>
+          진행 <b className="font-semibold text-[var(--text)]">{count("running")}</b>
+          {count("review") > 0 && <> · 합치기 대기 <b className="font-semibold text-[var(--text)]">{count("review")}</b></>}
+          {count("queued") > 0 && <> · 대기 {count("queued")}</>}
         </span>
       </div>
 
       <div className="flex min-h-0 flex-auto flex-col overflow-y-auto px-2 pb-3">
-        {/* tokens used today, per team (opens to models, members and warnings) */}
-        {shown.length > 0 && (
-          <div className="flex flex-col py-1" style={{ borderBottom: "1px solid var(--line)" }}>
-            {shown.map(({ project, team }) => (
-              <TeamUsageBox key={project.id} team={team} label={multi ? project.name : undefined} />
-            ))}
-          </div>
-        )}
         {shown.length === 0 && <span className="px-2 py-3 text-[12px] text-ink-2">출근한 팀이 없어요</span>}
-        {shown.length > 0 && FLOORS.map((f) => {
-          const groups = shown.map(({ project, team }) => ({ project, team, list: members(team, f.role) })).filter((g) => g.list.length);
-          const n = groups.reduce((k, g) => k + g.list.length, 0);
-          return (
-            <div key={f.role} className="flex flex-col gap-0.5 py-2" style={{ borderTop: f.role === "lead" ? undefined : "1px solid var(--line)" }}>
-              <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
-                {f.name} <span className="font-normal">{n}</span>
-              </span>
-              {n === 0 && <span className="px-2 text-[12px] text-ink-2">아직 없어요</span>}
-              {f.role === "lead"
-                ? groups.map((g) => g.list.map((a) => <MemberRow key={`${g.project.id}-${a.id}`} a={a} team={g.team} project={g.project} multi={multi} />))
-                : groups.map((g) => (
-                    <div key={g.project.id} className="flex flex-col">
-                      {multi && <span className="px-2 pt-1 text-[11px] text-ink-2">{g.project.name}</span>}
-                      {g.list.map((a) => (
-                        <MemberRow key={a.id} a={a} team={g.team} project={g.project} multi={multi} />
-                      ))}
-                    </div>
-                  ))}
-            </div>
-          );
-        })}
 
         {reports.length > 0 && (
-          <div className="flex flex-col gap-1.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>
+          <div className="flex flex-col gap-1.5 py-2">
             <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
               보고함 <span className="font-normal">{reports.length}</span>
             </span>
@@ -149,12 +127,23 @@ export function TaskBoard() {
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
                   <span className="min-w-0 flex-auto truncate">{t.title}</span>
                   {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
-                  <button onClick={() => dismiss(`report:${project.id}:${t.id}`)} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
+                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
                     ✕
                   </button>
                 </span>
                 <MergeActions project={project} task={t} />
               </div>
+            ))}
+          </div>
+        )}
+
+        {shown.length > 0 && (
+          <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: reports.length ? "1px solid var(--line)" : undefined }}>
+            <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
+              지금 하는 일 <span className="font-normal">{activeList.length}</span>
+            </span>
+            {activeList.map((x) => (
+              <MemberRow key={`${x.project.id}-${x.a.id}`} a={x.a} team={x.team} project={x.project} multi={multi} />
             ))}
           </div>
         )}
@@ -166,7 +155,7 @@ export function TaskBoard() {
               aria-expanded={doneOpen}
               className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] text-ink-2 hover:bg-[var(--chip)]"
             >
-              끝난 작업자 {doneN}명
+              쉬는·끝난 팀원 {doneN}명
               <ChevronDown size={13} className="ml-auto" style={{ transform: doneOpen ? undefined : "rotate(-90deg)", transition: "transform 160ms" }} />
             </button>
             {doneOpen &&
@@ -183,10 +172,11 @@ export function TaskBoard() {
 
         {unassigned.length > 0 && (
           <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: "1px solid var(--line)" }}>
-            <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
-              맡을 사람 기다리는 일 <span className="font-normal">{unassigned.length}</span>
-            </span>
-            {unassigned.map(({ t, project, team }) => {
+            <button onClick={() => setQueueOpen((v) => !v)} aria-expanded={queueOpen} className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] text-ink-2 hover:bg-[var(--chip)]">
+              맡을 사람 기다리는 일 {unassigned.length}
+              <ChevronDown size={13} className="ml-auto" style={{ transform: queueOpen ? undefined : "rotate(-90deg)", transition: "transform 160ms" }} />
+            </button>
+            {queueOpen && unassigned.map(({ t, project, team }) => {
               const by = team.agents.find((a) => a.id === t.requestedBy);
               return (
                 <button
@@ -205,7 +195,14 @@ export function TaskBoard() {
         )}
       </div>
 
-      {shown.length > 0 && <div className="flex max-h-[38%] min-h-0 flex-col max-[820px]:max-h-[26%]" style={{ borderTop: "1px solid var(--line)" }}>
+      {shown.length > 0 && (
+        <div className="flex shrink-0 flex-col px-2 py-1" style={{ borderTop: "1px solid var(--line)" }}>
+          {shown.map(({ project, team }) => (
+            <TeamUsageBox key={project.id} projectId={project.id} team={team} label={multi ? project.name : undefined} />
+          ))}
+        </div>
+      )}
+      {shown.length > 0 && <div className="flex max-h-[38%] min-h-0 shrink-0 flex-col max-[820px]:max-h-[26%]" style={{ borderTop: "1px solid var(--line)" }}>
         <button onClick={() => setLogOpen((v) => !v)} aria-expanded={logOpen} className="flex items-center gap-1.5 border-0 bg-transparent px-4 pt-2.5 pb-1.5 text-left text-[13px] font-semibold">
           진행 기록
           <span className="text-[11.5px] font-normal text-ink-2">{events.length}</span>

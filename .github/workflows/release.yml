@@ -1,10 +1,19 @@
 # Push a tag like v0.1.1 → build the two outside editors' web builds (figcraft, deckcraft) once,
 # then build macOS (Apple Silicon + Intel) and Windows with those builds inside the app, publish a
 # GitHub Release with the installers, update signatures and latest.json (what installed apps check).
+#
+# Caches: GitHub Actions only lets a run see caches made on its own ref or on the default branch.
+# Every tag is its own ref, so tag runs never share caches with each other (checked in v0.3.1:
+# every cache was stored under refs/tags/<that tag>, and each release found "Cache not found").
+# So pushes to main (and manual runs) only warm the caches (engines + app dependencies, no release),
+# and tag runs restore those main-scope caches and do not save new ones.
+# A release merges to main and pushes the tag almost at once, so that release's own caches are
+# usually not ready yet; they get used from the next release on.
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -72,12 +81,14 @@ jobs:
           workspaces: engine-src/figcraft
           cache-directories: ${{ runner.temp }}/figcraft-target
           cache-on-failure: true
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: engine-src/deckcraft
           cache-directories: ${{ runner.temp }}/deckcraft-target
           cache-on-failure: true
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
       # Finished engine output. A hit skips the build; the key holds the commit and the script.
       - id: figcraft-out
@@ -113,7 +124,44 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Main pushes / manual runs: fill the main-scope caches for the app build (pnpm store and the Rust
+  # dependency build) without making a release. Tag builds below restore them.
+  warm-app:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: app-${{ matrix.target }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: cargo build --release --target ${{ matrix.target }}
+        working-directory: src-tauri
+
   build:
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     needs: engines
     strategy:
       fail-fast: false
@@ -145,6 +193,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: app-${{ matrix.target }}
+          save-if: false
 
       - run: pnpm install --frozen-lockfile
 
