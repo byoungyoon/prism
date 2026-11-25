@@ -6,6 +6,7 @@ import { useShownTeams, waitsForMe } from "../../store";
 import type { TeamSnapshot } from "../../lib/api";
 import { ReportFeed } from "../ReportFeed";
 import { Office } from "./Office";
+import { busyCrew, liveCrew } from "../../lib/crew";
 import "./office.css";
 
 const count = (t: TeamSnapshot, stage: string) => t.tasks.filter((x) => x.stage === stage).length;
@@ -18,10 +19,21 @@ export function CenterOffice() {
 
   return (
     <section aria-label="사무실" className="of-center flex min-h-0 min-w-0 flex-auto flex-col gap-2">
-      <div role="tablist" aria-label="팀 요약" className="of-tabs">
+      {/* many teams: the row scrolls sideways (a plain mouse wheel too), fading out at the edge */}
+      <div
+        role="tablist"
+        aria-label="팀 요약"
+        className="of-tabs"
+        onWheel={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollWidth > el.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) el.scrollLeft += e.deltaY;
+        }}
+      >
         <button role="tab" aria-selected={!pick} onClick={() => setOpen(null)} className={`of-tab of-tab-office${pick ? "" : " on"}`}>
           <span className="of-tab-name">🏢 사무실</span>
-          <span className="of-tab-sub">팀원 {shown.reduce((n, s) => n + s.team.agents.filter((a) => a.status !== "off").length, 0)}명</span>
+          <span className="of-tab-sub">
+            팀원 {shown.reduce((n, s) => n + liveCrew(s.team).length, 0)}명 · 일하는 중 {shown.reduce((n, s) => n + busyCrew(s.team).length, 0)}명
+          </span>
         </button>
         {shown.map(({ project, team }) => {
           const asks = team.chat.filter(waitsForMe).length;
@@ -48,7 +60,7 @@ export function CenterOffice() {
           <ReportFeed only={pick} />
         </div>
       ) : (
-        <Office />
+        <Office onTeam={setOpen} />
       )}
     </section>
   );

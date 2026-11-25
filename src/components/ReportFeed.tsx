@@ -318,7 +318,7 @@ function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen
         </span>
       )}
       <span className="min-w-0 flex-auto truncate">{task.title}</span>
-      <span className="shrink-0 text-[11.5px] text-ink-2">{a?.name ?? "배정 전"}</span>
+      <span className="shrink-0 text-[11.5px] text-ink-2">{a?.name ?? task.who ?? "배정 전"}</span>
       <span className="w-12 shrink-0 text-right text-[11.5px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
         {st.word}
       </span>
@@ -453,6 +453,8 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
           <button onClick={() => open(assignee.id)} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 hover:text-[var(--text)] hover:underline" title="작업 화면 보기">
             {assignee.name} · <span className="font-mono text-[11px]">{modelLabel(assignee.model)}</span>
           </button>
+        ) : task.who ? (
+          <span>{task.who}</span>
         ) : (
           <span>맡을 사람을 기다려요</span>
         )}
@@ -478,10 +480,10 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
           ) : (
             <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{task.summary}</p>
           )}
-          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? "작업자"}: {task.summary}</p>}
+          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? task.who ?? "작업자"}: {task.summary}</p>}
         </div>
       )}
-      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? "작업자"} />}
+      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? task.who ?? "작업자"} />}
 
       {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>

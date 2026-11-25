@@ -5,7 +5,7 @@ import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Agent, Task } from "../../lib/api";
 import { Critter, type CritterLook } from "./Critter";
 import { useOverride } from "./critterStore";
-import { critterLine, critterState, type CritterState } from "./state";
+import { critterLine, critterState, type CritterState, type Pose } from "./state";
 
 export interface PlacedCritter {
   /** key for overrides (critters.send(id, …)); usually the agent id */
@@ -20,6 +20,8 @@ export interface PlacedCritter {
   x: number;
   y: number;
   state?: CritterState;
+  /** the body pose while standing still (a walking critter always walks); default: the state's */
+  pose?: Pose;
   /** bubble text; defaults to what the agent is on */
   say?: string;
 }
@@ -74,7 +76,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
             {say}
           </span>
         )}
-        <Critter agent={item.agent} task={item.task} look={item.look} colorKey={item.colorKey} state={state} size={size} flip={walk.flip} labelled />
+        <Critter agent={item.agent} task={item.task} look={item.look} colorKey={item.colorKey} state={state} pose={state === "walk" ? undefined : item.pose} size={size} flip={walk.flip} labelled />
         {name && label && <span className="cr-name">{label}</span>}
       </div>
     </div>

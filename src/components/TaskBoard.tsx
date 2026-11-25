@@ -8,6 +8,7 @@ import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
+import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -19,12 +20,14 @@ const WORD: Record<string, string> = { queued: "대기", running: "진행 중", 
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
-  const task = a.taskId ? team.tasks.find((t) => t.id === a.taskId) : undefined;
+  // its card now (a card that is already over is not shown next to a member still at work)
+  const task = currentCard(team, a);
+  if (a.restSince) return { task: undefined, word: "휴게실", problem: false };
   if (a.status === "block") return { task, word: "막힘", problem: true };
   if (task?.stage === "failed") return { task, word: "실패", problem: true };
   if (a.role === "lead") return { task, word: a.status === "work" ? "지시를 나누는 중" : a.status === "off" ? "퇴근" : "지시를 기다려요", problem: false };
-  if (task) return { task, word: WORD[task.stage], problem: false };
-  return { task, word: a.status === "done" ? "끝남" : "대기", problem: false };
+  if (task) return { task, word: a.status === "done" && task.stage === "review" ? "보고함" : WORD[task.stage], problem: false };
+  return { task, word: a.status === "done" ? "끝남" : a.status === "work" ? "작업 중" : "대기", problem: false };
 }
 
 function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean }) {
@@ -72,10 +75,10 @@ export function TaskBoard() {
   const tasks = shown.flatMap(({ team }) => team.tasks);
   const count = (stage: string) => tasks.filter((t) => t.stage === stage).length;
   // finished 팀장·작업자 are folded into one line below; the 총괄 always stays on top
-  const members = (team: TeamSnapshot, role: Role) =>
-    team.agents.filter((a) => a.role === role && (a.status !== "off" || role === "lead") && (a.status !== "done" || role === "lead")).sort((x, y) => x.name.localeCompare(y.name, "ko"));
+  // one rule for "who is on the team" (lib/crew): the same people the office and the team tabs show
+  const members = (team: TeamSnapshot, role: Role) => liveCrew(team, { withLead: true }).filter((a) => a.role === role);
   const doneGroups = shown
-    .map(({ project, team }) => ({ project, team, list: team.agents.filter((a) => a.role !== "lead" && a.status === "done").sort((x, y) => x.name.localeCompare(y.name, "ko")) }))
+    .map(({ project, team }) => ({ project, team, list: finishedCrew(team) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));

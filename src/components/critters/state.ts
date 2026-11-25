@@ -3,6 +3,20 @@ import type { Agent, Role, Task } from "../../lib/api";
 
 export type CritterState = "idle" | "walk" | "work" | "think" | "block" | "done" | "fail" | "off";
 
+/** the body pose drawn for each state (poses.tsx); a `pose` prop on <Critter> overrides it */
+export type Pose = "sit" | "type" | "think" | "coffee" | "sleep" | "walk" | "cheer" | "raise" | "sad";
+
+export const POSE_OF: Record<CritterState, Pose> = {
+  idle: "coffee", // 쉬는 중: coffee break
+  walk: "walk",
+  work: "type", // 일함: typing
+  think: "think",
+  block: "raise", // 허락 대기: paw up
+  done: "cheer", // 완료
+  fail: "sad",
+  off: "sleep", // 퇴근
+};
+
 export const STATE_WORD: Record<CritterState, string> = {
   idle: "쉬는 중",
   walk: "이동 중",
@@ -52,6 +66,7 @@ export const PALETTE: [string, string][] = [
   ["#c4d99a", "#8ea95f"], // sage
   ["#9fdbe0", "#5eaab1"], // aqua
   ["#f19c86", "#c86a56"], // coral
+  ["#fcd6e3", "#e58fab"], // cherry blossom: pale pink body, deeper pink outline
 ];
 
 /** W1, W2… get the next color in turn; other names a stable pick. The 총괄 starts on sky. */
