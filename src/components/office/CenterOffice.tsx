@@ -55,12 +55,14 @@ export function CenterOffice() {
           );
         })}
       </div>
-      {pick ? (
+      {/* the office stays mounted (just hidden) so the cats, lounge and scroll keep their place */}
+      <div hidden={!!pick} className={pick ? undefined : "flex min-h-0 min-w-0 flex-auto flex-col"} style={pick ? { display: "none" } : undefined}>
+        <Office onTeam={setOpen} paused={!!pick} />
+      </div>
+      {pick && (
         <div className="flex min-h-0 min-w-0 flex-auto flex-col [&>section]:flex-auto">
           <ReportFeed only={pick} />
         </div>
-      ) : (
-        <Office onTeam={setOpen} />
       )}
     </section>
   );

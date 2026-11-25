@@ -151,7 +151,10 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   );
 }
 
-export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
+export function Office({ paused = false }: { onTeam?: (projectId: string) => void; paused?: boolean } = {}) {
+  // hidden behind another tab: keep the state, stop the wandering and chatter timers
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   // the furniture's pixel pictures (drawn once, kept in a <style>)
   ensurePixelOffice();
   const shown = useOfficeTeams();
@@ -284,7 +287,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     });
     if (still || !keys.length) return;
     const t = setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || pausedRef.current) return;
       // one of them (rarely two) gets up and strolls somewhere else
       const movers = keys.filter(() => Math.random() < 0.18);
       if (movers.length) setStrolls((cur) => pickFor(movers.slice(0, 2), cur));
@@ -302,7 +305,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     if (still) return;
     let clear: ReturnType<typeof setTimeout> | undefined;
     const t = setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || pausedRef.current) return;
       const { members: ms, deskMembers: ds, asks: ak } = talkRef.current;
       const quiet = ms.filter((m) => !ak[m.key]?.length);
       if (!quiet.length) return;
