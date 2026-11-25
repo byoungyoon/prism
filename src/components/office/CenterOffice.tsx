@@ -19,7 +19,16 @@ export function CenterOffice() {
 
   return (
     <section aria-label="사무실" className="of-center flex min-h-0 min-w-0 flex-auto flex-col gap-2">
-      <div role="tablist" aria-label="팀 요약" className="of-tabs">
+      {/* many teams: the row scrolls sideways (a plain mouse wheel too), fading out at the edge */}
+      <div
+        role="tablist"
+        aria-label="팀 요약"
+        className="of-tabs"
+        onWheel={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollWidth > el.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) el.scrollLeft += e.deltaY;
+        }}
+      >
         <button role="tab" aria-selected={!pick} onClick={() => setOpen(null)} className={`of-tab of-tab-office${pick ? "" : " on"}`}>
           <span className="of-tab-name">🏢 사무실</span>
           <span className="of-tab-sub">
