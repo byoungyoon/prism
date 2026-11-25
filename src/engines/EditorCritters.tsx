@@ -7,12 +7,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../store";
 import type { Agent, EngineCall, Task } from "../lib/api";
-import { CritterLayer, colorOf, critters, useCritterStore, useReducedMotion, type PlacedCritter } from "../components/critters";
+import { APP_LAYER, colorOf, critters, useCritterStore, useReducedMotion, type CritterState } from "../components/critters";
 import type { EditTarget } from "./editing";
 import { stageDirector, type ShowCast } from "./drawShow";
 import { arr, deckApi, deckSlide, describeCall, engineView, figApi, locate, num, obj, type Box, type Spot } from "./locate";
 
-const LAYER = "editor";
 /** an engine call older than this no longer counts as "editing now" */
 const RECENT_MS = 90_000;
 const DONE_MS = 2600;
@@ -91,12 +90,25 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // the critters live here while the editor is shown: the bottom strip steps aside
-  useEffect(() => {
-    if (!visible) return;
-    useCritterStore.getState().stageOpen(true);
-    return () => useCritterStore.getState().stageOpen(false);
-  }, [visible]);
+  // the critters live on the app-wide layer (AppCritters); here we steer this team's ones, in this
+  // box's pixels: `ctl` turns them into the app layer's (window) pixels and the team's critter keys
+  const keyOf = (id: string) => `${target.projectId}:${id}`;
+  const origin = (): Spot => {
+    const r = box.current?.getBoundingClientRect();
+    return { x: r?.left ?? 0, y: r?.top ?? 0 };
+  };
+  const ctl = {
+    send(id: string, x: number, y: number, speed?: number) {
+      const o = origin();
+      critters.send(keyOf(id), x + o.x, y + o.y, APP_LAYER, speed);
+    },
+    trace(id: string, x: number, y: number) {
+      const o = origin();
+      critters.trace(keyOf(id), x + o.x, y + o.y, APP_LAYER);
+    },
+    setState: (id: string, st: CritterState | null) => critters.setState(keyOf(id), st, APP_LAYER),
+    say: (id: string, text: string | null) => critters.say(keyOf(id), text, APP_LAYER),
+  };
 
   // who shows up: the card's owner (and follow-ups'), anyone calling this engine lately, then the rest of the team
   const crew = useMemo(() => {
@@ -122,8 +134,10 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
   const drawing = useRef<Set<string>>(new Set());
 
   const posOf = (id: string): Spot | undefined => {
-    const o = useCritterStore.getState().over[`${LAYER}:${id}`];
-    return o?.x != null && o?.y != null ? { x: o.x, y: o.y } : home.current[id];
+    const o = useCritterStore.getState().over[`${APP_LAYER}:${keyOf(id)}`];
+    if (o?.x == null || o?.y == null) return home.current[id];
+    const g = origin();
+    return { x: o.x - g.x, y: o.y - g.y };
   };
 
   // the canvas area (refreshed now and then: panels open and close), the selection, the mouse
@@ -200,17 +214,17 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
         if (crowded) {
           // out of the person's way, briskly
           const q = freeSpot(id, p, 260) ?? freeSpot(id);
-          if (q) critters.send(id, q.x, q.y, LAYER, HURRY);
+          if (q) ctl.send(id, q.x, q.y, HURRY);
           continue;
         }
         if (still) continue;
         const roll = Math.random();
         if (roll < 0.16) {
           const q = freeSpot(id, p);
-          if (q) critters.send(id, q.x, q.y, LAYER, AMBLE);
+          if (q) ctl.send(id, q.x, q.y, AMBLE);
         } else if (roll < 0.26) {
           // stop and look around: turn on the spot
-          critters.send(id, p.x + (Math.random() < 0.5 ? -1.5 : 1.5), p.y, LAYER, AMBLE);
+          ctl.send(id, p.x + (Math.random() < 0.5 ? -1.5 : 1.5), p.y, AMBLE);
         }
       }
     }, 900);
@@ -223,6 +237,23 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
     if (home.current[agent.id] || !size.w) continue;
     home.current[agent.id] = freeSpot(agent.id) ?? { x: 40 + Math.random() * Math.max(10, size.w - 80), y: 120 + Math.random() * Math.max(10, size.h - 160) };
   }
+
+  // while the editor is shown, this team's critters are ours: they walk over into it
+  const crewKeys = crew.map((c) => keyOf(c.agent.id)).join("|");
+  useEffect(() => {
+    if (!visible || !ready) return;
+    const keys = crewKeys ? crewKeys.split("|") : [];
+    useCritterStore.getState().claim(keys, true);
+    for (const { agent } of crew) {
+      const h = home.current[agent.id];
+      if (h && !active.current.has(agent.id)) ctl.send(agent.id, h.x, h.y, 240);
+    }
+    return () => {
+      useCritterStore.getState().claim(keys, false);
+      for (const k of keys) critters.say(k, null, APP_LAYER);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, ready, crewKeys]);
 
   // ── following MCP calls: walk there and work ────────────────────────
   const seen = useRef<Record<string, number>>({});
@@ -242,9 +273,9 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
       // nowhere to point at: work along the right edge instead
       const p = found.spot ? clampIn(found.spot) : { x: size.w - 80, y: Math.min(size.h - 10, 200 + i * 56) };
       active.current.add(id);
-      critters.send(id, p.x, p.y, LAYER, 220);
-      critters.setState(id, "work", LAYER);
-      critters.say(id, describeCall(call, found), LAYER);
+      ctl.send(id, p.x, p.y, 220);
+      ctl.setState(id, "work");
+      ctl.say(id, describeCall(call, found));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crew, ready, on, size.w, size.h]);
@@ -259,21 +290,21 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
     // the drawing show takes it from here (drawShow picks who draws); the rest go back to roaming
     if (showOn()) {
       ids.forEach((id) => {
-        critters.setState(id, null, LAYER);
-        critters.say(id, null, LAYER);
+        ctl.setState(id, null);
+        ctl.say(id, null);
       });
       return;
     }
     // no show: a hop, then back to roaming
     ids.forEach((id) => {
-      critters.setState(id, "done", LAYER);
-      critters.say(id, "고쳤어요!", LAYER);
+      ctl.setState(id, "done");
+      ctl.say(id, "고쳤어요!");
     });
     const t = setTimeout(() => {
       ids.forEach((id) => {
         if (drawing.current.has(id)) return;
-        critters.setState(id, null, LAYER);
-        critters.say(id, null, LAYER);
+        ctl.setState(id, null);
+        ctl.say(id, null);
       });
     }, DONE_MS);
     return () => clearTimeout(t);
@@ -289,7 +320,7 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
     if (!box.current || !cover.current || !ink.current || !caret.current) return;
     const cast: ShowCast = {
       engine: target.engine.id,
-      layer: LAYER,
+      ctl,
       box: box.current,
       cover: cover.current,
       ink: ink.current,
@@ -326,7 +357,7 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
   // leaving the file: forget every override this layer made
   useEffect(
     () => () => {
-      for (const { agent } of crewRef.current) critters.release(agent.id, LAYER);
+      for (const { agent } of crewRef.current) critters.release(keyOf(agent.id), APP_LAYER);
       active.current.clear();
       drawing.current.clear();
     },
@@ -335,22 +366,12 @@ export function EditorCritters({ target, frame, ready, changed }: Props) {
 
   const clampIn = (p: Spot) => ({ x: Math.min(size.w - 18, Math.max(18, p.x)), y: Math.min(size.h - 6, Math.max(SIZE + 8, p.y)) });
 
-  const items: PlacedCritter[] = crew.map(({ agent, task }) => ({
-    id: agent.id,
-    agent,
-    task,
-    ...(home.current[agent.id] ?? { x: size.w / 2, y: size.h / 2 }),
-    // roaming members keep quiet; working ones get their line from the override
-    say: "",
-  }));
-
   const layer: React.CSSProperties = { position: "absolute", inset: 0, pointerEvents: "none" };
   return (
     <div ref={box} style={{ ...layer, zIndex: 5, overflow: "hidden" }} aria-hidden="true">
       <canvas ref={cover} style={{ ...layer, opacity: 0 }} />
       <canvas ref={ink} style={{ ...layer, opacity: 0 }} />
       <div ref={caret} style={{ position: "absolute", left: 0, top: 0, width: 2, borderRadius: 1, opacity: 0 }} />
-      {visible && <CritterLayer id={LAYER} items={items} size={SIZE} speed={AMBLE} names />}
     </div>
   );
 }

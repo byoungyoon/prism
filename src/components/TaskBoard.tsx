@@ -34,6 +34,7 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
   const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
   return (
     <button
+      data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}
       title={`${a.name} 작업 화면 · ${modelLabel(a.model)}`}
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"

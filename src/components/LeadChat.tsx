@@ -51,6 +51,7 @@ export function EscalationCard({ m, team, projectId }: { m: ChatMsg; team: TeamS
   const done = e.answer != null;
   return (
     <div
+      data-critter-anchor={done ? undefined : `ask:${projectId}:${e.agentId}`}
       className="flex flex-col gap-2.5 rounded-[14px] px-[13px] py-3"
       style={done ? { background: "var(--glass2)", border: "1px solid var(--line)", opacity: 0.75 } : { background: "var(--block-bg)", border: "1px solid var(--block)" }}
     >
@@ -544,6 +545,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   return (
     <section
       ref={sectionRef}
+      data-critter-anchor={`lead:${projectId}`}
       aria-label={multi ? `${project?.name ?? ""} 총괄 채팅` : "총괄 채팅"}
       className={`glass flex min-w-0 flex-col overflow-hidden rounded-2xl transition-shadow ${multi ? "min-h-[240px] flex-[1_1_0]" : "max-w-[460px] flex-[1_1_400px]"}`}
       style={multi ? { boxShadow: active ? "0 0 0 1.5px var(--amber), var(--shadow-sm)" : "var(--shadow-sm), var(--hi)" } : undefined}
