@@ -66,6 +66,7 @@ export const PALETTE: [string, string][] = [
   ["#c4d99a", "#8ea95f"], // sage
   ["#9fdbe0", "#5eaab1"], // aqua
   ["#f19c86", "#c86a56"], // coral
+  ["#fcd6e3", "#e58fab"], // cherry blossom: pale pink body, deeper pink outline
 ];
 
 /** W1, W2… get the next color in turn; other names a stable pick. The 총괄 starts on sky. */
