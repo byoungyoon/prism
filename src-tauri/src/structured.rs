@@ -29,6 +29,8 @@ pub enum Event {
     Tool { name: String, input: Value },
     TurnEnd { result: Option<String>, cost: Option<f64>, error: bool },
     Exit(Option<i32>),
+    /// how many tokens the conversation held in its last request (its size right now)
+    Context(u64),
 }
 
 /// Where a driver reports. Drivers may call it from inside `send`/`kill`, i.e. while their caller
@@ -168,6 +170,12 @@ impl Claude {
                         }
                     }
                     Some("assistant") => {
+                        if let (Some(u), true) = (v.pointer("/message/usage"), v.get("parent_tool_use_id").is_none_or(Value::is_null)) {
+                            let n: u64 = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u.get(k).and_then(Value::as_u64)).sum();
+                            if n > 0 {
+                                sink(Event::Context(n));
+                            }
+                        }
                         for block in v.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
                             match block.get("type").and_then(Value::as_str) {
                                 Some("text") => {
