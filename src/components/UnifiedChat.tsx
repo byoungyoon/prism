@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEv
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
-import { api, type ChatMsg, type Project, type TeamSnapshot } from "../lib/api";
+import { api, type ChatMsg, type Project, type Task, type TeamSnapshot } from "../lib/api";
 import { isRemote } from "../lib/transport";
 import { isActive, useApp, useShownTeams } from "../store";
 import { clock } from "../data/types";
@@ -14,7 +14,7 @@ import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
-import { ReportMerge } from "./MergeActions";
+import { MergeGroup, ReportMerge } from "./MergeActions";
 import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } from "./BatchCard";
 import { Markdown } from "./Markdown";
 
@@ -100,6 +100,16 @@ export function UnifiedChat() {
     if ("card" in it) return view === "chat" || batchHasReport(it.card);
     return (view === "report") === (it.m.kind === "report");
   });
+
+  // 팀별 합치기 대기 카드(보고가 채팅에 있는 것만)와, 묶음 카드가 들어갈 마지막 보고 자리
+  const pendingOf = (pid: string, team: { tasks: Task[] }) =>
+    team.tasks.filter((t) => t.stage === "review" && items.some((i) => "m" in i && i.pid === pid && i.m.kind === "report" && i.m.taskIds[0] === t.id));
+  const lastPendingKey: Record<string, string> = {};
+  for (const it of shownItems) {
+    if (!("m" in it) || it.m.kind !== "report" || !it.m.taskIds[0]) continue;
+    const t = byId[it.pid]?.team.tasks.find((x) => x.id === it.m.taskIds[0]);
+    if (t?.stage === "review") lastPendingKey[it.pid] = it.key;
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -301,6 +311,22 @@ export function UnifiedChat() {
               );
             const team = byId[it.pid];
             if (!team) return null;
+            if (it.m.kind === "report" && it.m.taskIds[0]) {
+              // 같은 팀의 합치기 대기 카드가 2장 이상이면 마지막 보고 자리에 한 카드로 묶는다 (팀이 다르면 따로)
+              const tid = it.m.taskIds[0];
+              const pend = pendingOf(it.pid, team.team);
+              if (pend.length >= 2 && pend.some((t) => t.id === tid)) {
+                if (it.key !== lastPendingKey[it.pid]) return null;
+                return (
+                  <motion.div key={it.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={spring} className="flex max-w-[94%] flex-col gap-1 self-start">
+                    <span className="text-[11px] text-ink-2">
+                      {team.project.name} · {clock(it.at)}
+                    </span>
+                    <MergeGroup project={team.project} tasks={pend} />
+                  </motion.div>
+                );
+              }
+            }
             if (it.m.kind === "me")
               return (
                 <motion.div key={it.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={spring} className="flex max-w-[88%] flex-col items-end gap-1 self-end">
