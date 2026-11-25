@@ -2,6 +2,7 @@
 // 화면 캡처 도구 (팀원용). 실제 앱 스타일(Tailwind 포함)로 vite 개발 서버를 띄우고, 가짜 팀 데이터를
 // 넣어 화면을 PNG로 찍는다. 끝나면 서버와 브라우저를 모두 닫는다.
 //
+//   (pnpm 이 안 되는 환경이면 `node scripts/shot.mjs ...` 로 똑같이 쓴다)
 //   pnpm shot                                  기본: 데모 시나리오 · 사무실 · 1440폭 · 밝은 테마
 //   pnpm shot -- -s demo --screen office,board --width 390 --theme dark
 //   pnpm shot -- --screen office --frames 6 --interval 300      연속 캡처 (애니메이션 확인)
@@ -11,7 +12,8 @@
 // 처음 한 번만 Chromium을 내려받는다.
 
 import { createServer } from "vite";
-import { chromium } from "playwright-core";
+import os from "node:os";
+import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -20,6 +22,24 @@ import { fileURLToPath } from "node:url";
 import { buildScenario, SCENARIO_NAMES } from "./shot/scenarios.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** playwright-core 폴더. node_modules에 없으면(작업 폴더의 공유 node_modules 등) npx 캐시에서 찾는다. */
+function findPlaywrightDir() {
+  const req = createRequire(import.meta.url);
+  try {
+    return path.dirname(req.resolve("playwright-core/package.json"));
+  } catch {}
+  const npx = path.join(os.homedir(), ".npm", "_npx");
+  try {
+    for (const h of fs.readdirSync(npx)) {
+      const d = path.join(npx, h, "node_modules", "playwright-core");
+      if (fs.existsSync(path.join(d, "package.json"))) return d;
+    }
+  } catch {}
+  throw new Error("playwright-core를 찾지 못했어요. `npx -y playwright-core --version` 을 한 번 실행해 캐시에 받아 두고 다시 시도해 주세요. (pnpm install 은 하지 않아요)");
+}
+const PW_DIR = findPlaywrightDir();
+const { chromium } = createRequire(import.meta.url)(PW_DIR);
 
 /** 화면 이름 → 앱을 그 화면으로 여는 방법. narrow = 폭 820 이하(휴대폰 탭 구조). */
 const SCREENS = {
@@ -108,7 +128,7 @@ async function launchBrowser() {
   } catch (e) {
     if (!/Executable doesn't exist|playwright install/i.test(String(e))) throw e;
     console.log("Playwright용 Chromium이 없어서 한 번만 내려받을게요…");
-    const cli = path.join(ROOT, "node_modules", "playwright-core", "cli.js");
+    const cli = path.join(PW_DIR, "cli.js");
     const r = spawnSync(process.execPath, [cli, "install", "chromium"], { stdio: "inherit" });
     if (r.status !== 0) throw new Error("Chromium 설치에 실패했어요. 인터넷 연결을 확인해 주세요.");
     return chromium.launch({ headless: true });
