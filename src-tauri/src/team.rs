@@ -1958,7 +1958,8 @@ fn handoff_task_lines(team: &Team) -> String {
 /// How long the 총괄 gets to write its hand-over memo before the new conversation starts without it.
 const RENEW_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 /// The 총괄's conversation (tokens) past which it starts a new one by itself after a turn.
-const RENEW_CONTEXT: u64 = 170_000;
+/// Kept well under `tokens::BIG_CONTEXT` (150K): it is only checked once a turn ends, and one turn can add tens of thousands.
+const RENEW_CONTEXT: u64 = 100_000;
 /// A worker's earlier conversation this big isn't continued for a follow-up: it starts fresh with a summary.
 const FRESH_CONTEXT: u64 = 150_000;
 /// A 작업자·팀장 whose conversation grows past this in the middle of its card is handed over to a new
