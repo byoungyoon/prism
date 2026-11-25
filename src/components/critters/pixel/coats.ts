@@ -54,7 +54,7 @@ export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
 }
 
 /** a colour a little lighter (#rrggbb → rgb()) */
-const lift = (hex: string) => {
+export const lift = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
   const up = (v: number) => Math.round(v + (255 - v) * 0.08);
   return `rgb(${up(n >> 16)}, ${up((n >> 8) & 255)}, ${up(n & 255)})`;
