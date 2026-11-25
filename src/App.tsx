@@ -10,6 +10,7 @@ import { CenterOffice } from "./components/office/CenterOffice";
 import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { QuitConfirm } from "./components/QuitConfirm";
 import { EngineStage } from "./engines/EngineStage";
 import { useEngineEdit } from "./engines/editing";
 import { HomeScreen } from "./screens/HomeScreen";
@@ -237,6 +238,7 @@ export default function App() {
       <AccountSheet />
       <Onboarding />
       <UpdateBanner />
+      <QuitConfirm />
       <ReconnectBadge />
       <ErrorToast />
     </div>
