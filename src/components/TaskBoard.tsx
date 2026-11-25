@@ -9,7 +9,7 @@ import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
 import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
-import { MergeActions } from "./MergeActions";
+import { MergeActions, MergeAllButton } from "./MergeActions";
 import { TeamUsageBox } from "./TokenUse";
 
 const FLOORS: { role: Role; name: string }[] = [
@@ -139,6 +139,9 @@ export function TaskBoard() {
             <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
               보고함 <span className="font-normal">{reports.length}</span>
             </span>
+            {[...new Set(reports.map((r) => r.project))].map((p) => (
+              <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p).map((r) => r.t)} />
+            ))}
             {reports.map(({ t, project }) => (
               <div key={`${project.id}-${t.id}`} className="flex flex-col gap-1 rounded-lg px-2 py-1.5" style={{ background: "var(--glass2)" }}>
                 <span className="flex min-w-0 items-baseline gap-2 text-[12.5px]">

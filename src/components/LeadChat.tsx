@@ -12,7 +12,7 @@ import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
-import { ReportMerge } from "./MergeActions";
+import { MergeGroup, ReportMerge } from "./MergeActions";
 import { Markdown } from "./Markdown";
 
 const bubbleIn = {
@@ -467,6 +467,9 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const live = !!lead && lead.status !== "off";
   const queued = team?.tasks.filter((t) => t.stage === "queued").length ?? 0;
   const chat = team?.chat ?? [];
+  // 합치기를 기다리는 카드 (보고가 채팅에 있는 것만) — 2장 이상이면 한 카드로 묶어 보여준다
+  const pending = (team?.tasks ?? []).filter((t) => t.stage === "review" && chat.some((m) => m.kind === "report" && m.taskIds[0] === t.id));
+  const lastPendingMsgId = [...chat].reverse().find((m) => m.kind === "report" && pending.some((t) => t.id === m.taskIds[0]))?.id;
   const pendingPerms = chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length;
   const waiting = pendingPerms + chat.filter((m) => m.escalation && !m.escalation.answer).length;
   const active = !multi || projectId === current;
@@ -683,6 +686,15 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                 );
               if (view === "chat" && m.kind === "report") return null;
               if (view === "report" && m.kind !== "report") return null;
+              if (m.kind === "report" && pending.length >= 2 && project && m.taskIds[0] && pending.some((t) => t.id === m.taskIds[0])) {
+                // 같은 팀의 합치기 대기 카드는 마지막 보고 자리에 한 카드로 묶는다
+                if (m.id !== lastPendingMsgId) return null;
+                return (
+                  <motion.div key={m.id} {...bubbleIn} className="flex max-w-[92%] flex-col gap-2">
+                    <MergeGroup project={project} tasks={pending} />
+                  </motion.div>
+                );
+              }
               if (m.kind === "escalation")
                 return (
                   <motion.div key={m.id} {...bubbleIn}>
