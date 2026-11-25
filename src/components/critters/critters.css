@@ -266,13 +266,16 @@
 .cr-say {
   max-width: 150px;
   margin-bottom: 1px;
-  padding: 1px 7px;
+  position: relative;
+  z-index: 1;
+  flex: none;
+  padding: 2px 7px 3px;
   border-radius: 9px;
   background: var(--cr-bubble);
   border: 1px solid var(--cr-bubble-line);
   color: var(--text);
   font-size: 10.5px;
-  line-height: 15px;
+  line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

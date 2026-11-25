@@ -53,25 +53,35 @@ export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
   return COATS[(base + Math.abs(h)) % COATS.length];
 }
 
+/** a colour a little lighter (#rrggbb → rgb()) */
+const lift = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  const up = (v: number) => Math.round(v + (255 - v) * 0.08);
+  return `rgb(${up(n >> 16)}, ${up((n >> 8) & 255)}, ${up(n & 255)})`;
+};
+
 /**
  * The colour of one dot. `x, y` are in the frame; `top` is where the head starts (patterns follow
  * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face.
  */
 export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number): string | null {
+  // x, y, top and faceX are in the drawn cat's dots (K × K per drawing dot, see art.ts), so the
+  // patterns below are twice as fine as the drawing: thin tabby stripes, smaller patches
   const fur = (c: string) => {
     const ry = y - top;
-    if (coat.stripe && (ch === "k" || ch === "t") && ry >= 3 && ry % 3 === 0 && (x + ry) % 5 !== 0) return coat.stripe;
-    if (coat.stripe && ch === "w" && ry >= 6 && ry % 3 === 0 && (x < faceX - 5 || x > faceX + 5)) return coat.stripe;
+    if (coat.stripe && (ch === "k" || ch === "t") && ry >= 6 && ry % 6 < 2 && (x + ry) % 11 !== 0) return coat.stripe;
+    if (coat.stripe && ch === "w" && ry >= 12 && ry % 6 < 2 && (x < faceX - 10 || x > faceX + 10)) return coat.stripe;
     if (coat.patch && ch === "k") {
       // a dark patch over one ear and eye, an orange one over the other ear, both on the back
-      if (ry < 9 && x < faceX) return coat.patch[0];
-      if (ry < 6 && x > faceX + 1) return coat.patch[1];
-      if (ry >= 12 && ry <= 14 && x >= faceX - 4 && x <= faceX) return coat.patch[0];
+      if (ry < 18 && x < faceX) return coat.patch[0];
+      if (ry < 12 && x > faceX + 2) return coat.patch[1];
+      if (ry >= 24 && ry <= 28 && x >= faceX - 8 && x <= faceX) return coat.patch[0];
     }
     // siamese: a dark oval over the middle of the face, and dark ear rims
-    if (coat.point && ry >= 6 && ry <= 11 && Math.abs(x - faceX) <= (ry === 6 || ry === 11 ? 2 : 4)) return coat.point;
-    if (coat.point && ry <= 3 && ch === "k") return coat.point;
-    return c;
+    if (coat.point && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
+    if (coat.point && ry <= 6 && ch === "k") return coat.point;
+    // a few lighter hairs, so the fur is not one flat colour
+    return (x * 5 + y * 3) % 23 === 0 ? lift(c) : c;
   };
   switch (ch) {
     case "o":

@@ -1,6 +1,7 @@
 // Who is on a team right now — one rule for the board, the team tabs and the office.
 // The team's member list keeps finished sessions for a while (each card gets a fresh member, often
 // under a recycled name like "W1"); the backend trims it (prune_finished), and here we pick the live ones.
+import { useSyncExternalStore } from "react";
 import type { Agent, Task, TeamSnapshot } from "./api";
 
 const ROLE_ORDER = { lead: 0, mgr: 1, worker: 2 } as const;
@@ -127,3 +128,40 @@ export const busyCrew = (team: TeamSnapshot) => liveCrew(team).filter((a) => a.s
 
 /** The name on a card: its member's, or the one the card kept after the member was cleared. */
 export const whoDid = (team: TeamSnapshot, task: Task) => team.agents.find((a) => a.id === task.assignee)?.name ?? task.who ?? null;
+
+// Things the user closed with an X (a usage warning, a report card): remembered across restarts.
+// Hiding only — the card and its branch stay untouched.
+const DISMISS_KEY = "prism.dismissed";
+const dismissListeners = new Set<() => void>();
+let dismissed: Set<string> | null = null;
+const dismissedSet = () => {
+  if (!dismissed) {
+    try {
+      dismissed = new Set<string>(JSON.parse(localStorage.getItem(DISMISS_KEY) ?? "[]"));
+    } catch {
+      dismissed = new Set();
+    }
+  }
+  return dismissed;
+};
+
+/** The ids closed so far, and `dismiss(id)` to close one. */
+export function useDismissed(): { has: (id: string) => boolean; dismiss: (id: string) => void } {
+  const snap = useSyncExternalStore(
+    (fn) => (dismissListeners.add(fn), () => void dismissListeners.delete(fn)),
+    () => dismissedSet(),
+  );
+  return {
+    has: (id) => snap.has(id),
+    dismiss: (id) => {
+      // a new Set each time so subscribers see a change
+      dismissed = new Set(dismissedSet()).add(id);
+      try {
+        localStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissed].slice(-500)));
+      } catch {
+        /* storage full or blocked: closed for this run only */
+      }
+      dismissListeners.forEach((f) => f());
+    },
+  };
+}

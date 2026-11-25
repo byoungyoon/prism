@@ -164,3 +164,99 @@ export function MergeBulk({ project, taskIds, onClose }: { project: Project; tas
     </div>
   );
 }
+
+/** Run 합치기 on cards one by one; stops at the first clash or failure. Returns what happened so far. */
+async function mergeInOrder(pid: string, ids: string[]): Promise<{ notes: MergeOutcome[]; stoppedAt: string | null }> {
+  const notes: MergeOutcome[] = [];
+  for (const id of ids) {
+    const [r] = await api.taskMerge(pid, [id]);
+    if (!r) continue;
+    notes.push(r);
+    if (r.result === "conflict" || r.result === "failed") return { notes, stoppedAt: id };
+  }
+  return { notes, stoppedAt: null };
+}
+
+/** 같은 팀의 합치기 대기 카드 여러 장을 한 카드로: 목록 + 모두 합치기, 개별 합치기도 가능. */
+export function MergeGroup({ project, tasks }: { project: Project; tasks: Task[] }) {
+  const setError = useApp((s) => s.setError);
+  const [busy, setBusy] = useState<string | null>(null); // "all" or a task id
+  const [notes, setNotes] = useState<MergeOutcome[]>([]);
+  const [stoppedAt, setStoppedAt] = useState<string | null>(null);
+
+  const run = async (ids: string[], key: string) => {
+    if (busy) return;
+    setBusy(key);
+    setStoppedAt(null);
+    try {
+      const r = await mergeInOrder(project.id, ids);
+      setNotes(r.notes);
+      setStoppedAt(r.stoppedAt);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (tasks.length === 0) return null;
+  const merged = notes.filter((n) => n.result === "merged").length;
+  return (
+    <div className="glass-soft flex flex-col gap-2 rounded-xl px-3 py-2.5">
+      <span className="text-[12.5px] font-semibold">합치기를 기다리는 카드 {tasks.length}장</span>
+      <div className="flex flex-col gap-1">
+        {tasks.map((t) => (
+          <div key={t.id} className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
+            <span className="min-w-0 flex-auto truncate">{t.title}</span>
+            <button onClick={() => void run([t.id], t.id)} disabled={!!busy} className="min-h-7 shrink-0 rounded-full border-0 px-3 text-[12px] font-semibold disabled:opacity-50" style={quiet}>
+              {busy === t.id ? "합치는 중…" : "합치기"}
+            </button>
+          </div>
+        ))}
+      </div>
+      <button onClick={() => void run(tasks.map((t) => t.id), "all")} disabled={!!busy} className="min-h-8 self-end rounded-full border-0 px-3.5 text-[12.5px] font-semibold disabled:opacity-50" style={primary}>
+        {busy === "all" ? "차례로 합치는 중…" : `모두 합치기 (${tasks.length}장)`}
+      </button>
+      {notes.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {merged > 0 && <span className="text-[12px] text-ink-2">{merged}장을 합쳤어요</span>}
+          {stoppedAt && <span className="text-[12px] font-semibold" style={{ color: "var(--block-ink)" }}>{stoppedAt} 카드에서 멈췄어요. 뒤의 카드는 합치지 않았어요.</span>}
+          {notes.filter((n) => n.result !== "merged").map((n) => (
+            <NoteLine key={n.taskId} note={n} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 보고함용: 같은 팀 대기 카드가 2장 이상일 때 나오는 모두 합치기 버튼. */
+export function MergeAllButton({ project, tasks }: { project: Project; tasks: Task[] }) {
+  const setError = useApp((s) => s.setError);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  if (tasks.length < 2) return null;
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await mergeInOrder(project.id, tasks.map((t) => t.id));
+      const ok = r.notes.filter((n) => n.result === "merged").length;
+      setMsg(r.stoppedAt ? `${ok}장 합치고 ${r.stoppedAt}에서 멈췄어요` : `${ok}장을 합쳤어요`);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-2 pb-1">
+      <button onClick={() => void run()} disabled={busy} className="min-h-8 shrink-0 rounded-full border-0 px-3.5 text-[12.5px] font-semibold disabled:opacity-50" style={primary}>
+        {busy ? "합치는 중…" : `${tasks.length > 0 ? project.name + " " : ""}모두 합치기 (${tasks.length}장)`}
+      </button>
+      {msg && <span className="text-[12px] text-ink-2">{msg}</span>}
+    </div>
+  );
+}

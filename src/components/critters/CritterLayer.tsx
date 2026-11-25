@@ -28,6 +28,8 @@ export interface PlacedCritter {
   speed?: number;
   /** now and then it stretches, sways in its chair or glances aside (a cat at its desk) */
   fidget?: boolean;
+  /** the spot moved because the room's layout shifted (the cat stays at the same desk): jump with it instead of walking behind it */
+  snap?: boolean;
 }
 
 const RM = "(prefers-reduced-motion: reduce)";
@@ -70,7 +72,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
     w.to = { x, y };
     const dx = prev ? x - prev.x : 0;
     const dist = prev ? Math.hypot(dx, y - prev.y) : 0;
-    if (!prev || still || dist < 1) {
+    if (!prev || still || dist < 1 || item.snap) {
       w.ms = 0;
     } else if (tracing) {
       // traced frame by frame: no transition, just face the way the pen goes
@@ -111,7 +113,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
     >
       <div className={`cr-anchor${fidget ? " cr-fidget" : ""}`} style={fidget as CSSProperties | undefined}>
         {bubble && say && (
-          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.2, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
+          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.1, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
             {say}
           </span>
         )}
