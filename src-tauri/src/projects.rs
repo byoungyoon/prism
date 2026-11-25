@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::sys;
 
@@ -117,12 +117,60 @@ pub struct Settings {
     /// ask before closing the window or quitting while members are at work
     #[serde(default = "yes")]
     pub confirm_quit: bool,
+    /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
+    #[serde(default)]
+    pub churu: u64,
+    /// 가진 상점 물건 id 목록 ("cat:white"는 처음부터 가진다)
+    #[serde(default = "default_owned")]
+    pub owned: Vec<String>,
+    /// 1,000토큰으로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
+    #[serde(default)]
+    pub churu_rest: u64,
 }
+
+fn default_owned() -> Vec<String> {
+    vec!["cat:white".into()]
+}
+
+/// 토큰 25,000개당 츄르 1개. 토큰 = input + output + cache_write (cache_read는 뺀다).
+/// 이 컴퓨터 최근 4주 주간 평균 약 2,990만 토큰(입력+출력+캐시생성, 캐시읽기 제외)
+/// → 4주 약 1억 1,960만 토큰 ≈ 상점 전체 합계 약 4,800츄르가 되도록 정함.
+pub const TOKENS_PER_CHURU: u64 = 25_000;
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { root: None, providers: Vec::new(), onboarded: false, last_teams: Vec::new(), auto_resume: true, restart: None, confirm_quit: true }
+        Self {
+            root: None,
+            providers: Vec::new(),
+            onboarded: false,
+            last_teams: Vec::new(),
+            auto_resume: true,
+            restart: None,
+            confirm_quit: true,
+            churu: 0,
+            owned: default_owned(),
+            churu_rest: 0,
+        }
     }
+}
+
+/// 토큰 `tokens`를 더해 (츄르 잔액, 남은 토큰)을 구한다. 환율 미만은 나머지로 이월된다.
+pub fn churu_add(churu: u64, rest: u64, tokens: u64) -> (u64, u64) {
+    let total = rest.saturating_add(tokens);
+    (churu.saturating_add(total / TOKENS_PER_CHURU), total % TOKENS_PER_CHURU)
+}
+
+/// 상점 물건을 츄르 `price`개로 산다. 이미 가졌거나 잔액이 모자라면 Err (차감·추가 없음).
+pub fn buy_item(s: &mut Settings, id: &str, price: u64) -> Result<(), String> {
+    if s.owned.iter().any(|x| x == id) {
+        return Err("이미 가지고 있는 물건이에요".into());
+    }
+    if s.churu < price {
+        return Err(format!("츄르가 {}개 모자라요 (필요 {}개, 있는 츄르 {}개)", price - s.churu, price, s.churu));
+    }
+    s.churu -= price;
+    s.owned.push(id.into());
+    Ok(())
 }
 
 pub fn now_ms() -> u64 {
@@ -189,6 +237,33 @@ impl Projects {
             p.last_teams = live;
         }
         self.save_prefs();
+    }
+
+    /// 새로 쓴 토큰을 츄르로 쌓는다. 츄르가 바뀌었으면 저장하고 새 Settings를 돌려준다.
+    pub fn add_churu_tokens(&self, tokens: u64) -> Option<Settings> {
+        if tokens == 0 {
+            return None;
+        }
+        let snap = {
+            let mut p = self.prefs.lock().unwrap();
+            let (churu, rest) = churu_add(p.churu, p.churu_rest, tokens);
+            p.churu = churu;
+            p.churu_rest = rest;
+            p.clone()
+        };
+        self.save_prefs();
+        Some(snap)
+    }
+
+    /// 상점에서 물건을 산다 (`buy_item`). 성공하면 저장하고 새 Settings를 돌려준다.
+    pub fn buy(&self, id: &str, price: u64) -> Result<Settings, String> {
+        let snap = {
+            let mut p = self.prefs.lock().unwrap();
+            buy_item(&mut p, id, price)?;
+            p.clone()
+        };
+        self.save_prefs();
+        Ok(snap)
     }
 
     fn save_prefs(&self) {
@@ -451,6 +526,14 @@ pub fn prefs_set_confirm_quit(projects: State<'_, Projects>, on: bool) -> Settin
 }
 
 /// The start-up clock-in after a restart is done: forget why the app last closed.
+/// 상점에서 물건을 산다. 츄르가 모자라거나 이미 가졌으면 Err.
+#[tauri::command]
+pub fn shop_buy(app: AppHandle, projects: State<'_, Projects>, id: String, price: u64) -> Result<Settings, String> {
+    let s = projects.buy(&id, price)?;
+    let _ = app.emit("prefs", &s);
+    Ok(s)
+}
+
 #[tauri::command]
 pub fn prefs_clear_restart(projects: State<'_, Projects>) -> Settings {
     projects.prefs.lock().unwrap().restart = None;
@@ -525,4 +608,63 @@ pub fn git_changes(cwd: String) -> Vec<sys::Change> {
 #[tauri::command]
 pub fn git_diff(cwd: String, path: String) -> String {
     sys::diff(&cwd, &path)
+}
+
+#[cfg(test)]
+mod churu_tests {
+    use super::*;
+
+    fn fresh() -> Settings {
+        Settings::default()
+    }
+
+    #[test]
+    fn rest_below_rate_carries_over() {
+        // 환율 미만은 츄르로 안 바뀌고 나머지로 이월된다
+        assert_eq!(churu_add(0, 0, TOKENS_PER_CHURU - 1), (0, TOKENS_PER_CHURU - 1));
+        // 이월된 나머지에 더해져 한 츄르가 된다
+        assert_eq!(churu_add(0, TOKENS_PER_CHURU - 1, 1), (1, 0));
+        assert_eq!(churu_add(3, 10, TOKENS_PER_CHURU * 2 + 5), (5, 15));
+    }
+
+    #[test]
+    fn buy_fails_when_short_and_changes_nothing() {
+        let mut s = fresh();
+        s.churu = 4;
+        let err = buy_item(&mut s, "cat:black", 5).unwrap_err();
+        assert!(err.contains("1개 모자라요"));
+        assert_eq!(s.churu, 4);
+        assert_eq!(s.owned, vec!["cat:white".to_string()]);
+    }
+
+    #[test]
+    fn buy_deducts_and_adds_owned() {
+        let mut s = fresh();
+        s.churu = 10;
+        buy_item(&mut s, "cat:black", 4).unwrap();
+        assert_eq!(s.churu, 6);
+        assert!(s.owned.iter().any(|x| x == "cat:black"));
+    }
+
+    #[test]
+    fn buy_twice_is_rejected_without_charging() {
+        let mut s = fresh();
+        s.churu = 10;
+        buy_item(&mut s, "cat:black", 4).unwrap();
+        let err = buy_item(&mut s, "cat:black", 4).unwrap_err();
+        assert!(err.contains("이미"));
+        assert_eq!(s.churu, 6);
+        assert_eq!(s.owned.iter().filter(|x| *x == "cat:black").count(), 1);
+    }
+
+    #[test]
+    fn owned_default_is_white_cat_even_when_file_is_old() {
+        // 옛 settings.json(츄르 필드 없음)도 깨지지 않고 기본값으로 읽힌다
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.churu, 0);
+        assert_eq!(s.churu_rest, 0);
+        assert_eq!(s.owned, vec!["cat:white".to_string()]);
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v.get("churuRest").is_some());
+    }
 }

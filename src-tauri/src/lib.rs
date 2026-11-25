@@ -191,6 +191,7 @@ pub fn run() {
             projects::prefs_set_auto_resume,
             projects::prefs_set_confirm_quit,
             projects::prefs_clear_restart,
+            projects::shop_buy,
             app_prepare_restart,
             app_quit_confirm,
             projects::project_set_team,
