@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "shot": "node scripts/shot.mjs",
+    "bump": "node scripts/bump-version.mjs",
     "test": "node --test scripts/test/*.test.mjs"
   },
   "dependencies": {
