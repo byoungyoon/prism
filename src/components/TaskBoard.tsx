@@ -8,7 +8,7 @@ import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { Critter } from "./critters";
-import { currentCard, finishedCrew, liveCrew } from "../lib/crew";
+import { currentCard, finishedCrew, liveCrew, useDismissed } from "../lib/crew";
 import { MergeActions, MergeAllButton } from "./MergeActions";
 import { TeamUsageBox } from "./TokenUse";
 
@@ -73,6 +73,7 @@ export function TaskBoard() {
   const multi = shown.length > 1;
   const [logOpen, setLogOpen] = useState(true);
   const [doneOpen, setDoneOpen] = useState(false);
+  const { has: isDismissed, dismiss } = useDismissed();
 
   const tasks = shown.flatMap(({ team }) => team.tasks);
   const count = (stage: string) => tasks.filter((t) => t.stage === stage).length;
@@ -84,7 +85,7 @@ export function TaskBoard() {
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
-  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review").map((t) => ({ t, project })));
+  const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(`report:${project.id}:${t.id}`)).map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
     .flatMap(({ project, team }) => team.events.map((e) => ({ ...e, project })))
@@ -148,6 +149,9 @@ export function TaskBoard() {
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
                   <span className="min-w-0 flex-auto truncate">{t.title}</span>
                   {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
+                  <button onClick={() => dismiss(`report:${project.id}:${t.id}`)} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
+                    ✕
+                  </button>
                 </span>
                 <MergeActions project={project} task={t} />
               </div>
