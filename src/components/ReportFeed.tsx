@@ -3,7 +3,7 @@
 // are gathered into a single card on top so the user answers them in one place.
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp, useShownTeams } from "../store";
+import { useApp, useOfficeTeams, useShownTeams } from "../store";
 import { api, type Agent, type ChatMsg, type FileStat, type Project, type Task, type TeamSnapshot } from "../lib/api";
 import { TeamTag } from "./TeamTag";
 import { elapsed } from "../data/types";
@@ -595,7 +595,9 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
 /** `only`: one team's reports (the office's team tab); default every team on screen */
 export function ReportFeed({ only }: { only?: string } = {}) {
   const all = useShownTeams();
-  const shown = only ? all.filter((x) => x.project.id === only) : all;
+  // one team from the office's tabs: it may be a team nobody is in, with cats left in the lounge
+  const inOffice = useOfficeTeams();
+  const shown = only ? inOffice.filter((x) => x.project.id === only) : all;
   if (!shown.length) return null;
   const multi = shown.length > 1;
   const permGroups = shown

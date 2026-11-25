@@ -4,10 +4,10 @@
 // (sofa, coffee machine, plants) or naps there. A permission request pops up over the asking cat's
 // head, with 허락 / 거절 right in the bubble (the same answer the chat's cards send).
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useApp, useShownTeams, waitsForMe } from "../../store";
+import { useApp, useOfficeTeams, waitsForMe } from "../../store";
 import type { Agent, ChatMsg, Project, Task, TeamSnapshot } from "../../lib/api";
 import { plainAction } from "../../lib/plainAction";
-import { currentCard, liveCrew, reportedCrew } from "../../lib/crew";
+import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
@@ -151,7 +151,7 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
 
 /** `onTeam`: open a team's reports (a click on a resting team's chip) */
 export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}) {
-  const shown = useShownTeams();
+  const shown = useOfficeTeams();
   const openIn = useApp((s) => s.openIn);
   const narrow = useNarrow();
   const still = useReducedMotion();
@@ -175,7 +175,8 @@ export function Office({ onTeam }: { onTeam?: (projectId: string) => void } = {}
     for (const { project, team } of shown) {
       const member = (a: Agent): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: currentCard(team, a) });
       const crew = liveCrew(team).map(member);
-      const reported = reportedCrew(team).map((a): Member => ({ ...member(a), reported: true }));
+      // reported 작업자, and resting ones while nobody is in: in the lounge with or without the 총괄
+      const reported = loungeOnlyCrew(team).map(({ agent, reported }): Member => ({ ...member(agent), reported }));
       const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || asks[m.key]?.length);
       if (!busy) {
         const waiting = [...crew.filter((m) => m.agent.role !== "lead"), ...reported];

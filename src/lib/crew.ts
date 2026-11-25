@@ -87,6 +87,41 @@ export function reportedCrew(team: TeamSnapshot): Agent[] {
     });
 }
 
+/**
+ * 작업자 resting in the lounge while nobody on the team is in (the 총괄 left: the team clocked out,
+ * the app restarted): their status is `off` until the team clocks in again (`back_to_lounge`), but
+ * they are still in the lounge — not finished. Not counting a name that is live again.
+ */
+export function restingOffCrew(team: TeamSnapshot): Agent[] {
+  const live = new Set(liveCrew(team).map((a) => `${a.role}:${a.name}`));
+  const seen = new Set<string>();
+  return team.agents
+    .filter((a) => a.role !== "lead" && !!a.restSince && a.status === "off")
+    .sort((x, y) => y.statusSince - x.statusSince)
+    .filter((a) => {
+      const k = `${a.role}:${a.name}`;
+      if (live.has(k) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+}
+
+/**
+ * Everyone the office shows in the lounge without being live: 작업자 who reported (their card is in
+ * review) and resting 작업자 while the team is off. Kept whether or not the 총괄 is in.
+ */
+export const loungeOnlyCrew = (team: TeamSnapshot): { agent: Agent; reported: boolean }[] => [
+  ...restingOffCrew(team).map((agent) => ({ agent, reported: false })),
+  ...reportedCrew(team).map((agent) => ({ agent, reported: true })),
+];
+
+/**
+ * Does the office show this team? Someone on it is in — or, with nobody in (the 총괄 left, the team
+ * clocked out), cats still in its lounge: they don't vanish with the 총괄.
+ */
+export const inOffice = (team: TeamSnapshot | undefined): boolean =>
+  !!team && (team.agents.some((a) => a.status !== "off" && a.status !== "done") || loungeOnlyCrew(team).length > 0);
+
 /** Members working right now (or stuck asking). */
 export const busyCrew = (team: TeamSnapshot) => liveCrew(team).filter((a) => a.status === "work" || a.status === "block");
 

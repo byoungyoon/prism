@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { isRemote, onResync } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
 import { plainAction } from "./lib/plainAction";
+import { inOffice } from "./lib/crew";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 
 export type View =
@@ -403,6 +404,20 @@ export const useShownTeams = () => {
   const current = useApp((s) => s.projectId);
   return useMemo(
     () => projects.flatMap((project) => (teams[project.id] && (isLive(teams[project.id]) || project.id === current) ? [{ project, team: teams[project.id] }] : [])),
+    [projects, teams, current],
+  );
+};
+
+/**
+ * The teams the office shows: the shown ones, plus teams nobody is in that still have cats in the
+ * lounge (resting or reported 작업자 stay when the 총괄 leaves — see `inOffice`).
+ */
+export const useOfficeTeams = () => {
+  const projects = useApp((s) => s.projects);
+  const teams = useApp((s) => s.teams);
+  const current = useApp((s) => s.projectId);
+  return useMemo(
+    () => projects.flatMap((project) => (teams[project.id] && (inOffice(teams[project.id]) || project.id === current) ? [{ project, team: teams[project.id] }] : [])),
     [projects, teams, current],
   );
 };
