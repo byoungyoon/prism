@@ -35,12 +35,12 @@ interface Props {
 function Headset() {
   return (
     <g className="cr-prop">
-      <path d="M12.6 24 C12.6 11.2 35.4 11.2 35.4 24" fill="none" stroke="#3b4257" strokeWidth="2.2" strokeLinecap="round" />
+      <path d="M12.6 24 C12.6 9.6 35.4 9.6 35.4 24" fill="none" stroke="#3b4257" strokeWidth="2.2" strokeLinecap="round" />
       <rect x="9.3" y="21.5" width="5.4" height="8" rx="2.4" fill="#3b4257" />
       <rect x="33.3" y="21.5" width="5.4" height="8" rx="2.4" fill="#3b4257" />
       <path d="M11.8 29 Q12.6 35.6 19.2 35.8" fill="none" stroke="#3b4257" strokeWidth="1.5" strokeLinecap="round" />
       <circle cx="19.8" cy="35.8" r="1.5" fill="#3b4257" />
-      <circle className="cr-beacon" cx="24" cy="13.6" r="1.4" fill="#f0a35a" />
+      <circle className="cr-beacon" cx="24" cy="12.4" r="1.4" fill="#f0a35a" />
     </g>
   );
 }
@@ -48,9 +48,9 @@ function Headset() {
 function HardHat() {
   return (
     <g className="cr-prop">
-      <path d="M13.2 21.2 C13.2 11.6 34.8 11.6 34.8 21.2 Z" fill="#f2b84b" />
-      <path d="M24 13 L24 20.6" stroke="#d99a2b" strokeWidth="1.6" strokeLinecap="round" />
-      <rect x="10.6" y="19.8" width="26.8" height="3" rx="1.5" fill="#e2a43a" />
+      <path d="M16.4 19 C16.4 11.6 31.6 11.6 31.6 19 Z" fill="#f2b84b" />
+      <path d="M24 12.6 L24 18.4" stroke="#d99a2b" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="14.4" y="17.8" width="19.2" height="2.6" rx="1.3" fill="#e2a43a" />
     </g>
   );
 }
@@ -88,33 +88,39 @@ function Mallet() {
   );
 }
 
-function Face({ state }: { state: CritterState }) {
+function Face({ state, shade }: { state: CritterState; shade: string }) {
   const sleepy = state === "off";
   const sad = state === "fail";
   const happy = state === "done";
   return (
     <g className="cr-face">
+      {/* whiskers */}
+      <path d="M14.6 30.4 L8.6 29.2 M14.6 32.2 L8.8 33 M33.4 30.4 L39.4 29.2 M33.4 32.2 L39.2 33" stroke={shade} strokeWidth="0.75" strokeLinecap="round" opacity="0.8" />
       {sleepy ? (
-        <path d="M17.6 27.4 Q19.5 28.8 21.4 27.4 M26.6 27.4 Q28.5 28.8 30.4 27.4" fill="none" stroke={INK} strokeWidth="1.3" strokeLinecap="round" />
+        <path d="M17.2 27.4 Q19.3 29 21.4 27.4 M26.6 27.4 Q28.7 29 30.8 27.4" fill="none" stroke={INK} strokeWidth="1.3" strokeLinecap="round" />
       ) : happy ? (
-        <path d="M17.6 28 Q19.5 25.6 21.4 28 M26.6 28 Q28.5 25.6 30.4 28" fill="none" stroke={INK} strokeWidth="1.5" strokeLinecap="round" />
+        <path d="M17.2 28 Q19.3 25.2 21.4 28 M26.6 28 Q28.7 25.2 30.8 28" fill="none" stroke={INK} strokeWidth="1.5" strokeLinecap="round" />
       ) : (
         <g className="cr-eyes">
-          <circle cx="19.5" cy="27" r="2" fill={INK} />
-          <circle cx="28.5" cy="27" r="2" fill={INK} />
-          <circle cx="20.2" cy="26.2" r="0.7" fill="#fff" />
-          <circle cx="29.2" cy="26.2" r="0.7" fill="#fff" />
-          {sad && <path d="M17.2 24.6 Q19.4 24.4 21.2 23.2 M30.8 24.6 Q28.6 24.4 26.8 23.2" stroke={INK} strokeWidth="1.1" strokeLinecap="round" />}
+          <ellipse cx="19.3" cy="27" rx="2.5" ry="2.7" fill={INK} />
+          <ellipse cx="28.7" cy="27" rx="2.5" ry="2.7" fill={INK} />
+          <circle cx="20.2" cy="25.9" r="0.95" fill="#fff" />
+          <circle cx="29.6" cy="25.9" r="0.95" fill="#fff" />
+          <circle cx="18.6" cy="28.1" r="0.45" fill="#fff" opacity="0.8" />
+          <circle cx="28" cy="28.1" r="0.45" fill="#fff" opacity="0.8" />
+          {sad && <path d="M16.6 24 Q18.8 23.8 20.8 22.6 M31.4 24 Q29.2 23.8 27.2 22.6" stroke={INK} strokeWidth="1.1" strokeLinecap="round" fill="none" />}
         </g>
       )}
-      <ellipse cx="15.6" cy="31" rx="2.4" ry="1.4" fill="#f08a7a" opacity={sad ? 0.25 : 0.55} />
-      <ellipse cx="32.4" cy="31" rx="2.4" ry="1.4" fill="#f08a7a" opacity={sad ? 0.25 : 0.55} />
+      <ellipse cx="15.2" cy="31.6" rx="2.3" ry="1.3" fill="#f08a7a" opacity={sad ? 0.25 : 0.5} />
+      <ellipse cx="32.8" cy="31.6" rx="2.3" ry="1.3" fill="#f08a7a" opacity={sad ? 0.25 : 0.5} />
+      {/* nose */}
+      <path d="M22.9 29.9 L25.1 29.9 L24 31.1 Z" fill="#e98a9a" />
       {sad ? (
-        <path d="M22.4 32.8 Q24 31.4 25.6 32.8" fill="none" stroke={INK} strokeWidth="1.2" strokeLinecap="round" />
+        <path d="M22.2 33.2 Q24 31.8 25.8 33.2" fill="none" stroke={INK} strokeWidth="1.1" strokeLinecap="round" />
       ) : state === "block" || state === "think" ? (
-        <circle cx="24" cy="32" r="0.95" fill={INK} />
+        <ellipse cx="24" cy="32.6" rx="0.9" ry="1" fill={INK} />
       ) : (
-        <path d="M22.4 31.2 Q24 33 25.6 31.2" fill="none" stroke={INK} strokeWidth="1.2" strokeLinecap="round" />
+        <path d="M21.9 31.6 Q23 33 24 31.4 Q25 33 26.1 31.6" fill="none" stroke={INK} strokeWidth="1" strokeLinecap="round" />
       )}
     </g>
   );
@@ -197,13 +203,24 @@ function CritterSvg({ name, role, state, size, flip, label, className, colorKey 
       <g className={flip ? "cr-flip" : undefined}>
         <ellipse className="cr-shadow" cx="24" cy="44" rx="12" ry="2" fill="#000" opacity="0.12" />
         <g className="cr-whole">
+          {/* tail, behind everything: it swishes */}
+          <g className="cr-tail">
+            <path d="M33.6 39.4 C41.4 40 44.6 34 42.6 27.6" fill="none" stroke={shade} strokeWidth="4.6" strokeLinecap="round" />
+            <path d="M33.6 39.4 C41.4 40 44.6 34 42.6 27.6" fill="none" stroke={fill} strokeWidth="3" strokeLinecap="round" />
+          </g>
           <ellipse className="cr-foot cr-foot-l" cx="18.4" cy="42.4" rx="4" ry="2.4" fill={shade} />
           <ellipse className="cr-foot cr-foot-r" cx="29.6" cy="42.4" rx="4" ry="2.4" fill={shade} />
           <g className="cr-body">
+            {/* ears, under the head's outline */}
+            <path d="M11.4 22.6 L12.6 10.4 Q13.1 9 14.4 9.8 L22.2 15.4 Z" fill={fill} stroke={shade} strokeWidth="1.1" strokeLinejoin="round" />
+            <path d="M36.6 22.6 L35.4 10.4 Q34.9 9 33.6 9.8 L25.8 15.4 Z" fill={fill} stroke={shade} strokeWidth="1.1" strokeLinejoin="round" />
+            <path d="M13.6 18.6 L14.3 12.4 L19 15.8 Z" fill="#f4a9b3" opacity="0.85" />
+            <path d="M34.4 18.6 L33.7 12.4 L29 15.8 Z" fill="#f4a9b3" opacity="0.85" />
             <path d="M24 14.2 C33.4 14.2 38.2 21 38.2 29 C38.2 37.2 32.2 42.4 24 42.4 C15.8 42.4 9.8 37.2 9.8 29 C9.8 21 14.6 14.2 24 14.2 Z" fill={fill} stroke={shade} strokeWidth="1.1" />
-            <ellipse cx="24" cy="35" rx="8" ry="5.4" fill="#fff" opacity="0.28" />
-            {role !== "worker" && <path className="cr-sprout" d="M24 14.6 C23.4 11.6 21 10.4 19.4 10.8 C20.2 12.6 21.8 13.8 24 14.6 Z" fill={shade} />}
-            <Face state={state} />
+            <ellipse cx="24" cy="36" rx="7.6" ry="5" fill="#fff" opacity="0.32" />
+            {/* tabby stripes on the forehead */}
+            {role !== "worker" && <path d="M21.6 16.4 L22 19 M24 15.8 L24 19.4 M26.4 16.4 L26 19" stroke={shade} strokeWidth="1.2" strokeLinecap="round" opacity="0.75" />}
+            <Face state={state} shade={shade} />
             {role === "lead" && <Headset />}
             {role === "worker" && <HardHat />}
             {role === "mgr" && <BowTie />}

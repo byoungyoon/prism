@@ -110,7 +110,9 @@ export function AppCritters() {
           list.push({ key: `${p.id}:${a.id}`, pid: p.id, agent: a, task: a.taskId ? t.tasks.find((x) => x.id === a.taskId) : undefined, team: p.name });
     }
     const rank = (m: Member) => (claims[m.key] ? -1 : m.agent.status === "block" ? 0 : recentReport(m.agent, teams[m.pid]?.tasks ?? []) ? 1 : m.agent.status === "work" ? 2 : m.agent.role === "lead" ? 3 : 4);
-    const picked = [...list].sort((x, y) => rank(x) - rank(y) || ROLE_ORDER[x.agent.role] - ROLE_ORDER[y.agent.role]).filter((m, i) => claims[m.key] || i < cap);
+    // the cats live in the office now (Office.tsx); this window-wide layer only carries the ones an
+    // editing screen has taken over (its drawing show), which walk over the editor
+    const picked = [...list].sort((x, y) => rank(x) - rank(y) || ROLE_ORDER[x.agent.role] - ROLE_ORDER[y.agent.role]).filter((m) => claims[m.key]);
     return picked;
   }, [projects, teams, current, claims, cap]);
 
