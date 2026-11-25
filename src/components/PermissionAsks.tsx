@@ -5,6 +5,7 @@ import { useApp, waitsForMe } from "../store";
 import type { ChatMsg, Project, TeamSnapshot } from "../lib/api";
 import { plainAction } from "../lib/plainAction";
 import { TeamTag } from "./TeamTag";
+import { catName } from "./critters/pixel/coats";
 
 type Group = { project: Project; team: TeamSnapshot };
 
@@ -32,7 +33,8 @@ export function PermissionAsks({ groups, multi = false }: { groups: Group[]; mul
       <AnimatePresence initial={false}>
         {rows.map(({ project, team, m }) => {
           const p = m.permission!;
-          const who = team.agents.find((a) => a.id === p.agentId)?.name ?? "팀원";
+          const ag = team.agents.find((a) => a.id === p.agentId);
+          const who = ag ? catName(ag) : "팀원";
           const answer = (a: "allow" | "always" | "deny") => answerPermission(m.id, a, project.id);
           return (
             <motion.div key={`${project.id}-${m.id}`} data-critter-anchor={`ask:${project.id}:${p.agentId}`} layout="position" exit={{ opacity: 0, height: 0 }} className="flex min-w-0 shrink-0 flex-col gap-1.5 overflow-hidden rounded-xl px-3 py-2" style={{ background: "var(--glass2)" }}>

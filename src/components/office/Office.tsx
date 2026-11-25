@@ -12,6 +12,7 @@ import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { Critter, CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
+import { catName } from "../critters/pixel/coats";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
@@ -57,7 +58,7 @@ const LOUNGE_MAX = 6;
 function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
   const role = m.agent.role;
   return (
-    <button className={`of-desk of-desk-${role}`} onClick={onOpen} title={`${m.agent.name} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${m.agent.name} 책상 (${ROLE_WORD[role]})`}>
+    <button className={`of-desk of-desk-${role}`} onClick={onOpen} title={`${catName(m.agent)} · ${ROLE_WORD[role]} 작업 화면`} aria-label={`${catName(m.agent)} 책상 (${ROLE_WORD[role]})`}>
       <span className={`of-chair ${role === "lead" ? "px-chair-lead" : "px-chair"}`} />
       <span className="of-seat" data-seat={m.key} />
       <span className={`of-desk-top ${role === "lead" ? "px-desk-lead" : "px-desk"}`}>
@@ -81,7 +82,7 @@ function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
         <span className="of-keyboard px-keyboard" />
         <span className="of-mug px-mug" />
       </span>
-      <span className="of-plate">{m.agent.name}</span>
+      <span className="of-plate">{catName(m.agent)}</span>
     </button>
   );
 }
@@ -132,9 +133,9 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   // the tail points at the cat, but never off the bubble's rounded corners
   const tail = Math.max(-half + 14, Math.min(half - 14, at.x - left));
   return (
-    <div ref={box} className="of-ask" role="alertdialog" aria-label={`${m.agent.name} 허락 요청`} style={{ left, top, width: half * 2 }}>
-      <span className="of-ask-text" title={`${m.agent.name} · ${what}${p.detail ? `\n${p.detail}` : ""}`}>
-        <b>{m.agent.name}</b> · {what}
+    <div ref={box} className="of-ask" role="alertdialog" aria-label={`${catName(m.agent)} 허락 요청`} style={{ left, top, width: half * 2 }}>
+      <span className="of-ask-text" title={`${catName(m.agent)} · ${what}${p.detail ? `\n${p.detail}` : ""}`}>
+        <b>{catName(m.agent)}</b> · {what}
         {msgs.length > 1 && <span className="of-ask-more"> 외 {msgs.length - 1}건</span>}
       </span>
       <span className="of-ask-buttons">

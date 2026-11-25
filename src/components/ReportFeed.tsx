@@ -16,6 +16,7 @@ import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
 import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
 import { CardUsageText } from "./TokenUse";
+import { catName } from "./critters/pixel/coats";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -25,7 +26,7 @@ const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 function PermissionsCard({ items, team, project, multi }: { items: ChatMsg[]; team: TeamSnapshot; project: Project; multi: boolean }) {
   const answerPermission = useApp((s) => s.answerPermission);
   const answer = (id: number, a: "allow" | "always" | "deny") => answerPermission(id, a, project.id);
-  const name = (id: string) => team.agents.find((a) => a.id === id)?.name ?? id;
+  const name = (id: string) => { const a = team.agents.find((x) => x.id === id); return a ? catName(a) : id; };
   // requests a 팀장/총괄 is deciding don't need the user (who can still answer first)
   const mine = items.filter((m) => !m.permission!.decider);
   return (
@@ -299,7 +300,7 @@ const parentOf = (task: Task, team: TeamSnapshot) => {
 
 /** The newest thing anyone on this work did, as one line. */
 function latest(agents: Agent[]) {
-  return agents.flatMap((a) => a.activity.map((x) => ({ ...x, who: a.name }))).sort((a, b) => b.at - a.at)[0];
+  return agents.flatMap((a) => a.activity.map((x) => ({ ...x, who: catName(a) }))).sort((a, b) => b.at - a.at)[0];
 }
 
 function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen: (id: string) => void }) {
@@ -320,7 +321,7 @@ function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen
         </span>
       )}
       <span className="min-w-0 flex-auto truncate">{task.title}</span>
-      <span className="shrink-0 text-[11.5px] text-ink-2">{a?.name ?? task.who ?? "배정 전"}</span>
+      <span className="shrink-0 text-[11.5px] text-ink-2">{(a && catName(a)) ?? task.who ?? "배정 전"}</span>
       <span className="w-12 shrink-0 text-right text-[11.5px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
         {st.word}
       </span>
@@ -453,7 +454,7 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
       <div className="flex min-w-0 items-center gap-2 text-[12px] text-ink-2">
         {assignee ? (
           <button onClick={() => open(assignee.id)} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 hover:text-[var(--text)] hover:underline" title="작업 화면 보기">
-            {assignee.name} · <span className="font-mono text-[11px]">{modelLabel(assignee.model)}</span>
+            {catName(assignee)} · <span className="font-mono text-[11px]">{modelLabel(assignee.model)}</span>
           </button>
         ) : task.who ? (
           <span>{task.who}</span>
@@ -483,10 +484,10 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
           ) : (
             <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{task.summary}</p>
           )}
-          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{assignee?.name ?? task.who ?? "작업자"}: {task.summary}</p>}
+          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{(assignee && catName(assignee)) ?? task.who ?? "작업자"}: {task.summary}</p>}
         </div>
       )}
-      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? task.who ?? "작업자"} />}
+      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={(assignee && catName(assignee)) ?? task.who ?? "작업자"} />}
       {/* a report waiting for review: 합치기 into the team's branch, or 완료 when there's nothing to merge */}
       <MergeActions project={project} task={task} pick={pick} />
 
@@ -503,7 +504,7 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
           ))}
         </div>
       )}
-      {canFollow && !shut && <FollowUp project={project} target={target} who={team.agents.find((a) => a.id === target.assignee)?.name ?? "담당자"} />}
+      {canFollow && !shut && <FollowUp project={project} target={target} who={(() => { const a = team.agents.find((x) => x.id === target.assignee); return a ? catName(a) : "담당자"; })()} />}
     </motion.article>
   );
 }

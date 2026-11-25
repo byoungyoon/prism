@@ -53,6 +53,15 @@ export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
   return COATS[(base + Math.abs(h)) % COATS.length];
 }
 
+/** 코트 색과 어울리는 한국어 고양이 이름 (COATS와 같은 순서) */
+const CAT_NAMES = ["두부", "안개", "모모", "치즈", "보리", "은비", "까망이", "나비", "호두", "라떼", "솜이", "턱시"];
+
+/** 화면에 보이는 이름: 작업자·팀장의 W1/M1 같은 내부 이름은 털색에 맞는 고양이 별명으로. 내부 ID는 그대로. */
+export function catName(a: { name: string; role: "lead" | "mgr" | "worker" }): string {
+  if (a.role === "lead" || !/^[A-Za-z]+\d+$/.test(a.name)) return a.name;
+  return CAT_NAMES[COATS.indexOf(coatOf(a.name, a.role))] ?? a.name;
+}
+
 /** a colour a little lighter (#rrggbb → rgb()) */
 export const lift = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);

@@ -7,6 +7,7 @@ import { TerminalView } from "../components/TerminalView";
 import { Transcript } from "../components/Transcript";
 import { ChevronLeft } from "../components/icons";
 import { MemberUsage } from "../components/TokenUse";
+import { catName } from "../components/critters/pixel/coats";
 
 const Svg = ({ children }: { children: ReactNode }) => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -85,7 +86,7 @@ export function AgentScreen({ id }: { id: string }) {
         <button onClick={() => go({ name: "main" })} aria-label="뒤로" title="관제탑으로 돌아가기" className="flex size-[34px] items-center justify-center rounded-[10px] border-0 bg-transparent text-ink-2 hover:bg-[var(--chip)]">
           <ChevronLeft size={18} />
         </button>
-        <span className="text-[15px] font-semibold">{agent.name}</span>
+        <span className="text-[15px] font-semibold">{catName(agent)}</span>
         <span
           className="flex items-center gap-1.5 rounded-full px-2.5 py-[3px] text-[12.5px] font-medium"
           style={{ background: agent.status === "block" ? "var(--block-bg)" : "var(--chip)", color: s.ink }}
@@ -109,7 +110,7 @@ export function AgentScreen({ id }: { id: string }) {
         ) : null}
         {confirmKill ? (
           <span className="flex items-center gap-2 text-[13px]" role="alertdialog" aria-label="종료 확인">
-            <span style={{ color: "var(--block-ink)" }}>{agent.name}을(를) 멈출까요?</span>
+            <span style={{ color: "var(--block-ink)" }}>{catName(agent)}을(를) 멈출까요?</span>
             <button
               onClick={() => {
                 void app.killAgent(id);
@@ -138,7 +139,7 @@ export function AgentScreen({ id }: { id: string }) {
 
       <div className="flex min-h-0 flex-auto flex-wrap gap-3 overflow-auto p-3">
         <section
-          aria-label={`${agent.name} 작업 화면`}
+          aria-label={`${catName(agent)} 작업 화면`}
           className={`flex min-h-[420px] min-w-0 flex-[999_1_560px] flex-col overflow-hidden rounded-2xl ${agent.structured ? "glass" : ""}`}
           style={agent.structured ? undefined : { background: "var(--term-bg)", color: "#e9e1d5", boxShadow: "0 20px 40px rgba(120,90,50,0.22)" }}
         >
@@ -167,7 +168,7 @@ export function AgentScreen({ id }: { id: string }) {
           >
             <span className="font-mono" style={{ color: "var(--amber)" }}>›</span>
             <input
-              aria-label={`${agent.name}에게 메시지 보내기`}
+              aria-label={`${catName(agent)}에게 메시지 보내기`}
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
@@ -177,7 +178,7 @@ export function AgentScreen({ id }: { id: string }) {
                 }
               }}
               disabled={!live}
-              placeholder={parent ? `직접 지시하기 — 입력하면 ${parent.name}에게도 기록돼요` : "메시지 보내기"}
+              placeholder={parent ? `직접 지시하기 — 입력하면 ${catName(parent)}에게도 기록돼요` : "메시지 보내기"}
               className="min-h-[34px] min-w-0 flex-auto border-0 bg-transparent font-mono text-[13px] outline-none"
               style={{ color: "#f3ece2" }}
             />
@@ -192,7 +193,7 @@ export function AgentScreen({ id }: { id: string }) {
           </div>
         </section>
 
-        <aside aria-label={`${agent.name} 정보`} className="flex min-w-0 max-w-[360px] flex-[1_1_320px] flex-col gap-3">
+        <aside aria-label={`${catName(agent)} 정보`} className="flex min-w-0 max-w-[360px] flex-[1_1_320px] flex-col gap-3">
           {escs.map((m) => (
             <div key={m.id} className="glass flex flex-col gap-2 rounded-2xl p-4" style={{ borderColor: "var(--block)" }}>
               <span className="text-[12px] font-semibold" style={{ color: "var(--block-ink)" }}>결정 필요</span>
@@ -290,7 +291,7 @@ export function AgentScreen({ id }: { id: string }) {
               <span className="flex items-center gap-1.5 text-[13px]">
                 {parent ? (
                   <button onClick={() => go({ name: "agent", id: parent.id })} className="min-h-[30px] rounded-full px-2.5" style={{ background: "var(--glass2)" }}>
-                    {parent.name}
+                    {catName(parent)}
                   </button>
                 ) : (
                   <span className="text-ink-2">없음</span>
@@ -304,7 +305,7 @@ export function AgentScreen({ id }: { id: string }) {
                   {children.map((c) => (
                     <button key={c.id} onClick={() => go({ name: "agent", id: c.id })} className="flex min-h-[30px] items-center gap-1.5 rounded-full px-2.5 text-[13px]" style={{ background: "var(--glass2)" }}>
                       <span className={`${STATUS[c.status].cls} size-1.5 rounded-full`} style={{ background: STATUS[c.status].color }} />
-                      {c.name}
+                      {catName(c)}
                     </button>
                   ))}
                 </span>

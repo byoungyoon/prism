@@ -14,6 +14,7 @@ import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
 import { MergeGroup, ReportMerge } from "./MergeActions";
 import { Markdown } from "./Markdown";
+import { catName } from "./critters/pixel/coats";
 
 const bubbleIn = {
   initial: { opacity: 0, y: 8 },
@@ -48,7 +49,7 @@ export function EscalationCard({ m, team, projectId }: { m: ChatMsg; team: TeamS
   const answer = (id: number, text: string) => answerEscalation(id, text, projectId);
   const [draft, setDraft] = useState("");
   const e = m.escalation!;
-  const path = e.path.map((id) => team.agents.find((a) => a.id === id)?.name ?? id).join(" → ");
+  const path = e.path.map((id) => (() => { const a = team.agents.find((x) => x.id === id); return a ? catName(a) : id; })()).join(" → ");
   const done = e.answer != null;
   return (
     <div
