@@ -924,7 +924,7 @@ fn restore_plan(agents: &[Agent], tasks: &[Task]) -> Vec<Restore> {
     let running = |a: &Agent| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "running");
     let mut out: Vec<Restore> = agents
         .iter()
-        .filter(|a| a.status == "off")
+        .filter(|a| a.status == "off" || (a.role == "lead" && a.status == "done"))
         .filter(|a| a.resume_as.is_some() || a.role == "lead" || running(a))
         .map(|a| Restore {
             id: a.id.clone(),
@@ -1344,7 +1344,7 @@ impl TeamManager {
     pub fn start(&self, project: Project, cwd: String, homes: HashMap<String, Option<String>>) -> Result<TeamSnapshot, String> {
         let mut teams = self.teams.lock().unwrap();
         if let Some(t) = teams.get_mut(&project.id) {
-            if t.agents.iter().any(|a| a.role == "lead" && a.status != "off") {
+            if t.agents.iter().any(|a| a.role == "lead" && a.status != "off" && a.status != "done") {
                 return Ok(t.snapshot());
             }
             // a saved (stopped) team: same history, sessions continue
@@ -1546,7 +1546,7 @@ impl TeamManager {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off"))
+            .filter(|(_, t)| t.agents.iter().any(|a| a.status != "off" && a.status != "done"))
             .map(|(id, _)| id.clone())
             .collect();
         ids.sort();

@@ -7,7 +7,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
 import { api, type ChatMsg, type Project, type TeamSnapshot } from "../lib/api";
 import { isRemote } from "../lib/transport";
-import { useApp, useShownTeams } from "../store";
+import { isActive, useApp, useShownTeams } from "../store";
 import { clock } from "../data/types";
 import { ATTACH_MARK, BranchTag, EscalationCard, MyMessage, TeamControls, baseName, isImage } from "./LeadChat";
 import { ArrowUp, ChevronDown, Gear } from "./icons";
@@ -109,7 +109,7 @@ export function UnifiedChat() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [view]);
 
-  const live = (t?: TeamSnapshot) => !!t?.agents.some((a) => a.role === "lead" && a.status !== "off");
+  const live = (t?: TeamSnapshot) => !!t?.agents.some((a) => a.role === "lead" && isActive(a.status));
   const { ids: mentioned, body } = parse(draft, teams);
   // only who's named, and only teams at work
   const targets = mentioned.filter((id) => live(byId[id]?.team));

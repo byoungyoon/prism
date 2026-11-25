@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api } from "../lib/api";
 import { isRemote } from "../lib/transport";
 import { AnimatePresence, motion } from "motion/react";
-import { useApp } from "../store";
+import { isLive, useApp } from "../store";
 import type { BranchList, ChatMsg, PresetName, Project, TeamSnapshot } from "../lib/api";
 import { STATUS } from "../data/types";
 import { ArrowUp, Branch, ChevronDown, Gear, Power, Tower } from "./icons";
@@ -386,7 +386,7 @@ export function TeamControls({ project, team }: { project: Project; team?: TeamS
   const stopTeam = useApp((s) => s.stopTeam);
   const openIn = useApp((s) => s.openIn);
   const [confirmStop, setConfirmStop] = useState(false);
-  const running = !!team?.agents.some((a) => a.status !== "off");
+  const running = isLive(team);
   const btn = "flex size-7 shrink-0 items-center justify-center rounded-lg border-0 bg-transparent text-ink-2 hover:bg-[var(--chip)]";
   return (
     <div data-nodrag className="relative flex shrink-0 items-center gap-0.5">
