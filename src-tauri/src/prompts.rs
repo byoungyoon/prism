@@ -110,3 +110,20 @@ pub fn handoff_start(memo: Option<&str>, tasks: &str) -> String {
 위를 읽고 이어서 일할 준비만 하세요. 이 메시지에는 — 한 글자로만 답하세요."
     )
 }
+
+/// Asked of a 작업자·팀장 whose conversation grew too long mid-card: its answer becomes the note the new
+/// conversation starts with. Images stay out of it (only their file paths).
+pub fn worker_handover_request() -> String {
+    "[Prism 인수인계 요청] 대화가 길어져 이 카드를 새 대화에서 이어갈 거예요. 새 대화가 바로 이어서 할 수 있게 요약을 10~15줄로 써 주세요. \
+내용: ① 카드 목표 한 줄 ② 지금까지 바꾼 파일 경로 ③ 커밋 해시와 메시지 ④ 남은 일 ⑤ 막힌 점과 주의사항. \
+이미지나 화면 캡처는 내용을 옮겨 적지 말고 파일 경로만 적으세요. 도구는 쓰지 말고 요약 본문만 답하세요."
+        .into()
+}
+
+/// The new conversation's note (after its card): what the old conversation got to, or just that it restarted.
+pub fn worker_handover_start(memo: Option<&str>) -> String {
+    match memo {
+        Some(m) => format!("[이어서 하는 일 — 이전 대화를 요약했어요]\n{m}\n\n(이전 대화는 길어져서 새로 시작했어요. 이전 결과는 이 폴더의 코드와 git 기록에 있어요. 위 요약을 바탕으로 남은 일을 이어서 하세요.)"),
+        None => "[이어서 하는 일] 이전 대화가 길어져 새로 시작했어요. 이전 결과는 이 폴더의 코드와 git 기록에 있어요. 카드의 남은 일을 이어서 하세요.".into(),
+    }
+}
