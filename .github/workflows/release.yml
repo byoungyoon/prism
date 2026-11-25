@@ -7,6 +7,8 @@
 # every cache was stored under refs/tags/<that tag>, and each release found "Cache not found").
 # So pushes to main (and manual runs) only warm the caches (engines + app dependencies, no release),
 # and tag runs restore those main-scope caches and do not save new ones.
+# A release merges to main and pushes the tag almost at once, so that release's own caches are
+# usually not ready yet; they get used from the next release on.
 name: release
 
 on:
@@ -132,6 +134,8 @@ jobs:
         include:
           - platform: macos-latest
             target: aarch64-apple-darwin
+          - platform: macos-latest
+            target: x86_64-apple-darwin
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
@@ -150,6 +154,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: app-${{ matrix.target }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: cargo build --release --target ${{ matrix.target }}
@@ -188,6 +193,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          shared-key: app-${{ matrix.target }}
           save-if: false
 
       - run: pnpm install --frozen-lockfile
