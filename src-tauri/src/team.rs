@@ -3534,47 +3534,8 @@ impl TeamManager {
             }
             "complete_task" => {
                 let tid = s("task_id").ok_or("task_id 필요")?;
-                let t = team.task_mut(&tid).ok_or("그런 작업 카드가 없어요")?;
-                t.stage = "done".into();
-                t.updated_at = now_ms();
-                // clock the member out only if this is still the card it holds: after a follow-up
-                // ("이어서") it is already busy with the next one in the same folder
-                let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid.as_str())));
-                if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
-                    if let Some(p) = a.pty_id {
-                        self.pty.kill(p);
-                    }
-                    // a 작업자 rests in the lounge for the next card; a 팀장 is done
-                    if a.role == "worker" {
-                        rest_agent(a, now_ms());
-                    } else {
-                        a.status = "done".into();
-                        a.status_since = now_ms();
-                    }
-                }
-                if let Some(a) = assignee.as_deref() {
-                    self.kill_driver(pid, a);
-                    // its work is merged: drop the work copy (the branch stays, so results remain viewable)
-                    let wt = team.agent(a).map(|x| x.cwd.clone()).filter(|c| c.contains("/.prism/worktrees/"));
-                    if let Some(wt) = wt {
-                        let repo = team.project.path.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_secs(3));
-                            // no --force: anything left uncommitted keeps the folder
-                            let _ = sys::git(&repo, &["worktree", "remove", &wt]);
-                        });
-                    }
-                }
-                team.log(format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default()), None);
-                // the finished member leaves the list once enough newer ones are on record
-                let removed = prune_finished(&mut team.agents, &mut team.tasks);
-                if !removed.is_empty() {
-                    let mut tr = self.transcripts.lock().unwrap();
-                    for a in &removed {
-                        tr.remove(&format!("{pid}/{a}"));
-                    }
-                }
-                self.process_queue(team);
+                let log = format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default());
+                self.finish_card(team, &tid, log)?;
                 format!("{tid} 완료 처리했어요.")
             }
             "report" => {
@@ -3624,6 +3585,139 @@ impl TeamManager {
         };
         self.emit(team);
         Ok(out)
+    }
+
+    /// Closes a card: it is done, its member rests (a 작업자) or is done (a 팀장), and its work copy goes.
+    /// The same whether the 총괄 calls complete_task or the user merges or completes it from a report.
+    fn finish_card(&self, team: &mut Team, tid: &str, log: String) -> Result<(), String> {
+        let pid = team.project.id.clone();
+        let t = team.task_mut(tid).ok_or("그런 작업 카드가 없어요")?;
+        t.stage = "done".into();
+        t.updated_at = now_ms();
+        // clock the member out only if this is still the card it holds: after a follow-up
+        // ("이어서") it is already busy with the next one in the same folder
+        let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid)));
+        if let Some(a) = assignee.as_deref().and_then(|a| team.agent_mut(a)) {
+            if let Some(p) = a.pty_id {
+                self.pty.kill(p);
+            }
+            // a 작업자 rests in the lounge for the next card; a 팀장 is done
+            if a.role == "worker" {
+                rest_agent(a, now_ms());
+            } else {
+                a.status = "done".into();
+                a.status_since = now_ms();
+            }
+        }
+        if let Some(a) = assignee.as_deref() {
+            self.kill_driver(&pid, a);
+            // its work is merged: drop the work copy (the branch stays, so results remain viewable)
+            let wt = team.agent(a).map(|x| x.cwd.clone()).filter(|c| c.contains("/.prism/worktrees/"));
+            if let Some(wt) = wt {
+                let repo = team.project.path.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    // no --force: anything left uncommitted keeps the folder
+                    let _ = sys::git(&repo, &["worktree", "remove", &wt]);
+                });
+            }
+        }
+        team.log(log, None);
+        // the finished member leaves the list once enough newer ones are on record
+        let removed = prune_finished(&mut team.agents, &mut team.tasks);
+        if !removed.is_empty() {
+            let mut tr = self.transcripts.lock().unwrap();
+            for a in &removed {
+                tr.remove(&format!("{pid}/{a}"));
+            }
+        }
+        self.process_queue(team);
+        Ok(())
+    }
+
+    /// What merging a card would bring in: the commits its branch has over the team's branch, and the files.
+    pub fn merge_check(&self, pid: &str, tid: &str) -> Result<MergeCheck, String> {
+        let (repo, into, branch) = {
+            let teams = self.teams.lock().unwrap();
+            let team = teams.get(pid).ok_or("팀이 없어요")?;
+            let t = team.tasks.iter().find(|t| t.id == tid).ok_or("그런 작업 카드가 없어요")?;
+            (team.project.path.clone(), team.branch.clone(), card_branch(team, t))
+        };
+        match (into, branch) {
+            (Some(into), Some(branch)) => {
+                let (commits, files) = merge_scope(&repo, &into, &branch)?;
+                Ok(MergeCheck { into: Some(into), commits, files })
+            }
+            (into, _) => Ok(MergeCheck { into, commits: 0, files: 0 }),
+        }
+    }
+
+    /// The user's 합치기: each card's branch goes into the team's branch, one after another. A clean
+    /// merge completes the card; a conflict is taken back out and handed to the 총괄 to resolve.
+    pub fn merge_cards(&self, pid: &str, tids: &[String]) -> Result<Vec<MergeOutcome>, String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let into = team.branch.clone().ok_or("팀 브랜치가 없어서 합칠 수 없어요")?;
+        // the merge happens where the team's branch is checked out, with nothing unsaved in the way
+        let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
+        if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
+            return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
+        }
+        if !sys::changes(&dir).is_empty() {
+            return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
+        }
+        let out = tids.iter().map(|tid| self.merge_card(team, &dir, &into, tid)).collect();
+        self.emit(team);
+        Ok(out)
+    }
+
+    fn merge_card(&self, team: &mut Team, dir: &str, into: &str, tid: &str) -> MergeOutcome {
+        let outcome = |result: &str, message: String| MergeOutcome { task_id: tid.into(), result: result.into(), message };
+        let Some(t) = team.tasks.iter().find(|t| t.id == tid) else { return outcome("failed", "그런 작업 카드가 없어요".into()) };
+        if t.stage != "review" {
+            return outcome("failed", "검토 중인 보고만 합칠 수 있어요".into());
+        }
+        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "합칠 브랜치가 없어요".into()) };
+        match merge_scope(dir, into, &branch) {
+            Ok((0, _)) => return outcome("nothing", "합칠 변경이 없어요".into()),
+            Ok(_) => {}
+            Err(e) => return outcome("failed", e),
+        }
+        match git_merge(dir, &branch) {
+            Merge::Merged => {
+                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 합쳐 완료 처리했다.")) {
+                    return outcome("failed", e);
+                }
+                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 합쳤어요. 이 알림에는 — 한 글자로만 답하세요."));
+                outcome("merged", format!("{tid}를 합쳤어요."))
+            }
+            Merge::Conflict => {
+                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 합치기를 취소했다."), Some("block"));
+                let told = self.inject(team, "lead", format!(
+                    "[Prism 알림] 사용자가 {tid}를 합치려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 합치기를 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
+                ));
+                if told {
+                    outcome("conflict", "겹치는 부분이 있어 총괄에게 맡겼어요.".into())
+                } else {
+                    outcome("conflict", "겹치는 부분이 있어 합치지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
+                }
+            }
+            Merge::Failed(e) => outcome("failed", format!("합치지 못했어요: {e}")),
+        }
+    }
+
+    /// 완료 on a report with nothing to merge: the card closes without a merge.
+    pub fn complete_card(&self, pid: &str, tid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let t = team.tasks.iter().find(|t| t.id == tid).ok_or("그런 작업 카드가 없어요")?;
+        if t.stage != "review" {
+            return Err("보고가 온 카드만 완료할 수 있어요".into());
+        }
+        self.finish_card(team, tid, format!("사용자가 {tid}를 완료 처리했다."))?;
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(합칠 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
+        self.emit(team);
+        Ok(())
     }
 
     /// Starts queued cards while the role and team limits allow.
@@ -4012,8 +4106,153 @@ struct TaskSpot {
     branch: Option<String>,
 }
 
+/// What merging a report's card would bring into the team's branch.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeCheck {
+    /// the team's branch the card would merge into (None: the team has none)
+    pub into: Option<String>,
+    /// commits on the card's branch that the team's branch doesn't have (0: nothing to merge)
+    pub commits: usize,
+    /// files those commits change (`.prism/` aside)
+    pub files: usize,
+}
+
+/// One card's outcome of 합치기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub task_id: String,
+    pub result: String,
+    pub message: String,
+}
+
+/// The branch a card's work is on: the card's own, else its member's.
+fn card_branch(team: &Team, t: &Task) -> Option<String> {
+    t.branch.clone().or_else(|| t.assignee.as_deref().and_then(|a| team.agent(a)).and_then(|a| a.branch.clone()))
+}
+
+/// Commits on `branch` that `into` doesn't have yet, and the files they change (outside `.prism/`).
+fn merge_scope(repo: &str, into: &str, branch: &str) -> Result<(usize, usize), String> {
+    let commits: usize = sys::git(repo, &["rev-list", "--count", &format!("{into}..{branch}")])?
+        .trim()
+        .parse()
+        .map_err(|_| "커밋 수를 읽지 못했어요".to_string())?;
+    if commits == 0 {
+        return Ok((0, 0));
+    }
+    let out = sys::git(repo, &["diff", "--numstat", &format!("{into}...{branch}")])?;
+    let files = out.lines().filter(|l| l.splitn(3, '\t').nth(2).is_some_and(|p| !p.starts_with(".prism/"))).count();
+    Ok((commits, files))
+}
+
+/// How a merge of a card's branch ended. A conflict is taken back out, so the folder is as it was.
+enum Merge {
+    Merged,
+    Conflict,
+    Failed(String),
+}
+
+fn git_merge(dir: &str, branch: &str) -> Merge {
+    match sys::git(dir, &["merge", "--no-edit", branch]) {
+        Ok(_) => Merge::Merged,
+        Err(e) => {
+            // a conflict leaves MERGE_HEAD behind; any other refusal leaves nothing to undo
+            let merging = sys::git(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok();
+            if !merging {
+                return Merge::Failed(e);
+            }
+            match sys::git(dir, &["merge", "--abort"]) {
+                Ok(_) => Merge::Conflict,
+                Err(a) => Merge::Failed(format!("합치기를 취소하지 못했어요: {a}")),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn task_merge_check(teams: Teams<'_>, project_id: String, task_id: String) -> Result<MergeCheck, String> {
+    teams.merge_check(&project_id, &task_id)
+}
+
+#[tauri::command]
+pub async fn task_merge(app: AppHandle, project_id: String, task_ids: Vec<String>) -> Result<Vec<MergeOutcome>, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().merge_cards(&project_id, &task_ids)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn task_complete(teams: Teams<'_>, project_id: String, task_id: String) -> Result<(), String> {
+    teams.complete_card(&project_id, &task_id)
+}
+
 /// The biggest file the task-file commands read or write.
 const TASK_FILE_MAX: u64 = 100 * 1024 * 1024;
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn write(dir: &str, file: &str, text: &str) {
+        std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+    }
+
+    /// A fresh repo with one commit; returns (folder, its branch — the team's).
+    fn repo(name: &str) -> (String, String) {
+        let dir = std::env::temp_dir().join(format!("prism-merge-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.to_string_lossy().into_owned();
+        sys::git(&d, &["init", "-q"]).unwrap();
+        sys::git(&d, &["config", "user.name", "tester"]).unwrap();
+        sys::git(&d, &["config", "user.email", "tester@example.com"]).unwrap();
+        write(&d, "a.txt", "one\n");
+        sys::git(&d, &["add", "-A"]).unwrap();
+        sys::git(&d, &["commit", "-q", "-m", "init"]).unwrap();
+        let team = sys::current_branch(&d).unwrap();
+        (d, team)
+    }
+
+    /// A card's branch off the team's, with one commit writing `file`; the folder ends on the team's branch.
+    fn card(dir: &str, team: &str, branch: &str, file: &str, text: &str) {
+        sys::git(dir, &["checkout", "-q", "-b", branch, team]).unwrap();
+        write(dir, file, text);
+        sys::git(dir, &["add", "-A"]).unwrap();
+        sys::git(dir, &["commit", "-q", "-m", branch]).unwrap();
+        sys::git(dir, &["checkout", "-q", team]).unwrap();
+    }
+
+    #[test]
+    fn clean_merge_brings_the_card_in() {
+        let (dir, team) = repo("clean");
+        card(&dir, &team, "prism/t-1", "b.txt", "two\n");
+        assert_eq!(merge_scope(&dir, &team, "prism/t-1").unwrap(), (1, 1));
+        assert!(matches!(git_merge(&dir, "prism/t-1"), Merge::Merged));
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("b.txt")).unwrap(), "two\n");
+        assert_eq!(merge_scope(&dir, &team, "prism/t-1").unwrap(), (0, 0));
+        assert!(sys::changes(&dir).is_empty());
+    }
+
+    #[test]
+    fn conflict_is_taken_back_out() {
+        let (dir, team) = repo("conflict");
+        card(&dir, &team, "prism/t-2", "a.txt", "card\n");
+        write(&dir, "a.txt", "team\n");
+        sys::git(&dir, &["commit", "-q", "-am", "team edit"]).unwrap();
+        assert_eq!(merge_scope(&dir, &team, "prism/t-2").unwrap().0, 1);
+        assert!(matches!(git_merge(&dir, "prism/t-2"), Merge::Conflict));
+        assert!(sys::git(&dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err());
+        assert!(sys::changes(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "team\n");
+    }
+
+    #[test]
+    fn card_without_commits_has_nothing_to_merge() {
+        let (dir, team) = repo("empty");
+        sys::git(&dir, &["branch", "prism/t-3", &team]).unwrap();
+        assert_eq!(merge_scope(&dir, &team, "prism/t-3").unwrap(), (0, 0));
+    }
+}
+
 
 #[tauri::command]
 pub fn task_files(teams: Teams<'_>, project_id: String, task_id: String) -> Result<Vec<FileStat>, String> {

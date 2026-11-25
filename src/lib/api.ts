@@ -185,6 +185,21 @@ export interface FileStat {
   removed: number;
 }
 
+/** What merging a report's card would bring into the team's branch */
+export interface MergeCheck {
+  into: string | null;
+  /** commits the team's branch doesn't have yet; 0 means nothing to merge */
+  commits: number;
+  files: number;
+}
+
+/** One card's outcome of 합치기 */
+export interface MergeOutcome {
+  taskId: string;
+  result: "merged" | "nothing" | "conflict" | "failed";
+  message: string;
+}
+
 export interface GitChange {
   path: string;
   /** porcelain XY code, trimmed: "M", "A", "D", "??" … */
@@ -360,6 +375,12 @@ export const api = {
   teamBranches: (projectId: string) => call<BranchList>("team_branches", { projectId }),
   /** put the team on another branch (`create`: a new one, cut from where the team started) */
   setTeamBranch: (projectId: string, branch: string, create: boolean) => call<void>("team_set_branch", { projectId, branch, create }),
+  /** what merging this report's card would bring in (commits, files) */
+  taskMergeCheck: (projectId: string, taskId: string) => call<MergeCheck>("task_merge_check", { projectId, taskId }),
+  /** 합치기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
+  taskMerge: (projectId: string, taskIds: string[]) => call<MergeOutcome[]>("task_merge", { projectId, taskIds }),
+  /** 완료 on a report with nothing to merge */
+  taskComplete: (projectId: string, taskId: string) => call<void>("task_complete", { projectId, taskId }),
   answerEscalation: (projectId: string, msgId: number, answer: string) =>
     call<void>("escalation_answer", { projectId, msgId, answer }),
   answerPermission: (projectId: string, msgId: number, answer: "allow" | "always" | "deny") =>

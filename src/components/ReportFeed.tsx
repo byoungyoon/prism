@@ -14,6 +14,7 @@ import { ENGINE_EXTS, engineFor } from "../engines/registry";
 import type { EngineDef } from "../engines/types";
 import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
+import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -394,7 +395,7 @@ function FollowUp({ project, target, who }: { project: Project; target: Task; wh
 /** A finished piece of work folds to one line unless opened; `fold` is absent while work is still going. */
 type Fold = { open: boolean; toggle: () => void };
 
-function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project; fold?: Fold }) {
+function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs: Task[]; team: TeamSnapshot; project: Project; fold?: Fold; pick?: Pick }) {
   const openIn = useApp((s) => s.openIn);
   const open = (id: string) => openIn(project.id, { name: "agent", id });
   const st = stateOf(task, team);
@@ -484,6 +485,8 @@ function TaskCard({ task, subs, team, project, fold }: { task: Task; subs: Task[
         </div>
       )}
       {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={assignee?.name ?? task.who ?? "작업자"} />}
+      {/* a report waiting for review: 합치기 into the team's branch, or 완료 when there's nothing to merge */}
+      <MergeActions project={project} task={task} pick={pick} />
 
       {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
@@ -533,6 +536,13 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   // a piece of work is a finished report once nothing on it is still going; reports fold unless opened
   const settled = (x: Task) => x.stage === "review" || x.stage === "done" || x.stage === "failed";
   const isSettled = (t: Task) => settled(t) && subsOf(t).every(settled);
+  // 여러 장 고르기: picked report cards merge together (null: not picking)
+  const [picking, setPicking] = useState<string[] | null>(null);
+  const toMerge = sorted.filter((t) => t.stage === "review");
+  const pickOf = (t: Task): Pick | undefined =>
+    picking && t.stage === "review"
+      ? { on: picking.includes(t.id), toggle: () => setPicking((p) => (p ?? []).includes(t.id) ? (p ?? []).filter((x) => x !== t.id) : [...(p ?? []), t.id]) }
+      : undefined;
   const [opened, setOpened] = useState<Record<string, boolean>>({});
   const isOpen = (t: Task) => !isSettled(t) || !!opened[t.id];
   const reports = sorted.filter(isSettled);
@@ -550,14 +560,27 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
           </span>
         </h2>
       )}
-      {reports.length > 1 && (
-        <button onClick={() => setAll(!anyOpen)} className="self-end border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
-          {anyOpen ? "완료된 보고 모두 접기" : "완료된 보고 모두 펼치기"}
-        </button>
+      {(reports.length > 1 || toMerge.length > 1) && (
+        <div className="flex items-center justify-end gap-3 px-1 text-[12px] text-ink-2">
+          {toMerge.length > 1 &&
+            (picking ? (
+              <span>고르는 중</span>
+            ) : (
+              <button onClick={() => setPicking([])} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 underline">
+                여러 장 고르기
+              </button>
+            ))}
+          {reports.length > 1 && (
+            <button onClick={() => setAll(!anyOpen)} className="border-0 bg-transparent p-0 text-[12px] text-ink-2 underline">
+              {anyOpen ? "완료된 보고 모두 접기" : "완료된 보고 모두 펼치기"}
+            </button>
+          )}
+        </div>
       )}
       {[...active, ...shownDone].map((t) => (
-        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} fold={foldOf(t)} />
+        <TaskCard key={t.id} task={t} subs={subsOf(t)} team={team} project={project} fold={foldOf(t)} pick={pickOf(t)} />
       ))}
+      {picking && <MergeBulk project={project} taskIds={picking} onClose={() => setPicking(null)} />}
       {done.length > 3 && (
         <button onClick={() => setAllDone((v) => !v)} className="self-start border-0 bg-transparent px-1 text-[12px] text-ink-2 underline">
           {allDone ? "완료된 일 접기" : `완료된 일 ${done.length - 3}개 더 보기`}

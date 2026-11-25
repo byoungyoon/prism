@@ -31,7 +31,7 @@ export function FailPill() {
 }
 
 /** A report card: tinted background and colored border, so it never reads like a chat bubble. */
-export function FoldCard({ id, who, failed, line, text, pill }: { id?: string; who?: string; failed: boolean; line: string; text: string; pill?: ReactNode }) {
+export function FoldCard({ id, who, failed, line, text, pill, footer }: { id?: string; who?: string; failed: boolean; line: string; text: string; pill?: ReactNode; footer?: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <div
@@ -59,6 +59,7 @@ export function FoldCard({ id, who, failed, line, text, pill }: { id?: string; w
         <ChevronDown size={14} className="ml-auto shrink-0 text-ink-2" style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 160ms" }} />
       </button>
       {open && <div className="m-0 px-3 pt-0 pb-3 text-[13px] leading-relaxed select-text"><Markdown text={text} /></div>}
+      {footer}
     </div>
   );
 }
