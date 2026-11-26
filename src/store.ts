@@ -76,6 +76,8 @@ interface AppState {
   workAlert: boolean;
   /** a notification was clicked: show this team (and its 허락 칸, if it has requests) */
   askFocus: { projectId: string; at: number } | null;
+  /** let teammates do safe things without asking */
+  autoAllowSafe: boolean;
 
   openShop(on: boolean): void;
   /** buy one shop item (소품); resolves to null on success, or a plain Korean reason to show */
@@ -119,6 +121,7 @@ interface AppState {
   setAlert(kind: AlertKind, on: boolean): Promise<void>;
   /** open the team a clicked notification was about */
   showAlertTeam(projectId: string): void;
+  setAutoAllowSafe(on: boolean): Promise<void>;
   dismissFailures(): void;
   setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
@@ -226,6 +229,7 @@ export const useApp = create<AppState>((set, get) => {
     askAlert: true,
     workAlert: true,
     askFocus: null,
+    autoAllowSafe: true,
     churu: 0,
     owned: [...DEFAULT_OWNED],
     shopOpen: false,
@@ -309,7 +313,7 @@ export const useApp = create<AppState>((set, get) => {
         const prefs = await api.prefs().catch(() => null);
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
-          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit, askAlert: prefs.askAlert, workAlert: prefs.workAlert });
+          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit, askAlert: prefs.askAlert, workAlert: prefs.workAlert, autoAllowSafe: prefs.autoAllowSafe });
           // restarted for an update: everyone comes back, whatever the setting says
           const updated = prefs.restart === "update";
           if ((prefs.autoResume || updated) && !autoResumed) {
@@ -446,6 +450,14 @@ export const useApp = create<AppState>((set, get) => {
       useEngineEdit.getState().tuck();
       if (get().projectId !== projectId) get().switchTeam(projectId);
       set({ view: { name: "main" }, left: true, shopOpen: false, accountSheet: null, askFocus: { projectId, at: Date.now() } });
+    },
+    setAutoAllowSafe: async (on) => {
+      set({ autoAllowSafe: on });
+      try {
+        await api.setAutoAllowSafe(on);
+      } catch (e) {
+        set({ autoAllowSafe: !on, error: msg(e) });
+      }
     },
     dismissFailures: () => set({ startFailures: [] }),
     setCritters: (on) => {

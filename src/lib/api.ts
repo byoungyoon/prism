@@ -350,6 +350,8 @@ export interface Prefs {
   askAlert: boolean;
   /** desktop notification when work finishes, fails or gets stuck */
   workAlert: boolean;
+  /** 안전한 일(읽기·빌드·내 브랜치 커밋)은 묻지 않고 허락 */
+  autoAllowSafe: boolean;
   /** 츄르 잔액 (상점에서 쓰는 돈) */
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
@@ -419,6 +421,7 @@ export const api = {
   teamAlert: (projectId: string, kind: AlertKind, title: string, body: string, watching: boolean) => call<void>("team_alert", { projectId, kind, title, body, watching }),
   /** desktop only: the user clicked such a notification */
   onAlertOpen: (fn: (projectId: string) => void): Promise<UnlistenFn> => on<string>("alert-open", fn),
+  setAutoAllowSafe: (on: boolean) => call<Prefs>("prefs_set_auto_allow_safe", { on }),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),

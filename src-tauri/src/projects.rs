@@ -126,6 +126,9 @@ pub struct Settings {
     /// 처음 한 번의 안내 알림(macOS가 알림 허용을 묻게 하는 것)을 보냈는가
     #[serde(default)]
     pub alert_primed: bool,
+    /// let members do safe things (reading, building, local commits…) without asking anyone
+    #[serde(default = "yes")]
+    pub auto_allow_safe: bool,
     /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
     #[serde(default)]
     pub churu: u64,
@@ -159,6 +162,7 @@ impl Default for Settings {
             ask_alert: true,
             work_alert: true,
             alert_primed: false,
+            auto_allow_safe: true,
             churu: 0,
             owned: default_owned(),
             churu_rest: 0,
@@ -392,6 +396,11 @@ impl Projects {
         }
         self.save_prefs();
         true
+    }
+
+    /// "안전한 일은 자동 허락"
+    pub fn auto_allow_safe(&self) -> bool {
+        self.prefs.lock().unwrap().auto_allow_safe
     }
 
     /// Remember which teams are clocked in (for "지난번 팀 다시 출근").
@@ -703,6 +712,13 @@ pub fn prefs_set(projects: State<'_, Projects>, providers: Vec<String>, onboarde
 #[tauri::command]
 pub fn prefs_set_auto_resume(projects: State<'_, Projects>, on: bool) -> Settings {
     projects.prefs.lock().unwrap().auto_resume = on;
+    projects.save_prefs();
+    projects.prefs.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn prefs_set_auto_allow_safe(projects: State<'_, Projects>, on: bool) -> Settings {
+    projects.prefs.lock().unwrap().auto_allow_safe = on;
     projects.save_prefs();
     projects.prefs.lock().unwrap().clone()
 }
