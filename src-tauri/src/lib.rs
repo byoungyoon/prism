@@ -11,6 +11,7 @@ mod prompts;
 mod pty;
 mod remote;
 mod server;
+mod setup_log;
 mod structured;
 mod sys;
 mod team;
@@ -223,6 +224,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            pty::pty_state,
             remote::remote_status,
             remote::remote_set,
             remote::remote_new_key,
@@ -237,7 +239,6 @@ pub fn run() {
             accounts::account_set_active,
             accounts::account_login,
             accounts::account_logout,
-            accounts::account_login_exit,
             projects::projects_list,
             projects::workspace_root,
             projects::workspace_set_root,

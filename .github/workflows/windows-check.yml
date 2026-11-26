@@ -1,0 +1,28 @@
+# Runs the Windows-only behaviour (hidden terminals for sign-in and install, finding programs) on a
+# real Windows machine. Only on `ci/windows-*` branches; it releases and publishes nothing.
+name: windows-check
+
+on:
+  push:
+    branches: ["ci/windows-*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          shared-key: app-x86_64-pc-windows-msvc
+          save-if: false
+      # the app macro wants the built screen to exist; these tests don't show it
+      - run: New-Item -ItemType Directory -Force dist | Out-Null; Set-Content dist/index.html "test"
+      - run: |
+          cargo test --lib -- --nocapture pty:: sys:: setup_log::
+        working-directory: src-tauri

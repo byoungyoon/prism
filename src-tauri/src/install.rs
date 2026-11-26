@@ -149,6 +149,7 @@ fn output(program: &str, args: &[&str]) -> Option<String> {
 }
 
 /// The inode of the program file process `pid` was started from.
+#[cfg(unix)]
 fn running_inode(pid: u32) -> Option<u64> {
     // -Fin: one field per line; the first "txt" file is the program itself
     let text = output("/usr/sbin/lsof", &["-a", "-p", &pid.to_string(), "-d", "txt", "-Fin"])?;

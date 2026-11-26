@@ -2,9 +2,11 @@
 // is missing, one after another, with the official installers running in a visible terminal.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { api, pty, type CliStatus } from "../lib/api";
+import { api, type CliStatus } from "../lib/api";
 import { useApp } from "../store";
 import { TerminalView } from "./TerminalView";
+import { InstallFailed } from "./FailureDetail";
+import { useInstall } from "./useInstall";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
@@ -15,34 +17,13 @@ const WHY: Record<string, string> = {
   codex: "Codex 에이전트",
 };
 
-export function Installer({ tool, onCheck }: { tool: CliStatus; onCheck: () => void }) {
-  const [ptyId, setPtyId] = useState<number | null>(null);
-  // Callers pass a fresh `onCheck` every render, and every status poll re-renders them. Keep it in
-  // a ref so the effect below runs once per tool — otherwise each poll killed the running installer
-  // and started it over (an endless download loop, very visible with winget on Windows).
-  const checkRef = useRef(onCheck);
-  checkRef.current = onCheck;
+export function Installer({ tool, onCheck, onFailed }: { tool: CliStatus; onCheck: () => void; onFailed: (name: string) => void }) {
+  const { ptyId, failure } = useInstall(tool.name, onCheck);
+  const failedRef = useRef(onFailed);
+  failedRef.current = onFailed;
   useEffect(() => {
-    let alive = true;
-    let started: number | null = null;
-    const timer = setTimeout(() => {
-      api
-        .cliInstall(tool.name, 92, 16)
-        .then((p) => {
-          started = p;
-          if (alive) setPtyId(p);
-          else void pty.kill(p);
-        })
-        .catch((e) => useApp.getState().setError(e));
-    }, 150); // one install, even when React (dev) runs this effect twice
-    const t = setInterval(() => checkRef.current(), 3000);
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-      clearInterval(t);
-      if (started != null) void pty.kill(started);
-    };
-  }, [tool.name]);
+    if (failure) failedRef.current(tool.name);
+  }, [failure, tool.name]);
   return (
     <motion.div key={tool.name} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex flex-col gap-2">
       {tool.name === "git" && navigator.userAgent.includes("Mac") && (
@@ -50,7 +31,8 @@ export function Installer({ tool, onCheck }: { tool: CliStatus; onCheck: () => v
           Apple 설치 창이 뜨면 &apos;설치&apos;를 눌러주세요. (Homebrew가 있으면 자동으로 설치돼요)
         </span>
       )}
-      <div className="h-[200px] rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
+      {failure && <InstallFailed label={tool.label} failure={failure} />}
+      <div className="h-[200px] shrink-0 rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
         {ptyId != null && <TerminalView ptyId={ptyId} fontSize={11.5} className="h-full w-full" />}
       </div>
     </motion.div>
@@ -62,6 +44,7 @@ export function SetupSheet() {
   const [open, setOpen] = useState(false);
   const [skipped, setSkipped] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState<string | null>(null);
 
   const check = useCallback(async () => {
     try {
@@ -121,29 +104,33 @@ export function SetupSheet() {
             <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
               {tools.map((t) => {
                 const busy = current?.name === t.name;
+                const broke = busy && failed === t.name;
                 const skip = skipped.includes(t.name) && !t.installed;
                 return (
                   <motion.li key={t.name} layout className="flex items-center gap-3 rounded-xl px-3.5 py-2.5" style={{ background: busy ? "var(--glass2)" : "transparent", border: `1px solid ${busy ? "var(--amber)" : "var(--line)"}` }}>
                     <span className={`flex size-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold ${busy ? "s-work" : ""}`} style={{ background: t.installed ? "var(--work)" : busy ? "var(--amber)" : "var(--chip)", color: t.installed || busy ? "#fff" : "var(--text2)" }}>
-                      {t.installed ? "✓" : busy ? "…" : skip ? "–" : ""}
+                      {t.installed ? "✓" : broke ? "!" : busy ? "…" : skip ? "–" : ""}
                     </span>
                     <span className="flex flex-auto flex-col">
                       <span className="text-[13.5px] font-semibold">{t.label}</span>
                       <span className="text-[11.5px] text-ink-2">{WHY[t.name]}</span>
                     </span>
-                    <span className="font-mono text-[11.5px] text-ink-2">{t.installed ? t.version : busy ? "설치 중" : skip ? "건너뜀" : "대기"}</span>
+                    <span className="font-mono text-[11.5px] text-ink-2">{t.installed ? t.version : broke ? "설치 실패" : busy ? "설치 중" : skip ? "건너뜀" : "대기"}</span>
                   </motion.li>
                 );
               })}
               {tools.length === 0 && <span className="text-[12.5px] text-ink-2">확인하는 중…</span>}
             </ul>
 
-            <AnimatePresence mode="wait">{current && <Installer key={`${current.name}-${attempt}`} tool={current} onCheck={() => void check()} />}</AnimatePresence>
+            <AnimatePresence mode="wait">{current && <Installer key={`${current.name}-${attempt}`} tool={current} onCheck={() => void check()} onFailed={setFailed} />}</AnimatePresence>
 
             <div className="flex items-center gap-2">
               {current && (
                 <>
-                  <button onClick={() => setAttempt((n) => n + 1)} className="min-h-9 rounded-full px-3.5 text-[12.5px]" style={{ border: "1px solid var(--line)" }}>
+                  <button onClick={() => {
+                    setFailed(null);
+                    setAttempt((n) => n + 1);
+                  }} className="min-h-9 rounded-full px-3.5 text-[12.5px]" style={{ border: "1px solid var(--line)" }}>
                     다시 시도
                   </button>
                   <button onClick={() => setSkipped((s) => [...s, current.name])} className="min-h-9 rounded-full px-3.5 text-[12.5px]" style={{ border: "1px solid var(--line)" }}>

@@ -6,14 +6,14 @@
 use std::collections::HashMap;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
-use crate::pty::{ExitHook, Pty, SpawnSpec};
-use crate::sys;
+use crate::pty::{Pty, SpawnSpec};
+use crate::{setup_log, sys};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Stored {
@@ -81,8 +81,6 @@ pub struct Accounts {
     file: Option<PathBuf>,
     base: PathBuf,
     state: Mutex<File>,
-    /// sign-in programs by PTY id; the slot gets the exit code when one ends
-    logins: Mutex<HashMap<u32, Arc<Mutex<Option<u32>>>>>,
 }
 
 impl Accounts {
@@ -105,7 +103,7 @@ impl Accounts {
         if let Some(old) = state.active.take() {
             state.actives.entry("claude".into()).or_insert(old);
         }
-        Self { file, base: data.join("claude-profiles"), state: Mutex::new(state), logins: Mutex::default() }
+        Self { file, base: data.join("claude-profiles"), state: Mutex::new(state) }
     }
 
     fn save(&self, state: &File) {
@@ -284,7 +282,7 @@ pub fn account_set_active(accts: State<'_, Accounts>, id: String) -> Result<(), 
 /// Runs the CLI's sign-in in a PTY (the UI doesn't show it, except Antigravity's). The CLI opens
 /// the browser and receives the result itself on a localhost address, so there is no code to copy.
 #[tauri::command]
-pub fn account_login(accts: State<'_, Accounts>, pty: State<'_, Pty>, id: String, cols: u16, rows: u16) -> Result<u32, String> {
+pub fn account_login(app: AppHandle, accts: State<'_, Accounts>, pty: State<'_, Pty>, id: String, cols: u16, rows: u16) -> Result<u32, String> {
     let a = accts.get(&id).ok_or("없는 계정이에요")?;
     let program = if a.provider == "antigravity" { "agy".to_string() } else { a.provider.clone() };
     let cwd = std::env::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
@@ -295,18 +293,8 @@ pub fn account_login(accts: State<'_, Accounts>, pty: State<'_, Pty>, id: String
         "antigravity" => vec![], // the TUI asks to sign in with Google on first run
         _ => vec!["auth".into(), "login".into(), "--claudeai".into()],
     };
-    let exit = Arc::new(Mutex::new(None));
-    let slot = exit.clone();
-    let hook: ExitHook = Box::new(move |code| *slot.lock().unwrap() = Some(code.unwrap_or(1)));
-    let pty_id = pty.spawn(SpawnSpec { program: Some(program), args, cwd, env, cols, rows }, Some(hook))?;
-    accts.logins.lock().unwrap().insert(pty_id, exit);
-    Ok(pty_id)
-}
-
-/// Exit code of a sign-in started by `account_login`; None while it still runs.
-#[tauri::command]
-pub fn account_login_exit(accts: State<'_, Accounts>, pty_id: u32) -> Option<u32> {
-    accts.logins.lock().unwrap().get(&pty_id).and_then(|slot| *slot.lock().unwrap())
+    let what = format!("login {}", a.provider);
+    setup_log::spawn(&app, &pty, SpawnSpec { program: Some(program), args, cwd, env, cols, rows }, what)
 }
 
 #[tauri::command]

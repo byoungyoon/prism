@@ -59,6 +59,10 @@ fn extra_dirs() -> Vec<PathBuf> {
             env("ProgramFiles").join("nodejs"),
             env("APPDATA").join("npm"),
             env("LOCALAPPDATA").join("Microsoft").join("WinGet").join("Links"),
+            // winget itself, Git installed for this user only, and PowerShell
+            env("LOCALAPPDATA").join("Microsoft").join("WindowsApps"),
+            env("LOCALAPPDATA").join("Programs").join("Git").join("cmd"),
+            env("SystemRoot").join("System32").join("WindowsPowerShell").join("v1.0"),
         ]);
     }
     v
@@ -68,6 +72,15 @@ fn extra_dirs() -> Vec<PathBuf> {
 pub fn refresh_path() {
     let base = login_shell_path().map(std::ffi::OsString::from).or_else(|| std::env::var_os("PATH")).unwrap_or_default();
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&base).collect();
+    // Windows: installers write the new PATH to the registry, which a running app doesn't see
+    #[cfg(windows)]
+    if let Some(saved) = portable_pty::CommandBuilder::new_default_prog().get_env("PATH") {
+        for d in std::env::split_paths(saved) {
+            if !d.as_os_str().is_empty() && !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
     for d in extra_dirs() {
         if d.is_dir() && !dirs.contains(&d) {
             dirs.push(d);
@@ -85,34 +98,57 @@ pub fn adopt_login_path() {
     unsafe { std::env::set_var("PATH", search_path()) };
 }
 
+/// How to run a `.cmd`/`.bat` file. With spaces or `&()^@` in its path, plain `cmd /c "<path>" …`
+/// can lose the quotes around it (cmd strips them when there is more than one pair or a special
+/// character), so `call` goes in front.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn cmd_shim(path: String) -> (String, Vec<String>) {
+    let lead: &[&str] = if path.contains([' ', '\t', '&', '(', ')', '^', '@']) { &["/d", "/c", "call"] } else { &["/c"] };
+    let mut args: Vec<String> = lead.iter().map(|a| a.to_string()).collect();
+    args.push(path);
+    ("cmd".into(), args)
+}
+
+/// Windows lookup: per folder, the `.exe` first, then the `.cmd`/`.bat` npm leaves.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn find_windows(dirs: impl Iterator<Item = PathBuf>, program: &str, present: impl Fn(&Path) -> bool) -> Option<(String, Vec<String>)> {
+    for dir in dirs {
+        let exe = dir.join(format!("{program}.exe"));
+        if present(&exe) {
+            return Some((exe.to_string_lossy().into_owned(), vec![]));
+        }
+        for ext in ["cmd", "bat"] {
+            let shim = dir.join(format!("{program}.{ext}"));
+            if present(&shim) {
+                return Some(cmd_shim(shim.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    None
+}
+
 /// Find `program` on Prism's search path. On Windows, npm-installed CLIs are `.cmd` shims that
-/// CreateProcess can't start directly, so those run as `cmd /c <shim>`.
+/// CreateProcess can't start directly, so those run through `cmd`.
 /// Returns (program, leading args).
 pub fn resolve(program: &str) -> (String, Vec<String>) {
     if std::path::Path::new(program).is_absolute() {
         return (program.into(), vec![]);
     }
-    for dir in std::env::split_paths(&search_path()) {
-        #[cfg(windows)]
-        {
-            let exe = dir.join(format!("{program}.exe"));
-            if exe.is_file() {
-                return (exe.to_string_lossy().into_owned(), vec![]);
-            }
-            for ext in ["cmd", "bat"] {
-                let shim = dir.join(format!("{program}.{ext}"));
-                if shim.is_file() {
-                    return ("cmd".into(), vec!["/c".into(), shim.to_string_lossy().into_owned()]);
-                }
-            }
+    let path = search_path();
+    #[cfg(windows)]
+    {
+        // `winget` is a Store "app execution alias": `is_file` can't follow it, but it runs
+        let present = |p: &Path| p.is_file() || p.symlink_metadata().is_ok_and(|m| !m.is_dir());
+        if let Some(found) = find_windows(std::env::split_paths(&path), program, present) {
+            return found;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let cand = dir.join(program);
-            if cand.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false) {
-                return (cand.to_string_lossy().into_owned(), vec![]);
-            }
+    }
+    #[cfg(unix)]
+    for dir in std::env::split_paths(&path) {
+        use std::os::unix::fs::PermissionsExt;
+        let cand = dir.join(program);
+        if cand.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false) {
+            return (cand.to_string_lossy().into_owned(), vec![]);
         }
     }
     (program.into(), vec![])
@@ -346,5 +382,30 @@ pub fn ensure_claude_trust(dir: &str, config_dir: Option<&str>) {
     let tmp = file.with_extension("json.prism-tmp");
     if std::fs::write(&tmp, out).is_ok() {
         let _ = std::fs::rename(&tmp, &file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_lookup_prefers_exe_then_cmd_in_folder_order() {
+        let dirs = || ["a", "b"].map(PathBuf::from).into_iter();
+        let has = |files: &'static [&str]| move |p: &Path| files.iter().any(|f| p == Path::new(f.split('/').next().unwrap()).join(f.split('/').nth(1).unwrap()));
+        let found = find_windows(dirs(), "codex", has(&["b/codex.exe", "a/codex.cmd"])).unwrap();
+        assert_eq!(found.0, "cmd");
+        assert_eq!(found.1[0], "/c");
+        let found = find_windows(dirs(), "codex", has(&["a/codex.exe", "a/codex.cmd"])).unwrap();
+        assert!(found.0.ends_with("codex.exe") && found.1.is_empty());
+        assert!(find_windows(dirs(), "codex", has(&["a/claude.exe"])).is_none());
+    }
+
+    #[test]
+    fn cmd_files_with_awkward_paths_are_called() {
+        assert_eq!(cmd_shim(r"C:\npm\codex.cmd".into()).1, ["/c", r"C:\npm\codex.cmd"]);
+        for path in [r"C:\Users\Kim Min\npm\codex.cmd", r"C:\Tools(x86)\codex.cmd", r"C:\a&b\codex.cmd"] {
+            assert_eq!(cmd_shim(path.into()).1, ["/d", "/c", "call", path]);
+        }
     }
 }
