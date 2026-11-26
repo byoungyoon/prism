@@ -4,7 +4,7 @@
 //! served by `server.rs`: an MCP server (delegate / report / escalate …) and Claude Code
 //! hooks (status changes, final messages). Every change is pushed to the UI as a snapshot.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -2061,8 +2061,10 @@ pub struct TeamManager {
     usage: Mutex<HashMap<String, Usage>>,
     /// teams changed since the last save
     dirty: Mutex<std::collections::HashSet<String>>,
-    /// latest snapshot per team waiting to go to the UI (see `emit`)
-    outbox: Mutex<HashMap<String, TeamSnapshot>>,
+    /// teams with a snapshot about to go to the UI (see `emit`)
+    outbox: Mutex<HashSet<String>>,
+    /// fingerprint of the last snapshot each team's UI got (an unchanged one isn't sent again)
+    sent: Mutex<HashMap<String, u64>>,
     /// "project/agent" whose next turn was started by a worker's report → that card's id. Its reply
     /// goes to the chat as a 'report' entry, not a plain 'lead' line (see `say_reply`)
     report_turns: Mutex<HashMap<String, String>>,
@@ -2258,6 +2260,21 @@ fn plan_delivery(live: bool, card_open: bool) -> Option<Delivery> {
 
 /// A card that still needs its member: a reported one waits for review, and goes back to running
 /// when a message reopens it.
+/// A member that reported and waits for review this long has its claude closed (it holds a few
+/// hundred MB). A message to it starts it again on its card (`Delivery::Reopen`).
+const REVIEW_IDLE_MS: u64 = 10 * 60 * 1000;
+
+/// 팀장·작업자 sitting idle on a card in review for over `REVIEW_IDLE_MS` with a live session.
+fn idle_reviewers(agents: &[Agent], tasks: &[Task], now: u64, alive: &dyn Fn(&str) -> bool) -> Vec<String> {
+    agents
+        .iter()
+        .filter(|a| a.role != "lead" && a.status == "wait" && a.rest_since.is_none())
+        .filter(|a| a.task_id.as_deref().and_then(|t| tasks.iter().find(|x| x.id == t)).is_some_and(|t| t.stage == "review"))
+        .filter(|a| now.saturating_sub(a.last_active.max(a.status_since)) > REVIEW_IDLE_MS && alive(&a.id))
+        .map(|a| a.id.clone())
+        .collect()
+}
+
 fn card_open(stage: &str) -> bool {
     matches!(stage, "running" | "review")
 }
@@ -2451,12 +2468,38 @@ fn say_reply(team: &mut Team, report: Option<String>, text: String) {
 
 /// How long snapshots of one team are gathered before one goes to the UI. A busy team changes many
 /// times a second (every streamed message, every tool call); the UI only needs the latest.
-const EMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
+const EMIT_EVERY: std::time::Duration = std::time::Duration::from_millis(400);
 /// A turn with no sign of life for this long is reported as "응답이 없어요".
 const STALL_AFTER_MS: u64 = 5 * 60 * 1000;
 /// The UI gets the recent conversation and log; the full history stays on disk.
-const SNAPSHOT_CHAT: usize = 200;
-const SNAPSHOT_EVENTS: usize = 150;
+/// (Every snapshot is copied whole into the web view; a long history there is what made the
+/// window grow and stall after a while.)
+const SNAPSHOT_CHAT: usize = 100;
+const SNAPSHOT_EVENTS: usize = 80;
+/// Finished cards the UI gets (newest first); older ones stay on disk.
+const SNAPSHOT_DONE_TASKS: usize = 30;
+
+/// The cards a snapshot carries: everything still open, the newest finished ones, the ones the
+/// shown conversation points at, and the cards those continue (so follow-up chains stay whole).
+fn snapshot_tasks(tasks: &[Task], chat: &[ChatMsg]) -> Vec<Task> {
+    let finished = |t: &Task| t.stage == "done" || t.stage == "failed";
+    let mut done: Vec<&Task> = tasks.iter().filter(|t| finished(t)).collect();
+    done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    let mut keep: HashSet<&str> = done.iter().take(SNAPSHOT_DONE_TASKS).map(|t| t.id.as_str()).collect();
+    keep.extend(tasks.iter().filter(|t| !finished(t)).map(|t| t.id.as_str()));
+    keep.extend(chat.iter().flat_map(|m| m.task_ids.iter().map(String::as_str)));
+    // walk follow-ups back to their first card
+    let by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+    let mut todo: Vec<&str> = keep.iter().copied().collect();
+    while let Some(id) = todo.pop() {
+        if let Some(prev) = by_id.get(id).and_then(|t| t.follow_of.as_deref()) {
+            if keep.insert(prev) {
+                todo.push(prev);
+            }
+        }
+    }
+    tasks.iter().filter(|t| keep.contains(t.id.as_str())).cloned().collect()
+}
 
 fn window_label(id: &str) -> String {
     let base = if id.starts_with("five_hour") { "5시간" } else if id.starts_with("seven_day") { "주간" } else { id };
@@ -2651,6 +2694,16 @@ impl Team {
         self.agents.iter().map(|a| a.cost_usd).sum()
     }
     fn snapshot(&self) -> TeamSnapshot {
+        // recent messages, plus any older question still waiting for an answer
+        let chat: Vec<ChatMsg> = {
+            let cut = self.chat.len().saturating_sub(SNAPSHOT_CHAT);
+            self.chat
+                .iter()
+                .enumerate()
+                .filter(|(i, m)| *i >= cut || m.escalation.as_ref().is_some_and(|e| e.answer.is_none()) || m.permission.as_ref().is_some_and(|p| p.answer.is_none()))
+                .map(|(_, m)| m.clone())
+                .collect()
+        };
         TeamSnapshot {
             project_id: self.project.id.clone(),
             project_name: self.project.name.clone(),
@@ -2659,17 +2712,8 @@ impl Team {
             home: self.home.clone(),
             team: self.project.team.clone(),
             agents: self.agents.clone(),
-            tasks: self.tasks.clone(),
-            // recent messages, plus any older question still waiting for an answer
-            chat: {
-                let cut = self.chat.len().saturating_sub(SNAPSHOT_CHAT);
-                self.chat
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, m)| *i >= cut || m.escalation.as_ref().is_some_and(|e| e.answer.is_none()) || m.permission.as_ref().is_some_and(|p| p.answer.is_none()))
-                    .map(|(_, m)| m.clone())
-                    .collect()
-            },
+            tasks: snapshot_tasks(&self.tasks, &chat),
+            chat,
             events: self.events.iter().take(SNAPSHOT_EVENTS).cloned().collect(),
             cost_usd: self.cost(),
             usage: Default::default(),
@@ -2681,7 +2725,7 @@ impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
         let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), sent: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
     }
 
     /// Adds the token figures a team's screens show to its snapshot.
@@ -2695,21 +2739,31 @@ impl TeamManager {
 
     /// Queue the team's latest state for the UI. Bursts are coalesced: the first change starts a
     /// short timer, later ones just replace the queued snapshot, and only the newest is sent.
+    /// The snapshot itself is taken when the timer fires (not on every change), and one that
+    /// matches what the UI already has isn't sent again.
     fn emit(&self, team: &Team) {
         let pid = team.project.id.clone();
         self.dirty.lock().unwrap().insert(pid.clone());
-        let first = self.outbox.lock().unwrap().insert(pid.clone(), self.with_usage(team.snapshot())).is_none();
-        if !first {
+        if !self.outbox.lock().unwrap().insert(pid.clone()) {
             return;
         }
         let app = self.app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(EMIT_EVERY);
             let Some(m) = app.try_state::<Arc<TeamManager>>() else { return };
-            let snap = m.outbox.lock().unwrap().remove(&pid);
-            if let Some(snap) = snap {
-                let _ = app.emit("team://snapshot", snap);
+            m.outbox.lock().unwrap().remove(&pid);
+            let Some(snap) = m.snapshot(&pid) else { return };
+            let Ok(json) = serde_json::to_value(&snap) else { return };
+            let sum = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                json.to_string().hash(&mut h);
+                h.finish()
+            };
+            if m.sent.lock().unwrap().insert(pid, sum) == Some(sum) {
+                return;
             }
+            let _ = app.emit("team://snapshot", json);
         });
     }
 
@@ -2963,6 +3017,7 @@ impl TeamManager {
         team.log("팀이 출근했다. 총괄이 지시를 기다린다.", None);
         let snap = self.with_usage(team.snapshot());
         let _ = self.app.emit("team://snapshot", &snap);
+        self.sent.lock().unwrap().remove(&team.project.id);
         teams.insert(team.project.id.clone(), team);
         Ok(snap)
     }
@@ -3107,7 +3162,9 @@ impl TeamManager {
 
     /// Any agent still working in any team?
     pub fn any_running(&self) -> bool {
-        !self.drivers.lock().unwrap().is_empty() || self.teams.lock().unwrap().values().any(|t| t.agents.iter().any(|a| a.pty_id.is_some()))
+        // one lock at a time: holding drivers while taking teams is the opposite order elsewhere
+        let drivers = !self.drivers.lock().unwrap().is_empty();
+        drivers || self.teams.lock().unwrap().values().any(|t| t.agents.iter().any(|a| a.pty_id.is_some()))
     }
 
     /// Teams with someone clocked in right now (sorted, so it compares stably).
@@ -3630,6 +3687,7 @@ impl TeamManager {
     }
 
     fn on_exit(&self, pid: &str, aid: &str, code: Option<u32>) {
+        crate::engines::engines().stop_member(pid, aid);
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
         // it died while its conversation was being handed over: the card goes on in a new one (the board keeps it working)
@@ -4181,6 +4239,8 @@ impl TeamManager {
     /// Stop a member's process. It leaves the driver map right away, so a relaunch can follow
     /// immediately (its late exit is ignored — see `launches`).
     fn kill_driver(&self, pid: &str, aid: &str) {
+        // its design engines (if it started any) go with the session
+        crate::engines::engines().stop_member(pid, aid);
         let d = self.drivers.lock().unwrap().remove(&format!("{pid}/{aid}"));
         if let Some(d) = d {
             d.cancel(); // let it wrap up the turn if it can (ACP session/cancel…)
@@ -4207,6 +4267,7 @@ impl TeamManager {
         self.retire_rested(now);
         self.settle_stale_members(now);
         self.check_no_reply(now);
+        self.close_idle_reviewers(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -4233,6 +4294,33 @@ impl TeamManager {
                 }
             }
             self.emit(team);
+        }
+    }
+
+    /// Close the claude of members idle in review (see `idle_reviewers`), like 잠시 멈춤.
+    fn close_idle_reviewers(&self, now: u64) {
+        let running: HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+        let mut closing: Vec<(String, String)> = vec![];
+        {
+            let mut teams = self.teams.lock().unwrap();
+            for team in teams.values_mut() {
+                let pid = team.project.id.clone();
+                let alive = |a: &str| running.contains(&format!("{pid}/{a}"));
+                let idle = idle_reviewers(&team.agents, &team.tasks, now, &alive);
+                if idle.is_empty() {
+                    continue;
+                }
+                for aid in idle {
+                    let name = team.name_of(&aid);
+                    team.set_status(&aid, "off");
+                    team.log(format!("{name}이(가) 검토를 기다리며 {}분 쉬어서 창을 닫았다. 말을 걸면 다시 켜진다.", REVIEW_IDLE_MS / 60_000), None);
+                    closing.push((pid.clone(), aid));
+                }
+                self.emit(team);
+            }
+        }
+        for (pid, aid) in closing {
+            self.kill_driver(&pid, &aid);
         }
     }
 
@@ -5268,8 +5356,9 @@ pub fn team_stop(teams: Teams<'_>, project_id: String) {
 }
 
 #[tauri::command]
-pub fn team_get(teams: Teams<'_>, project_id: String) -> Option<TeamSnapshot> {
-    teams.snapshot(&project_id)
+pub async fn team_get(app: AppHandle, project_id: String) -> Option<TeamSnapshot> {
+    // off the main thread: a snapshot can wait on locks and git
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().snapshot(&project_id)).await.ok().flatten()
 }
 
 #[tauri::command]
@@ -5546,8 +5635,12 @@ mod merge_tests {
 
 
 #[tauri::command]
-pub fn task_files(teams: Teams<'_>, project_id: String, task_id: String) -> Result<Vec<FileStat>, String> {
-    let (repo, base, branch) = teams.task_refs(&project_id, &task_id)?;
+pub async fn task_files(app: AppHandle, project_id: String, task_id: String) -> Result<Vec<FileStat>, String> {
+    tauri::async_runtime::spawn_blocking(move || task_files_now(&app.state::<Arc<TeamManager>>(), &project_id, &task_id)).await.map_err(|e| e.to_string())?
+}
+
+fn task_files_now(teams: &TeamManager, project_id: &str, task_id: &str) -> Result<Vec<FileStat>, String> {
+    let (repo, base, branch) = teams.task_refs(project_id, task_id)?;
     let out = sys::git(&repo, &["diff", "--numstat", &base, &branch])?;
     Ok(out
         .lines()
@@ -5561,16 +5654,24 @@ pub fn task_files(teams: Teams<'_>, project_id: String, task_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn task_diff(teams: Teams<'_>, project_id: String, task_id: String, path: String) -> Result<String, String> {
-    let (repo, base, branch) = teams.task_refs(&project_id, &task_id)?;
-    sys::git(&repo, &["diff", &base, &branch, "--", &path])
+pub async fn task_diff(app: AppHandle, project_id: String, task_id: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (repo, base, branch) = app.state::<Arc<TeamManager>>().task_refs(&project_id, &task_id)?;
+        sys::git(&repo, &["diff", &base, &branch, "--", &path])
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// File content as it is on the task's branch (for previews).
 #[tauri::command]
-pub fn task_file(teams: Teams<'_>, project_id: String, task_id: String, path: String) -> Result<String, String> {
-    let (repo, _, branch) = teams.task_refs(&project_id, &task_id)?;
-    sys::git(&repo, &["show", &format!("{branch}:{path}")])
+pub async fn task_file(app: AppHandle, project_id: String, task_id: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (repo, _, branch) = app.state::<Arc<TeamManager>>().task_refs(&project_id, &task_id)?;
+        sys::git(&repo, &["show", &format!("{branch}:{path}")])
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]
@@ -6516,6 +6617,39 @@ mod handover_tests {
             who: None,
         };
         (agent, vec![task])
+    }
+
+    #[test]
+    fn a_member_idle_in_review_has_its_session_closed() {
+        let alive = |_: &str| true;
+        let late = REVIEW_IDLE_MS + 1;
+        let (a, tasks) = worker("worker", "wait", "review", 0);
+        assert_eq!(idle_reviewers(&[a.clone()], &tasks, late, &alive), vec!["w1".to_string()]);
+        assert!(idle_reviewers(&[a.clone()], &tasks, REVIEW_IDLE_MS, &alive).is_empty(), "10분 전엔 그대로");
+        assert!(idle_reviewers(&[a.clone()], &tasks, late, &|_: &str| false).is_empty(), "이미 꺼진 세션");
+        let (busy, tasks2) = worker("worker", "work", "review", 0);
+        assert!(idle_reviewers(&[busy], &tasks2, late, &alive).is_empty(), "일하는 중");
+        let (run, tasks3) = worker("worker", "wait", "running", 0);
+        assert!(idle_reviewers(&[run], &tasks3, late, &alive).is_empty(), "검토 대기가 아님");
+        let (mut lead, tasks4) = worker("lead", "wait", "review", 0);
+        lead.role = "lead".into();
+        assert!(idle_reviewers(&[lead], &tasks4, late, &alive).is_empty(), "총괄은 안 닫음");
+    }
+
+    #[test]
+    fn a_snapshot_keeps_open_cards_recent_finished_ones_and_their_chains() {
+        let (_, base) = worker("worker", "wait", "done", 0);
+        let card = |id: &str, stage: &str, at: u64, follow: Option<&str>| Task { id: id.into(), stage: stage.into(), updated_at: at, follow_of: follow.map(String::from), ..base[0].clone() };
+        let mut tasks: Vec<Task> = (0..50).map(|i| card(&format!("d-{i}"), "done", i, None)).collect();
+        tasks.push(card("open", "running", 0, Some("d-0")));
+        tasks.push(card("rev", "review", 0, None));
+        let chat = vec![ChatMsg { id: 1, kind: "lead".into(), text: String::new(), task_ids: vec!["d-1".into()], at: 0, escalation: None, permission: None }];
+        let kept: Vec<String> = snapshot_tasks(&tasks, &chat).into_iter().map(|t| t.id).collect();
+        assert_eq!(kept.len(), SNAPSHOT_DONE_TASKS + 4);
+        for id in ["open", "rev", "d-0", "d-1", "d-49", "d-20"] {
+            assert!(kept.iter().any(|k| k == id), "{id} 빠짐");
+        }
+        assert!(!kept.iter().any(|k| k == "d-5"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
+import { OlderButton, useRecent } from "../lib/recent";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api } from "../lib/api";
@@ -477,6 +478,9 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   // turns since the last "여기서부터 새 대화" divider
   const sinceDivider = chat.length - 1 - chat.map((m) => m.kind).lastIndexOf("divider");
   const longChat = live && sinceDivider >= LONG_CHAT;
+  // what the current filter shows, newest RECENT_STEP of it drawn (older on request)
+  const listed = chat.filter((m) => m.kind !== "permission" && (view === "all" || m.kind === "divider" || (view === "report") === (m.kind === "report")));
+  const recent = useRecent(listed, scrollRef, `${projectId}:${view}`);
   /** make this the team the report feed and board show */
   const openTeam = () => {
     if (multi && projectId && projectId !== current) switchTeam(projectId);
@@ -662,9 +666,10 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
             작업 카드로 쪼개서 팀에 나눠줘요.
           </p>
         )}
+        <OlderButton hidden={recent.hidden} onClick={recent.more} />
         <AnimatePresence initial={false}>
           {team &&
-            chat.map((m) => {
+            recent.visible.map((m) => {
               if (m.kind === "me")
                 return (
                   <motion.div

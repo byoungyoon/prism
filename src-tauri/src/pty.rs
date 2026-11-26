@@ -117,12 +117,9 @@ impl PtyManager {
                         }
                     }
                 }
-                let code = sessions
-                    .lock()
-                    .unwrap()
-                    .remove(&id)
-                    .and_then(|mut s| s.child.wait().ok())
-                    .map(|st| st.exit_code());
+                // take it out first: waiting under the sessions lock would freeze every terminal
+                let gone = sessions.lock().unwrap().remove(&id);
+                let code = gone.and_then(|mut s| s.child.wait().ok()).map(|st| st.exit_code());
                 let note = format!("\r\n\x1b[2m[프로세스 종료{}]\x1b[0m\r\n", code.map(|c| format!(" · {c}")).unwrap_or_default());
                 for ch in shared.subs.lock().unwrap().values() {
                     let _ = ch.send(InvokeResponseBody::Raw(note.clone().into_bytes()));

@@ -3,6 +3,7 @@ mod alerts;
 mod batch;
 mod clis;
 mod dashboard;
+mod engines;
 mod launch;
 mod projects;
 mod prompts;
@@ -285,6 +286,7 @@ pub fn run() {
                 if !PREPARED.swap(true, Ordering::SeqCst) {
                     put_teams_away(app, "quit");
                 }
+                engines::engines().stop_all();
             }
             _ => {}
         });
