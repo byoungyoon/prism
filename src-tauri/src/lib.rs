@@ -185,6 +185,7 @@ pub fn run() {
             accounts::account_set_active,
             accounts::account_login,
             accounts::account_logout,
+            accounts::account_login_exit,
             projects::projects_list,
             projects::workspace_root,
             projects::workspace_set_root,
