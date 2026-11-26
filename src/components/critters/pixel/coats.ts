@@ -123,7 +123,7 @@ export const lift = (hex: string) => {
 };
 
 /**
- * The markings of the side walk, placed on its own drawing (walk.ts): a mask on the turned face,
+ * The markings of a cat seen from the side, placed on the walk's drawing (walk.ts): a mask on the turned face,
  * stripes on the forehead and down the back, patches on the rump. `x` is from the middle of the
  * face, `ry` from the top of the head, `by` from the middle of the body (so they ride with it).
  */
@@ -148,9 +148,10 @@ function sideMark(coat: Coat, ch: string, x: number, ry: number, by: number): st
 
 /**
  * The colour of one dot. `x, y` are in the frame; `top` is where the head starts (patterns follow
- * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face; `bodyY` the middle of the body, given for the side walk only.
+ * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face; `bodyY` the middle of the body,
+ * given for the cats seen from the side (walking, lying, curled up); `back` for the one seen from behind.
  */
-export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number, bodyY?: number): string | null {
+export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number, bodyY?: number, back?: boolean): string | null {
   // x, y, top and faceX are in the drawn cat's dots (K × K per drawing dot, see art.ts), so the
   // patterns below are twice as fine as the drawing: thin tabby stripes, smaller patches
   const fur = (c: string) => {
@@ -166,7 +167,7 @@ export function dotColor(coat: Coat, ch: string, x: number, y: number, top: numb
       if (ry >= 24 && ry <= 28 && x >= faceX - 8 && x <= faceX) return coat.patch[0];
     }
     // siamese: a dark oval over the middle of the face, and dark ear rims
-    if (coat.point && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
+    if (coat.point && !back && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
     if (coat.point && ry <= 6 && ch === "k") return coat.point;
     // a few lighter hairs, so the fur is not one flat colour
     return speckle;

@@ -49,7 +49,7 @@ export interface FaceSpot {
 }
 
 /** the dots a feeling puts on a front-facing face, and its sign beside the head (`top`, `right`) */
-export function faceDots(feel: Feel, f: FaceSpot | undefined, side: { eye: [number, number] } | undefined, asleep: boolean, top: number, right: number): [number, number, Ink][] {
+export function faceDots(feel: Feel, f: FaceSpot | undefined, asleep: boolean, top: number, right: number): [number, number, Ink][] {
   const out: [number, number, Ink][] = [];
   const put = (ax: number, ay: number, dots: Dot[]) => dots.forEach(([x, y, c]) => out.push([ax + x, ay + y, c]));
   if (f && !asleep) {
@@ -93,10 +93,6 @@ export function faceDots(feel: Feel, f: FaceSpot | undefined, side: { eye: [numb
     if (feel === "blush")
       for (const cx of [lx - 2, rx - 1]) for (let i = 0; i < 4; i++) out.push([cx + i, ey + 3 - (i % 2), "blush"]);
     out.push([f.nose[0], f.nose[1], "blush"]);
-  } else if (side && !asleep) {
-    const [x, y] = side.eye;
-    if (feel === "sleepy" || feel === "gloom") out.push([x - 1, y + 1, "line"], [x, y + 1, "line"]);
-    else out.push([x, y, "eye"], [x, y + 1, "eye"]);
   }
   const sign = SIGNS[feel];
   if (sign) {
