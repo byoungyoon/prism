@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { api } from "../lib/api";
 import { isLive, useApp } from "../store";
 import { initialOf } from "./AccountSheet";
+import { PROVIDER_NAME, topAccount, topAccountName } from "../lib/topAccount";
 import { isRemote } from "../lib/transport";
 import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
 import { KnowledgeSheet } from "./KnowledgeSheet";
@@ -307,7 +308,7 @@ function ClockInAll() {
 
 export function TopBar() {
   const { dark, left, right, view, toggleDark, toggleLeft, toggleRight, accounts, openAccounts } = useApp(useShallow((s) => ({ dark: s.dark, left: s.left, right: s.right, view: s.view, toggleDark: s.toggleDark, toggleLeft: s.toggleLeft, toggleRight: s.toggleRight, accounts: s.accounts, openAccounts: s.openAccounts })));
-  const account = accounts.find((a) => a.active);
+  const account = topAccount(accounts);
   const hasProject = useApp((s) => !!s.projectId);
   const onHome = view.name === "home";
 
@@ -336,21 +337,21 @@ export function TopBar() {
       <UsageMeter />
       <button
         onClick={() => openAccounts()}
-        aria-label={`Claude 계정: ${account?.status.email ?? account?.name ?? "확인 중"}${account?.status.loggedIn ? "" : " (로그인 필요)"}`}
-        title={account?.status.email ?? "Claude 계정"}
+        aria-label={`계정: ${account ? `${PROVIDER_NAME[account.provider]} ${account.status.email ?? account.name}` : "확인 중"}${account?.status.loggedIn ? "" : " (로그인 필요)"}`}
+        title={account?.status.email ?? (account ? `${PROVIDER_NAME[account.provider]} 계정` : "계정")}
         className="flex min-h-9 items-center gap-2 rounded-full py-1 pr-3 pl-1 hover:bg-[var(--chip)] max-[820px]:pr-1"
       >
         <span
           className="relative flex size-7 items-center justify-center rounded-full text-[12px] font-semibold"
           style={{ background: account?.status.loggedIn ? "var(--navy)" : "var(--chip)", color: account?.status.loggedIn ? "var(--me-fg)" : "var(--text2)" }}
         >
-          {initialOf(account)}
+          {initialOf(account?.status.loggedIn ? { ...account, name: topAccountName(account) } : account)}
           <span
             className="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full"
             style={{ background: account?.status.loggedIn ? "var(--work)" : "var(--block)", border: "2px solid var(--bg2)" }}
           />
         </span>
-        <span className="max-w-[120px] truncate text-[12.5px] max-[820px]:hidden">{account ? (account.status.loggedIn ? account.name : "로그인 필요") : "계정"}</span>
+        <span className="max-w-[120px] truncate text-[12.5px] max-[820px]:hidden">{account ? (account.status.loggedIn ? topAccountName(account) : "로그인 필요") : "계정"}</span>
       </button>
       <button onClick={toggleDark} aria-label={dark ? "라이트 모드로" : "다크 모드로"} className={iconBtn}>
         {dark ? <Sun /> : <Moon />}

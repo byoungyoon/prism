@@ -149,6 +149,8 @@ export function LoginTerminal({ id, onDone }: { id: string; onDone: () => void }
       clearInterval(t);
       detach?.();
       if (started != null) void pty.kill(started);
+      // closed before the next check: pick up a sign-in that just landed
+      void loadAccounts();
     };
   }, [id, loadAccounts]);
 
@@ -417,7 +419,7 @@ export function AccountSheet() {
         >
           <motion.section
             role="dialog"
-            aria-label="Claude 계정"
+            aria-label="계정"
             initial={{ opacity: 0, y: 16, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
