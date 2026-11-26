@@ -1,7 +1,8 @@
 // The office: every team on screen gets a pod of desks — the 총괄's big desk (two monitors, headset
 // stand) up front, then the 팀장 desks (paper trays), then the 작업자 desks (monitor and toolbox).
 // A cat at work sits at its own desk tapping away; a cat with nothing to do strolls about the lounge
-// (sofa, coffee machine, plants) or naps there. A permission request pops up over the asking cat's
+// (sofa, coffee machine, plants) or naps there — and some of them cross over to the playroom (놀이방) to climb
+// the cat tower, roll the ball and sleep in the window hammock (playRules.ts). A permission request pops up over the asking cat's
 // head, with 허락 / 거절 right in the bubble (the same answer the chat's cards send).
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as RMouse, type PointerEvent as RPointer } from "react";
 import { useApp, useOfficeTeams, waitsForMe } from "../../store";
@@ -10,6 +11,8 @@ import { plainAction } from "../../lib/plainAction";
 import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
+import { Playroom } from "./Playroom";
+import { actsFor, emptyPlay, leavePlay, SCRIPTS, tickPlay, type PlayState, type PlayStep } from "./playRules";
 import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
 import { catName, coatKey, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
@@ -68,6 +71,8 @@ const officeMemory = {
   spots: {} as Record<string, Spot>,
   /** lounging cats' places, from the lounge's corner (they move along when the lounge moves) */
   strolls: {} as Record<string, Spot>,
+  /** who is over in the playroom, doing what, and where the ball is */
+  play: emptyPlay() as PlayState,
   /** at a desk or in the lounge, as the person last saw it */
   where: {} as Record<string, "desk" | "lounge">,
   /** when each cat came to the lounge */
@@ -331,7 +336,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
-  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; door: Spot; w: number } | null>(null);
+  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; play: Record<string, Spot>; track: { x0: number; x1: number; y: number } | null; door: Spot; w: number } | null>(null);
   useLayoutEffect(() => {
     const el = content.current;
     if (!el) return;
@@ -361,20 +366,38 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
         const r = m.getBoundingClientRect();
         return { x: r.left - o.left - size * 0.4, y: r.top - o.top, w: r.width + size * 0.8, h: r.height + size * 0.5 };
       });
+      // the playroom's places: where a cat's feet go on each toy, and the ball's path
+      // (a cat's spot is the bottom of its picture, and the drawn feet are 4 empty rows above it:
+      // the spot goes that much under the place the feet belong)
+      const sink = 4 * Math.round(size / 20);
+      const play: Record<string, Spot> = {};
+      el.querySelectorAll<HTMLElement>("[data-play]").forEach((m) => {
+        const r = m.getBoundingClientRect();
+        play[m.dataset.play!] = { x: r.left - o.left, y: r.top - o.top + sink };
+      });
+      const tr = el.querySelector("[data-balltrack]")?.getBoundingClientRect();
+      const track = tr ? { x0: tr.left - o.left, x1: tr.right - o.left, y: tr.bottom - o.top + sink } : null;
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
       setRoom((prev) => {
-        const next = { seats, lounge, marks, blocks, door, w: el.clientWidth };
+        const next = { seats, lounge, marks, blocks, play, track, door, w: el.clientWidth };
         return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
       });
     };
     measure();
+    // the screen may still be growing into place (an entrance animation scales it, which shrinks what
+    // is measured and changes no size the observer sees): measure again once it has settled
+    const again = setTimeout(measure, 700);
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    // the lounge grows and shrinks smoothly (a transition): its cats follow as it does
-    const le = el.querySelector("[data-lounge]");
-    if (le) ro.observe(le);
-    return () => ro.disconnect();
+    // the lounge grows and shrinks smoothly (a transition): its cats follow as it does — and so does
+    // the playroom beside or below it
+    // (the desks too: when they grow, the rooms under them only move, which changes no room's size)
+    el.querySelectorAll("[data-lounge], [data-playroom], .of-pods").forEach((r) => ro.observe(r));
+    return () => {
+      clearTimeout(again);
+      ro.disconnect();
+    };
   }, [shape, size, owned.join("|"), layoutKey, paused]);
 
   // lounging cats: a spot each — by the sofa, the coffee machine, a plant, or anywhere in between,
@@ -383,14 +406,67 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
   useEffect(() => {
     officeMemory.strolls = strolls;
   }, [strolls]);
-  /** a lounging cat's place in the room's pixels */
-  const loungeSpot = (key: string): Spot | undefined => {
+  /** a lounging cat's place in the lounge, in the room's pixels */
+  const strollSpot = (key: string): Spot | undefined => {
     const p = strolls[key];
     const L = room?.lounge;
     return p && L ? { x: L.x + within(p.x, 0, L.w), y: L.y + within(p.y, 0, L.h) } : undefined;
   };
   const loungers = lounging.map((m) => m.key);
   const loungeKey = loungers.join("|");
+
+  // some of the resting cats go over to the playroom for a while (playRules.ts)
+  const [play, setPlay] = useState<PlayState>(() => officeMemory.play);
+  useEffect(() => {
+    officeMemory.play = play;
+  }, [play]);
+  const acts = actsFor(has);
+  const actsKey = acts.join("|");
+  const moodRef = useRef(mood);
+  moodRef.current = mood;
+  const measured = !!room;
+  useEffect(() => {
+    if (!measured) return;
+    const keys = loungeKey ? loungeKey.split("|") : [];
+    const tick = (fill: boolean) =>
+      setPlay((s) =>
+        tickPlay(s, {
+          keys,
+          acts: actsFor(has),
+          now: Date.now(),
+          fill,
+          // not one the person is fussing over, nor (after the first drawing) one still on its way in
+          busy: (k) => !!moodRef.current[k] || catG.current?.key === k || (!fill && Date.now() - (officeMemory.cameIn[k] ?? 0) < 12_000),
+        }),
+      );
+    // the office as first seen already has cats at play (so does a still one, which never moves them)
+    tick(still || !officeMemory.drawn);
+    if (still) return;
+    const t = setInterval(() => {
+      if (!document.hidden && !pausedRef.current) tick(false);
+    }, 900);
+    return () => clearInterval(t);
+  }, [measured, loungeKey, actsKey, still]); // eslint-disable-line react-hooks/exhaustive-deps
+  // a cat picked up by a person stops playing
+  const heldKey = held?.key;
+  useEffect(() => {
+    if (heldKey) setPlay((s) => leavePlay(s, heldKey, Date.now()));
+  }, [heldKey]);
+  /** what a cat in the playroom is doing and where it stands for it */
+  const playing = (key: string): { step: PlayStep; spot: Spot } | undefined => {
+    const c = loungers.includes(key) ? play.cats[key] : undefined;
+    const step = c && SCRIPTS[c.act][c.step];
+    if (!step || !room) return undefined;
+    if (step.at !== "ball") {
+      const spot = room.play[step.at];
+      return spot && { step, spot };
+    }
+    // beside the ball, on the side it was pushed from
+    const t = room.track;
+    return t ? { step, spot: { x: t.x0 + (t.x1 - t.x0) * play.ball - play.ballDir * size * 0.55, y: t.y } } : undefined;
+  };
+  /** where a resting cat is: on a toy in the playroom, or its place in the lounge */
+  const loungeSpot = (key: string): Spot | undefined => playing(key)?.spot ?? strollSpot(key);
   useEffect(() => {
     if (!room) return;
     const L = room.lounge;
@@ -543,6 +619,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     // a cat held up by a person is where the pointer has it
     const mine = held?.key === m.key ? held : undefined;
     const md = mood[m.key];
+    const fun = desk ? undefined : playing(m.key)?.step;
     const spot = mine ? { x: mine.x, y: mine.y } : (desk ? seat && { x: seat.x, y: seat.y } : loungeSpot(m.key)) ?? lastSpot[m.key];
     if (!spot) continue;
     if (!lastSpot[m.key] && officeMemory.drawn && room) enterFrom[m.key] ??= room.door;
@@ -560,17 +637,17 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       // (a held cat looks limp and teary: "fail")
       state: mine ? "fail" : desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
       // the lounge isn't all coffee: each cat has its own way of resting (it changes now and then)
-      pose: mine ? "lift" : desk ? undefined : (md?.pose ?? restPose(m.key, restTurn)),
+      pose: mine ? "lift" : desk ? undefined : (md?.pose ?? fun?.pose ?? restPose(m.key, restTurn)),
       // a lounging cat ambles; one at its desk fidgets now and then (not while asking)
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
-      speed: desk || mine || md?.fast || !settled(m.key) ? undefined : narrow ? 38 : 52,
+      speed: desk || mine || md?.fast || !settled(m.key) ? undefined : fun ? (fun.speed ?? 90) * (narrow ? 0.7 : 1) : narrow ? 38 : 52,
       fidget: desk && !asks[m.key]?.length,
       snap: desk && !!seat && onSeat.current.has(m.key),
       drag: !!mine,
       flag: mine || asks[m.key]?.length ? undefined : flags[m.key]?.text,
       // a rebel wriggles in the hand
       struggle: !!mine && !mine.compliant,
-      say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : (md?.say ?? chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
+      say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : (md?.say ?? chatter[m.key] ?? (!m.reported && m.agent.status !== "block" && fun?.say ? fun.say : m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
     });
   }
 
@@ -582,6 +659,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       })
     : [];
   const halves = askHalves(askSpots, room?.w ?? 0);
+  const atPlay = loungers.filter((k) => playing(k)).length;
 
   /** the Mood of one cat for a while (later moods of the same cat win over the timer) */
   const feel = (key: string, m: Mood, ms: number) => {
@@ -789,26 +867,29 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
             ))}
             {!pods.length && <span className="of-empty">{shown.length ? "지금 일하는 팀이 없어요. 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
           </div>
-          <div ref={loungeRef} className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
-            <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
-            {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
-            {/* the bare room (floor and walls) is all there is until something is bought */}
-            {has("액자") && <span className="of-frame px-frame" data-piece="액자" style={pieceAt("액자")} />}
-            {has("책장") && <span className="of-bookcase px-bookcase" data-block data-piece="책장" style={pieceAt("책장")} />}
-            {has("스탠드") && <span className="of-lamp px-lamp" data-block data-piece="스탠드" style={pieceAt("스탠드")} />}
-            {has("햇살 자리") && <span className="of-sunspot px-sunspot" data-spot data-on data-piece="햇살 자리" style={pieceAt("햇살 자리")} />}
-            {has("러그") && <span className="of-rug px-rug" data-spot data-piece="러그" style={pieceAt("러그")} />}
-            {has("러그·쿠션") && <span className="of-rug2 px-rug2" data-piece="러그·쿠션" style={pieceAt("러그·쿠션")} />}
-            {has("소파") && <span className="of-sofa px-sofa" data-spot data-piece="소파" style={pieceAt("소파")} />}
-            {has("러그·쿠션") && <span className="of-cushion px-cushion" data-piece="쿠션" style={pieceAt("쿠션")} />}
-            {has("숨숨집") && <span className="of-catbox px-catbox" data-spot data-on data-piece="숨숨집" style={pieceAt("숨숨집")} />}
-            {has("스크래처") && <span className="of-scratcher px-scratcher" data-spot data-on data-piece="스크래처" style={pieceAt("스크래처")} />}
-            {has("털실") && <span className="of-yarn px-yarn" data-piece="털실" style={pieceAt("털실")} />}
-            {has("밥그릇") && <span className="of-bowls px-bowls" data-spot data-piece="밥그릇" style={pieceAt("밥그릇")} />}
-            {has("정수기") && <span className="of-coffee px-coffee" data-spot data-piece="정수기" style={pieceAt("정수기")} />}
-            {has("캣타워") && <span className="of-tower px-tower" data-spot data-piece="캣타워" style={pieceAt("캣타워")} />}
-            {has("화분") && <span className="of-plant of-plant-1 px-plant" data-block data-piece="화분 1" style={pieceAt("화분 1")} />}
-            {has("화분") && <span className="of-plant of-plant-2 px-plant" data-block data-piece="화분 2" style={pieceAt("화분 2")} />}
+          <div className="of-rooms">
+            <div ref={loungeRef} className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
+              <span className="of-lounge-name">휴게실{waitingAll.length - atPlay ? ` · ${waitingAll.length - atPlay}명` : ""}</span>
+              {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
+              {/* the bare room (floor and walls) is all there is until something is bought */}
+              {has("액자") && <span className="of-frame px-frame" data-piece="액자" style={pieceAt("액자")} />}
+              {has("책장") && <span className="of-bookcase px-bookcase" data-block data-piece="책장" style={pieceAt("책장")} />}
+              {has("스탠드") && <span className="of-lamp px-lamp" data-block data-piece="스탠드" style={pieceAt("스탠드")} />}
+              {has("햇살 자리") && <span className="of-sunspot px-sunspot" data-spot data-on data-piece="햇살 자리" style={pieceAt("햇살 자리")} />}
+              {has("러그") && <span className="of-rug px-rug" data-spot data-piece="러그" style={pieceAt("러그")} />}
+              {has("러그·쿠션") && <span className="of-rug2 px-rug2" data-piece="러그·쿠션" style={pieceAt("러그·쿠션")} />}
+              {has("소파") && <span className="of-sofa px-sofa" data-spot data-piece="소파" style={pieceAt("소파")} />}
+              {has("러그·쿠션") && <span className="of-cushion px-cushion" data-piece="쿠션" style={pieceAt("쿠션")} />}
+              {has("숨숨집") && <span className="of-catbox px-catbox" data-spot data-on data-piece="숨숨집" style={pieceAt("숨숨집")} />}
+              {has("스크래처") && <span className="of-scratcher px-scratcher" data-spot data-on data-piece="스크래처" style={pieceAt("스크래처")} />}
+              {has("털실") && <span className="of-yarn px-yarn" data-piece="털실" style={pieceAt("털실")} />}
+              {has("밥그릇") && <span className="of-bowls px-bowls" data-spot data-piece="밥그릇" style={pieceAt("밥그릇")} />}
+              {has("정수기") && <span className="of-coffee px-coffee" data-spot data-piece="정수기" style={pieceAt("정수기")} />}
+              {has("캣타워") && <span className="of-tower px-tower" data-spot data-piece="캣타워" style={pieceAt("캣타워")} />}
+              {has("화분") && <span className="of-plant of-plant-1 px-plant" data-block data-piece="화분 1" style={pieceAt("화분 1")} />}
+              {has("화분") && <span className="of-plant of-plant-2 px-plant" data-block data-piece="화분 2" style={pieceAt("화분 2")} />}
+            </div>
+            <Playroom count={atPlay} has={has} ball={play.ball} />
           </div>
         </div>
         <div className="of-cats">
