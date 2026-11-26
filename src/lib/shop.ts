@@ -1,4 +1,4 @@
-// 상점 표: 휴게실 소품의 가격·이름·그림을 한 곳에 모았다. 고양이는 상점에서 사지 않고 뽑기로만 얻는다
+// 상점 표: 휴게실 소품의 가격·이름·설명을 한 곳에 모았다 (그림은 components/shopArt.ts, 이름으로 찾는다). 고양이는 상점에서 사지 않고 뽑기로만 얻는다
 // (뽑기 가격·확률은 Rust가 정하고 gacha_info로 받는다). 소품 가격은 Rust의 ITEM_PRICES(projects.rs)가
 // 기준이고, 여기와 같아야 한다: scripts/test/shop-prices.test.mjs 가 맞는지 본다.
 // 물건 id는 Prefs.owned에 그대로 저장된다: "cat:<털색 id>"(뽑기) · "item:<이름>"(상점). 휴게실(Office.tsx)은
@@ -13,29 +13,27 @@ export interface ShopEntry {
   name: string;
   /** 츄르 개수 (Rust ITEM_PRICES와 같아야 한다) */
   price: number;
-  /** 그림: 소품은 이모지 한 개 */
-  icon: string;
   /** 휴게실에 보이는 이름 설명 (쉬운 말) */
   hint: string;
 }
 
 /** 휴게실 소품 (20~150 범위). 이름이 id가 된다: item:<이름> */
-const ITEMS: { name: string; price: number; icon: string; hint: string }[] = [
-  { name: "소파", price: 150, icon: "🛋️", hint: "고양이들이 눕는 큰 소파" },
-  { name: "책장", price: 100, icon: "📚", hint: "휴게실 벽 책장" },
-  { name: "액자", price: 30, icon: "🖼️", hint: "벽에 거는 그림" },
-  { name: "스탠드", price: 60, icon: "💡", hint: "구석의 작은 등" },
-  { name: "햇살 자리", price: 40, icon: "☀️", hint: "창가에 드는 햇살 자리" },
-  { name: "숨숨집", price: 80, icon: "📦", hint: "들어가 숨는 상자 집" },
-  { name: "스크래처", price: 70, icon: "🪵", hint: "발톱 가는 긁개" },
-  { name: "털실", price: 20, icon: "🧶", hint: "굴러다니는 털실 뭉치" },
-  { name: "밥그릇", price: 20, icon: "🥣", hint: "고양이 밥그릇" },
-  { name: "러그", price: 50, icon: "🟫", hint: "바닥에 까는 깔개" },
-  { name: "러그·쿠션", price: 30, icon: "🛏️", hint: "깔개와 쿠션 한 벌" },
-  { name: "화분", price: 60, icon: "🪴", hint: "초록 화분 두 개" },
-  { name: "정수기", price: 120, icon: "💧", hint: "커피 머신 자리의 정수기" },
-  { name: "캣타워", price: 100, icon: "🏠", hint: "여러 층으로 된 캣타워" },
+const ITEMS: { name: string; price: number; hint: string }[] = [
+  { name: "소파", price: 150, hint: "고양이들이 눕는 큰 소파" },
+  { name: "책장", price: 100, hint: "휴게실 벽 책장" },
+  { name: "액자", price: 30, hint: "벽에 거는 그림" },
+  { name: "스탠드", price: 60, hint: "구석의 작은 등" },
+  { name: "햇살 자리", price: 40, hint: "창가에 드는 햇살 자리" },
+  { name: "숨숨집", price: 80, hint: "들어가 숨는 상자 집" },
+  { name: "스크래처", price: 70, hint: "발톱 가는 긁개" },
+  { name: "털실", price: 20, hint: "굴러다니는 털실 뭉치" },
+  { name: "밥그릇", price: 20, hint: "고양이 밥그릇" },
+  { name: "러그", price: 50, hint: "바닥에 까는 깔개" },
+  { name: "러그·쿠션", price: 30, hint: "깔개와 쿠션 한 벌" },
+  { name: "화분", price: 60, hint: "초록 화분 두 개" },
+  { name: "정수기", price: 120, hint: "커피 머신 자리의 정수기" },
+  { name: "캣타워", price: 100, hint: "여러 층으로 된 캣타워" },
 ];
 
 /** 상점에 나오는 소품 전부 */
-export const SHOP: ShopEntry[] = ITEMS.map((it): ShopEntry => ({ id: `item:${it.name}`, kind: "item", name: it.name, price: it.price, icon: it.icon, hint: it.hint }));
+export const SHOP: ShopEntry[] = ITEMS.map((it): ShopEntry => ({ id: `item:${it.name}`, kind: "item", name: it.name, price: it.price, hint: it.hint }));

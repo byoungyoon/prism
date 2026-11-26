@@ -412,6 +412,14 @@
   animation-name: px-run-4;
   animation-timing-function: steps(4);
 }
+.px-run-8 {
+  animation-name: px-run-8;
+  animation-timing-function: steps(8);
+}
+@keyframes px-run-8 {
+  from { background-position-x: 0%; }
+  to { background-position-x: 114.2857%; }
+}
 @keyframes px-run-2 {
   from { background-position-x: 0%; }
   to { background-position-x: 200%; }
@@ -427,7 +435,8 @@
 }
 /* (stronger than the state rules above, which give .cr-body a breathing animation) */
 .px-cat .px-sprite.px-run-2,
-.px-cat .px-sprite.px-run-4 {
+.px-cat .px-sprite.px-run-4,
+.px-cat .px-sprite.px-run-8 {
   animation-delay: 0s;
   animation-iteration-count: infinite;
 }
@@ -438,6 +447,10 @@
 .px-cat .px-sprite.px-run-4 {
   animation-name: px-run-4;
   animation-timing-function: steps(4);
+}
+.px-cat .px-sprite.px-run-8 {
+  animation-name: px-run-8;
+  animation-timing-function: steps(8);
 }
 .cr-paused .px-sprite {
   animation-play-state: paused !important;

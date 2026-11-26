@@ -4,6 +4,7 @@
 import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
 import { FH, FW, K, type Row } from "./pixel/art";
+import { WALK_FRAMES } from "./pixel/walk";
 import { catName, coatOf } from "./pixel/coats";
 import type { Feel } from "./pixel/faces";
 import { strip } from "./pixel/render";
@@ -56,6 +57,9 @@ const MOTION: Record<Pose, { row: Row; frames: number[]; ms: number }> = {
   // held up by the scruff (a person is carrying it about): dangling, swaying
   lift: { row: "lift", frames: [0, 1, 2, 3], ms: 900 },
 };
+
+/** walking sideways has more frames than the other motions */
+const SIDE_WALK = { frames: Array.from({ length: WALK_FRAMES }, (_, i) => i), ms: 720 };
 
 /** how it feels, by what it's doing: at work focused, stuck asking (?), done happy (♥ or ♫), failed in tears, resting sleepy */
 function feelOf(state: CritterState, name: string): Feel {
@@ -112,8 +116,8 @@ function useDecoded(url: string, n: number, ms: number): { url: string; n: numbe
 
 function PixelCat({ name, role, state, pose, size, flip, dir, label, className, colorKey }: CritterLook & { pose: Pose; size: number; flip?: boolean; dir?: WalkDir; label?: string; className?: string; colorKey?: string }) {
   const coat = coatOf(colorKey ?? name, role);
-  const m = MOTION[pose];
-  const row: Row = pose === "walk" ? (dir ?? "side") : m.row;
+  const row: Row = pose === "walk" ? (dir ?? "side") : MOTION[pose].row;
+  const m = pose === "walk" && row === "side" ? SIDE_WALK : MOTION[pose];
   const feel = feelOf(state, name);
   const { url, n, ms } = useDecoded(strip(coat, row, m.frames, feel), m.frames.length, m.ms);
   // whole pixels only: each dot of the drawing is s × s screen pixels. `size` is how tall the cat
