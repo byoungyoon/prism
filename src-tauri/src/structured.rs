@@ -9,7 +9,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -141,6 +141,30 @@ fn spawn(s: &Spawn) -> Result<Child, String> {
     cmd.spawn().map_err(|e| format!("{} 실행 실패: {e}", s.program))
 }
 
+/// Waits for a driver's process to end without holding its lock (a blocking `wait()` under the
+/// lock would also block `kill()` — the stop button — until the process exits on its own).
+/// Polls `try_wait`; gives up when the driver itself is gone (its `Drop` reaps the process).
+fn reap<T>(weak: &Weak<T>, child: impl Fn(&T) -> &Mutex<Child>) -> Option<i32> {
+    loop {
+        let me = weak.upgrade()?;
+        match child(&me).lock().unwrap().try_wait() {
+            Ok(Some(st)) => return st.code(),
+            Err(_) => return None,
+            Ok(None) => {}
+        }
+        drop(me);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Kill and reap on drop, so a dropped driver never leaves a zombie process behind.
+fn reap_on_drop(child: &mut Child) {
+    if let Ok(None) = child.try_wait() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 // ── Claude Code (stream-json) ─────────────────────────
 
 pub struct Claude {
@@ -224,7 +248,7 @@ impl Claude {
                     _ => {}
                 }
             }
-            let code = weak.upgrade().and_then(|m| m.child.lock().unwrap().wait().ok()).and_then(|s| s.code());
+            let code = reap(&weak, |m: &Claude| &m.child);
             // died mid-turn: the turn ends here, with the reason (otherwise it'd show "working" forever)
             if busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 sink(Event::TurnEnd { result: Some(exit_reason("Claude", code, &tail)), cost: None, error: true });
@@ -752,8 +776,8 @@ impl Acp {
             }
             // stdout closed: the process is gone (or going). Report it even if the driver was
             // already dropped — a silent end is what leaves the UI "working" forever.
+            let code = reap(&weak, |m: &Acp| &m.child);
             let me = weak.upgrade();
-            let code = me.as_ref().and_then(|m| m.child.lock().unwrap().wait().ok()).and_then(|s| s.code());
             if let Some(me) = &me {
                 if me.busy.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     *me.prompt.lock().unwrap() = None;
@@ -763,6 +787,18 @@ impl Acp {
             sink(Event::Exit(code));
         });
         Ok(me)
+    }
+}
+
+impl Drop for Acp {
+    fn drop(&mut self) {
+        reap_on_drop(self.child.get_mut().unwrap());
+    }
+}
+
+impl Drop for Claude {
+    fn drop(&mut self) {
+        reap_on_drop(self.child.get_mut().unwrap());
     }
 }
 
