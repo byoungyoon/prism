@@ -1,0 +1,146 @@
+# Installs a published Windows release on a real Windows machine and uses it: start time, idle
+# memory/CPU, blinking console windows, first-run installs, sign-in buttons. Only on
+# `ci/installed-*` branches; it releases and publishes nothing (results are the run's artifacts).
+name: windows-installed
+
+on:
+  push:
+    branches: ["ci/installed-*"]
+
+permissions:
+  contents: read
+
+env:
+  VERSION: "0.3.9"
+  SHA256: bc4cb1bf8c99bf6130e8bb7b28488ccc86f41c660410a92d1e6e5faeca0d016a
+
+jobs:
+  run:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # asis: Git and Node.js already there. clean: neither, like a non-developer's PC
+        pc: [asis, clean]
+    steps:
+      - uses: actions/checkout@v4
+      - name: prepare
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\out"; New-Item -ItemType Directory -Force $out | Out-Null
+          "OUT=$out" >> $env:GITHUB_ENV
+          # the test driver keeps its own copy of node, out of the app's sight
+          $tools = "$env:RUNNER_TEMP\driver"; New-Item -ItemType Directory -Force $tools | Out-Null
+          Copy-Item (Get-Command node).Source "$tools\node.exe"
+          npm install --prefix $tools playwright-core@1 | Out-Null
+          "DRIVER=$tools" >> $env:GITHUB_ENV
+      - name: download and install
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\download"; New-Item -ItemType Directory -Force $dir | Out-Null
+          $setup = "$dir\Prism_${env:VERSION}_x64-setup.exe"
+          Invoke-WebRequest "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$env:VERSION/Prism_${env:VERSION}_x64-setup.exe" -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne $env:SHA256) { throw "hash mismatch" }
+          "signature: $((Get-AuthenticodeSignature $setup).Status)"
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $p = Start-Process $setup -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(300000)) { throw "installer did not finish" }
+          "installer exit=$($p.ExitCode) took=$([int]$sw.Elapsed.TotalSeconds)s"
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Prism", "$env:ProgramFiles\Prism" -Filter *.exe -ErrorAction SilentlyContinue | Where-Object Name -notmatch 'uninstall' | Select-Object -First 1
+          if (-not $exe) { throw "installed exe not found" }
+          "installed: $($exe.FullName) version=$($exe.VersionInfo.ProductVersion)"
+          "EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+      - name: make it a PC without Git and Node.js
+        if: matrix.pc == 'clean'
+        shell: pwsh
+        run: |
+          # really uninstall them: with only the folders hidden, winget still thinks they are there
+          $roots = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          foreach ($e in Get-ItemProperty $roots -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^(Git|Git version .*|Node\.js.*)$' }) {
+            if ($e.PSChildName -match '^\{.*\}$') { $p = Start-Process msiexec -ArgumentList '/x', $e.PSChildName, '/qn', '/norestart' -PassThru -Wait }
+            else { $p = Start-Process ($e.UninstallString.Trim('"')) -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES' -PassThru -Wait }
+            "uninstalled $($e.DisplayName) exit=$($p.ExitCode)"
+          }
+          Start-Sleep 10
+          # copies that were never "installed" (tool cache, other toolchains) only need to disappear
+          foreach ($d in "$env:ProgramFiles\nodejs", "$env:ProgramFiles\Git", "C:\hostedtoolcache\windows\node", "C:\mingw64", "C:\npm\prefix") {
+            if (Test-Path $d) { try { Rename-Item $d "$d.hidden" -ErrorAction Stop; "hidden $d" } catch { "could not hide ${d}: $_" } }
+          }
+          Remove-Item Env:npm_config_prefix -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'Machine')
+          $win = $env:SystemRoot
+          [Environment]::SetEnvironmentVariable('Path', "$win\system32;$win;$win\System32\Wbem;$win\System32\WindowsPowerShell\v1.0\", 'Machine')
+          [Environment]::SetEnvironmentVariable('Path', "$env:LOCALAPPDATA\Microsoft\WindowsApps", 'User')
+      - name: start watchers
+        shell: pwsh
+        run: |
+          # PowerShell 7 is only the test's own tool here
+          $pw = (Get-Process -Id $PID).Path
+          "PWSH_DIR=$(Split-Path $pw)" >> $env:GITHUB_ENV
+          $w = Start-Process $pw -ArgumentList '-NoProfile','-File',"$pwd\scripts\windows-smoke\windows.ps1",'-Out',"$env:OUT\windows.tsv" -WindowStyle Hidden -PassThru
+          $q = Start-Process $pw -ArgumentList '-NoProfile','-File',"$pwd\scripts\windows-smoke\processes.ps1",'-Out',"$env:OUT\processes.tsv" -WindowStyle Hidden -PassThru
+          Start-Sleep 8
+          # proof that the watcher sees a console window that only blinks
+          "$(Get-Date -Format HH:mm:ss.fff) control start" | Tee-Object "$env:OUT\marks.txt"
+          Start-Process cmd -ArgumentList '/c','echo control'
+          Start-Sleep 5
+          "$(Get-Date -Format HH:mm:ss.fff) control end" | Tee-Object "$env:OUT\marks.txt" -Append
+      - name: what the app can find
+        shell: pwsh
+        run: |
+          $path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+          $env:PATH = $path
+          foreach ($n in 'git','node','npm','claude','codex','winget') { "$n -> $((Get-Command $n -ErrorAction SilentlyContinue).Source)" }
+          "WebView2: $((Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv)"
+      - name: start time and 5 idle minutes
+        shell: pwsh
+        run: |
+          # the app inherits what Explorer would give it, not the job's own PATH
+          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+          "$(Get-Date -Format HH:mm:ss.fff) measure start" >> "$env:OUT\marks.txt"
+          & "$pwd\scripts\windows-smoke\measure.ps1" -Exe $env:EXE -Out $env:OUT | Tee-Object "$env:OUT\measure.txt"
+      - name: first-run installs and sign-in buttons
+        shell: pwsh
+        run: |
+          $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User') + ";$env:PWSH_DIR"
+          # a first run again
+          foreach ($d in "$env:APPDATA\dev.byoungyoon.prism", "$env:LOCALAPPDATA\dev.byoungyoon.prism") { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+          # the job runs as administrator, where WebView2 ignores the environment variable;
+          # only a machine policy can open the debugging port (set after the measurements)
+          $key = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item $key -Force | Out-Null
+          New-ItemProperty $key -Name 'prism.exe' -Value '--remote-debugging-port=9222' -PropertyType String -Force | Out-Null
+          "$(Get-Date -Format HH:mm:ss.fff) drive start" >> "$env:OUT\marks.txt"
+          & "$env:DRIVER\node.exe" scripts\windows-smoke\drive.mjs $env:EXE $env:OUT $env:DRIVER 2>&1 | Tee-Object "$env:OUT\drive.txt"
+      - name: collect
+        if: always()
+        shell: pwsh
+        run: |
+          $log = "$env:APPDATA\dev.byoungyoon.prism\setup.log"
+          if (Test-Path $log) { Copy-Item $log "$env:OUT\setup.log"; "---- setup.log"; Get-Content $log } else { "no setup.log" }
+          "---- marks"; Get-Content "$env:OUT\marks.txt" -ErrorAction SilentlyContinue
+          "---- windows that appeared"; Get-Content "$env:OUT\windows.tsv" -ErrorAction SilentlyContinue | Where-Object { $_ -match "`tnew`t" }
+          "---- processes that started"; Get-Content "$env:OUT\processes.tsv" -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installed-${{ matrix.pc }}
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+
+  # Git is on winget's books but its files are gone (or Prism can't find them)
+  stale-record:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: what winget does, with and without --force
+        shell: pwsh
+        run: |
+          Rename-Item "$env:ProgramFiles\Git" "Git.hidden"
+          $common = 'install', '--id', 'Git.Git', '-e', '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements'
+          winget @common
+          "plain: exit=$LASTEXITCODE git.exe=$(Test-Path "$env:ProgramFiles\Git\cmd\git.exe")"
+          winget @common --force
+          "force: exit=$LASTEXITCODE git.exe=$(Test-Path "$env:ProgramFiles\Git\cmd\git.exe")"
+          exit 0
