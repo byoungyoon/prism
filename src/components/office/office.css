@@ -177,11 +177,23 @@
   display: flex;
   flex-direction: column;
 }
+/* no stacking context here (nor on its layer): each cat takes its own depth, so a cat held by a
+   person passes over the desks while the others stay behind their desk tops */
 .of-cats {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  /* clip, not hidden: a hidden box can still be scrolled, which would shift every cat */
+  overflow: clip;
   pointer-events: none;
+}
+.of-cats .cr-layer {
+  contain: none;
+}
+.of-cats .cr-mover {
+  z-index: 2;
+}
+.of-cats .cr-mover.cr-held {
+  z-index: 4;
 }
 
 .of-wall {

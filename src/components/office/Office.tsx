@@ -565,7 +565,8 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
       speed: desk || mine || md?.fast || !settled(m.key) ? undefined : narrow ? 38 : 52,
       fidget: desk && !asks[m.key]?.length,
-      snap: desk && !!seat && onSeat.current.has(m.key),
+      // (one just put down by hand walks back to its seat)
+      snap: desk && !!seat && !md?.fast && onSeat.current.has(m.key),
       drag: !!mine,
       flag: mine || asks[m.key]?.length ? undefined : flags[m.key]?.text,
       // a rebel wriggles in the hand
@@ -603,22 +604,43 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const o = content.current!.getBoundingClientRect();
     return { x: e.clientX - o.left, y: e.clientY - o.top };
   };
-  /** the cat under the pointer: a little inside its box, so the desk around it still gets its clicks */
+  /**
+   * the cat under the pointer. Cats can overlap, and the top of a cat's box is empty (room for the
+   * signs): the one whose drawing is pressed wins over one whose box merely reaches there, and of
+   * two the one painted on top (later in the layer). A cat seated at its desk is left a little at the
+   * bottom, so the desk there still gets its clicks; one on its feet is caught down to its paws.
+   */
   const catAt = (x: number, y: number): string | null => {
-    const cats = content.current ? Array.from(content.current.querySelectorAll<HTMLElement>("[data-critter]")) : [];
+    const cats = content.current ? Array.from(content.current.querySelectorAll<HTMLElement>("[data-critter]")).reverse() : [];
+    let near: string | null = null;
     for (const c of cats) {
       if (c.classList.contains("cr-leaving")) continue;
+      const key = c.dataset.critter!;
       const r = (c.querySelector(".critter") ?? c).getBoundingClientRect();
-      if (x >= r.left + r.width * 0.2 && x <= r.right - r.width * 0.2 && y >= r.top + r.height * 0.1 && y <= r.bottom - r.height * 0.1) return c.dataset.critter ?? null;
+      const seat = deskMembers.some((m) => m.key === key) ? room?.seats[key] : undefined;
+      const at = seat && shownAt(c);
+      const seated = !!at && Math.hypot(at.x - seat.x, at.y - seat.y) < 2;
+      const inside = (side: number, top: number) => x >= r.left + r.width * side && x <= r.right - r.width * side && y >= r.top + r.height * top && y <= r.bottom - r.height * (seated ? 0.1 : 0);
+      if (inside(0.25, 0.35)) return key;
+      if (inside(0.2, 0.1)) near ??= key;
     }
-    return null;
+    return near;
+  };
+  /** where a cat's feet are on the screen right now (in the room's pixels) — on its way somewhere, not yet there */
+  const shownAt = (mover: Element): Spot => {
+    const r = mover.getBoundingClientRect();
+    return local({ clientX: r.left, clientY: r.top });
   };
   const startCat = (e: { clientX: number; clientY: number; pointerId: number }, key: string): boolean => {
     const m = members.find((x) => x.key === key);
     if (!m || !room || asks[key]?.length) return false; // a cat asking for permission waits for its answer
     const desk = deskMembers.includes(m);
-    const spot = desk ? room.seats[key] : (loungeSpot(key) ?? lastSpot[key]);
-    if (!desk && !spot) return false;
+    // where it is headed (its seat, or its place in the lounge): a rebel goes back there
+    const home = desk ? room.seats[key] : loungeSpot(key);
+    const mover = Array.from(content.current!.querySelectorAll("[data-critter]")).find((c) => c.getAttribute("data-critter") === key);
+    if (!mover) return false;
+    // held from where it is seen, even mid-walk (its destination may be across the room)
+    const spot = shownAt(mover);
     const p = local(e);
     // a cat's character follows its coat; a little one in five times it does the opposite
     const coat = coatOf(m.agent.role === "lead" ? m.project.name : m.agent.name, m.agent.role, coatKey(m.agent));
@@ -629,13 +651,13 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       pid: e.pointerId,
       sx: e.clientX,
       sy: e.clientY,
-      ox: spot ? p.x - spot.x : 0,
-      oy: spot ? p.y - spot.y : 0,
-      x: spot?.x ?? p.x,
-      y: spot?.y ?? p.y,
+      ox: p.x - spot.x,
+      oy: p.y - spot.y,
+      x: spot.x,
+      y: spot.y,
       on: false,
       compliant,
-      origin: spot ?? p,
+      origin: home ?? spot,
       box: room.lounge,
       move: onCatMove,
       up: onCatUp,
@@ -648,7 +670,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
   };
   const onCatMove = (e: PointerEvent) => {
     const g = catG.current;
-    if (!g || e.pointerId !== g.pid || g.desk) return;
+    if (!g || e.pointerId !== g.pid) return;
     if (!g.on) {
       if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) < DRAG_PX) return;
       g.on = true;
@@ -673,7 +695,10 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     }
     setHeld(null);
     const b = g.box;
-    if (g.compliant) {
+    if (g.desk) {
+      // a cat at work goes back to its seat (on foot), grumbling if it's a rebel
+      feel(g.key, { say: g.compliant ? "일해야 해요" : "하악!", fast: true }, 2200);
+    } else if (g.compliant) {
       // a docile cat stays where it is put: it sits or lies down there for a while
       const x = within(g.x, b.x, b.x + b.w);
       const y = within(g.y, b.y, b.y + b.h);
@@ -733,11 +758,21 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     stopGesture(g);
     pieceG.current = null;
   };
-  /** a press in the room: on a cat (lift it, or be bothered at its desk), else on a piece of the lounge */
+  // on a touch screen a finger dragging a cat must not scroll the room (that would drop the cat)
+  useEffect(() => {
+    const el = content.current;
+    if (!el) return;
+    const hold = (e: TouchEvent) => catG.current && e.cancelable && e.preventDefault();
+    el.addEventListener("touchmove", hold, { passive: false });
+    return () => el.removeEventListener("touchmove", hold);
+  }, []);
+  /** a press in the room: on a cat (lift it; a press that doesn't move bothers one at its desk), else on a piece of the lounge */
   const onRoomDown = (e: RPointer) => {
     // (Mac에서 ctrl+클릭은 우클릭이다: 털색 메뉴만 뜨고 고양이를 집지 않는다)
     if (e.button !== 0 || e.ctrlKey) return;
     swallow.current = false;
+    // 허락 말풍선은 고양이 위에 떠 있다: 그 뒤의 고양이를 집지 않고 버튼이 눌리게 둔다
+    if ((e.target as HTMLElement).closest(".of-ask")) return;
     const cat = catAt(e.clientX, e.clientY);
     if (cat) {
       if (startCat(e, cat)) {
