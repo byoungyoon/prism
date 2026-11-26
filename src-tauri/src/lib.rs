@@ -2,6 +2,7 @@ mod accounts;
 mod alerts;
 mod batch;
 mod clis;
+mod dashboard;
 mod launch;
 mod projects;
 mod prompts;
@@ -247,6 +248,26 @@ pub fn run() {
             team::agent_kill,
             batch::batch_create,
             batch::batch_list,
+            dashboard::layout::dashboard_load,
+            dashboard::layout::dashboard_save,
+            dashboard::web::web_open,
+            dashboard::web::web_bounds,
+            dashboard::web::web_show,
+            dashboard::web::web_hide,
+            dashboard::web::web_reload,
+            dashboard::web::web_close,
+            dashboard::web::web_hide_all,
+            dashboard::web::web_text,
+            dashboard::sheet::sheet_read,
+            dashboard::sheet::sheet_watch,
+            dashboard::sheet::sheet_unwatch,
+            dashboard::slack::slack_token_set,
+            dashboard::slack::slack_token_status,
+            dashboard::slack::slack_token_clear,
+            dashboard::slack::slack_channels,
+            dashboard::slack::slack_history,
+            dashboard::ai::ai_transform,
+            dashboard::ai::ai_dashboard_draft,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
