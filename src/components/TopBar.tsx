@@ -122,6 +122,7 @@ function UsageMeter() {
       <AnimatePresence>
         {open && (
           <motion.div
+            data-covers-web
             initial={{ opacity: 0, y: -6, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
@@ -252,6 +253,35 @@ function ChurruButton() {
   );
 }
 
+/** 관제탑 맨 위 탭: 사무실 · 대시보드 (사무실 탭 옆) */
+function MainTabs() {
+  const tab = useApp((s) => s.mainTab);
+  const setMainTab = useApp((s) => s.setMainTab);
+  const items = [
+    { id: "office", label: "🏢 사무실" },
+    { id: "dashboard", label: "📊 대시보드" },
+  ] as const;
+  return (
+    <div role="tablist" aria-label="보기 방식" className="glass flex gap-0.5 rounded-full p-1">
+      {items.map((t) => {
+        const on = tab === t.id;
+        return (
+          <button
+            key={t.id}
+            role="tab"
+            aria-selected={on}
+            onClick={() => setMainTab(t.id)}
+            className="min-h-8 rounded-full border-0 px-3.5 text-[12.5px] font-medium"
+            style={on ? { background: "var(--amber)", color: "#2B2520" } : { background: "transparent", color: "var(--text)" }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Clock in another team: its 총괄 joins the stack on the left. */
 function AddTeam() {
   const go = useApp((s) => s.go);
@@ -296,6 +326,7 @@ export function TopBar() {
       )}
       {hasProject && !onHome && <AddTeam />}
       {!onHome && <ClockInAll />}
+      {view.name === "main" && <MainTabs />}
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 

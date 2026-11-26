@@ -12,15 +12,161 @@ const CFG = {
   permissionMode: "default",
 };
 
-/** 시나리오 하나: 팀 목록과 각 팀 스냅샷. now는 호출 시각 기준이라 "몇 분 전" 표시가 자연스럽다. */
+/** 시나리오 하나: 팀 목록과 각 팀 스냅샷. now는 호출 시각 기준이라 "몇 분 전" 표시가 자연스럽다.
+ *  대시보드 시나리오(dash-*)는 데모 팀 위에 대시보드 목(mock) 데이터(dash)를 얹는다. */
 export function buildScenario(name) {
   const now = Date.now();
-  const builder = SCENARIOS[name];
-  if (!builder) throw new Error(`알 수 없는 시나리오 "${name}" (사용 가능: ${Object.keys(SCENARIOS).join(", ")})`);
-  return builder(now);
+  const dash = DASH_SCENARIOS[name];
+  const builder = dash ? SCENARIOS.demo : SCENARIOS[name];
+  if (!builder) throw new Error(`알 수 없는 시나리오 "${name}" (사용 가능: ${SCENARIO_NAMES().join(", ")})`);
+  return { ...builder(now), dash: dash ? dash(now) : null };
 }
 
-export const SCENARIO_NAMES = () => Object.keys(SCENARIOS);
+export const SCENARIO_NAMES = () => [...Object.keys(SCENARIOS), ...Object.keys(DASH_SCENARIOS)];
+
+// ── 대시보드 목 데이터 (백엔드 없이 화면을 채운다. 실제 앱에는 들어가지 않는다) ─────────
+const DASH_PATH = { inquiry: "/Users/demo/문의 목록.xlsx", sales: "/Users/demo/이번주 매출.xlsx" };
+const SLACK_CH = { channelId: "C0123CS", channelName: "고객센터" };
+
+/** 웹·엑셀·슬랙 칸 (보기 결과 없음) */
+const plainWidgets = () => [
+  { id: "web1", kind: "web", title: "고객센터 홈", x: 0, y: 0, w: 6, h: 7, config: { url: "https://support.example.com" } },
+  { id: "sheet1", kind: "sheet", title: "문의 목록", x: 6, y: 0, w: 6, h: 7, config: { path: DASH_PATH.inquiry } },
+  { id: "slack1", kind: "slack", title: "고객센터 채널", x: 0, y: 7, w: 4, h: 7, config: { ...SLACK_CH } },
+  { id: "sheet2", kind: "sheet", title: "이번 주 매출", x: 4, y: 7, w: 8, h: 7, config: { path: DASH_PATH.sales } },
+];
+
+/** AI 보기 결과: 표 · 그래프 · 요약 (화면에 보이는 결과) */
+const AI_VIEWS = {
+  table: {
+    type: "table",
+    title: "답 안 단 문의 (3건)",
+    columns: ["접수일", "고객", "문의 내용", "상태"],
+    rows: [
+      ["11/21", "김◯◯", "환불 절차가 궁금해요", "답 없음"],
+      ["11/22", "이◯◯", "배송이 아직 안 왔어요", "답 없음"],
+      ["11/24", "박◯◯", "쿠폰이 적용되지 않아요", "답 없음"],
+    ],
+  },
+  chart: {
+    type: "chart",
+    title: "요일별 매출 합계",
+    chart: {
+      kind: "bar",
+      labels: ["월", "화", "수", "목", "금", "토", "일"],
+      series: [{ name: "매출(만 원)", values: [120, 95, 150, 180, 210, 240, 160] }],
+    },
+  },
+  summary: {
+    type: "summary",
+    title: "중요한 메시지 요약",
+    text: "환불 문의가 2건 들어왔어요. 배송 지연 안내가 필요해 보여요. 어제 공지한 쿠폰 오류는 아직 해결되지 않았어요.",
+  },
+  line: {
+    type: "chart",
+    title: "주간 추이",
+    chart: {
+      kind: "line",
+      labels: ["1주", "2주", "3주", "4주"],
+      series: [
+        { name: "이번 달", values: [30, 48, 42, 61] },
+        { name: "지난 달", values: [25, 33, 38, 40] },
+      ],
+    },
+  },
+};
+
+const DASH_SCENARIOS = {
+  // ① 빈 대시보드: 안내 + 세 가지 큰 카드
+  "dash-empty": () => ({ widgets: [], slack: { connected: false, team: null } }),
+  // ② 칸 여러 개 (웹·엑셀·슬랙), 보기 결과 없음
+  "dash-multi": () => ({ widgets: plainWidgets(), slack: { connected: true, team: "고객센터팀" } }),
+  // ③ AI 변형 결과: 표 · 그래프 · 요약 (원본 보기로 바꿀 수 있는 상태)
+  "dash-ai": () => {
+    const ws = plainWidgets();
+    ws[1].view = { prompt: "답 안 단 문의만 표로", result: AI_VIEWS.table, showOriginal: false };
+    ws[2].view = { prompt: "중요한 메시지만 요약", result: AI_VIEWS.summary, showOriginal: false };
+    ws[3].view = { prompt: "이번 주 매출 합계 그래프로", result: AI_VIEWS.chart, showOriginal: false };
+    return { widgets: ws, slack: { connected: true, team: "고객센터팀" } };
+  },
+  // 설계도 미리보기: 빈 대시보드에서 설명을 적으면 이런 초안이 나온다 (로그인 필요 칸 포함)
+  "dash-draft": () => ({
+    widgets: [],
+    slack: { connected: false, team: null },
+    draft: {
+      version: 1,
+      widgets: [
+        { id: "d1", kind: "sheet", title: "문의 목록", x: 0, y: 0, w: 6, h: 7, config: { path: DASH_PATH.inquiry }, view: { prompt: "답 안 단 문의만 표로", showOriginal: true } },
+        { id: "d2", kind: "slack", title: "고객센터 채널", x: 6, y: 0, w: 6, h: 7, config: { ...SLACK_CH } },
+        { id: "d3", kind: "web", title: "고객센터 홈", x: 0, y: 7, w: 12, h: 7, config: { url: "https://support.example.com", login: "1" } },
+      ],
+    },
+  }),
+};
+
+/** fakeApi 가 쓰는 목 응답 (대시보드 명령) */
+export function dashMock(dash, cmd, args) {
+  switch (cmd) {
+    case "dashboard_load":
+      return { version: 1, widgets: dash?.widgets ?? [] };
+    case "dashboard_save":
+      return null;
+    case "sheet_read": {
+      if (args.path === DASH_PATH.sales) {
+        return {
+          headers: ["요일", "매출(만 원)", "건수"],
+          rows: [["월", 120, 14], ["화", 95, 11], ["수", 150, 18], ["목", 180, 21], ["금", 210, 26]],
+          sheetName: "매출", truncated: false,
+        };
+      }
+      return {
+        headers: ["접수일", "고객", "문의 내용", "상태"],
+        rows: [
+          ["11/21", "김◯◯", "환불 절차가 궁금해요", "답 없음"],
+          ["11/22", "이◯◯", "배송이 아직 안 왔어요", "답 없음"],
+          ["11/23", "최◯◯", "영수증 재발행 부탁드려요", "답함"],
+          ["11/24", "박◯◯", "쿠폰이 적용되지 않아요", "답 없음"],
+        ],
+        sheetName: "문의", truncated: false,
+      };
+    }
+    case "sheet_watch":
+    case "sheet_unwatch":
+    case "web_open":
+    case "web_bounds":
+    case "web_show":
+    case "web_hide":
+    case "web_hide_all":
+    case "web_close":
+      return null;
+    case "web_text":
+      return "고객센터 홈 · 자주 묻는 질문 · 1:1 문의";
+    case "slack_token_status":
+      return dash?.slack ?? { connected: false, team: null };
+    case "slack_token_set":
+      return { team: "고객센터팀", user: "demo" };
+    case "slack_token_clear":
+      return null;
+    case "slack_channels":
+      return [
+        { id: "C0123CS", name: "고객센터", isPrivate: false },
+        { id: "C0456OPS", name: "운영", isPrivate: false },
+        { id: "G0789DM", name: "환불팀", isPrivate: true },
+      ];
+    case "slack_history":
+      return [
+        { ts: "1", user: "U1", userName: "김상담", time: "11:02", text: "환불 문의 두 건 들어왔어요. 확인 부탁드려요." },
+        { ts: "2", user: "U2", userName: "박운영", time: "10:40", text: "배송 지연 안내 문구 초안 올렸어요." },
+        { ts: "3", user: "U1", userName: "김상담", time: "09:15", text: "어제 쿠폰 오류 건은 아직 그대로예요." },
+      ];
+    case "ai_transform":
+      return args.prompt?.includes("요약") ? AI_VIEWS.summary : args.prompt?.includes("그래프") ? AI_VIEWS.chart : AI_VIEWS.table;
+    case "ai_dashboard_draft":
+      return dash?.draft ?? { version: 1, widgets: [] };
+    default:
+      return undefined;
+  }
+}
 
 /** 고양이 뽑기 정보 (Rust gacha_info 와 같다). 흰 고양이는 뽑기 대상이 아니다. */
 export const GACHA_INFO = {
