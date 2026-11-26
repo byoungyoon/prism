@@ -19,7 +19,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildScenario, SCENARIO_NAMES } from "./shot/scenarios.mjs";
+import { buildScenario, SCENARIO_NAMES, GACHA_INFO } from "./shot/scenarios.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -51,6 +51,11 @@ const SCREENS = {
   home: "홈 (프로젝트 목록)",
   settings: "팀 설정",
   shop: "츄르 상점 (관제탑에서 츄르 잔액 버튼을 눌러 연 상태)",
+  "shop-cats": "상점 고양이 탭: 뽑기 버튼·확률표·보유 목록 (일부만 보유; -s gacha)",
+  "shop-poor": "상점 고양이 탭: 츄르가 모자라 뽑기 버튼이 막힌 상태 (-s gacha-poor)",
+  "shop-roll": "뽑기 연출 중: 상자가 흔들리는 순간 (-s gacha --wait 300)",
+  "shop-new": "뽑기 결과: 새 고양이 (-s gacha --wait 2600)",
+  "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
 };
@@ -149,6 +154,19 @@ function fakeApi(cmd, args, data) {
       return "/tmp";
     case "prefs_get":
       return data.prefs;
+    case "gacha_info":
+      return GACHA_INFO;
+    case "gacha_pull": {
+      // 실제 뽑기 규칙을 흉내 낸다: 다 모았으면 거절, 잔액이 모자라면 거절, 아니면 250츄르 차감 (중복 환급 없음)
+      const p = data.prefs;
+      const owned = GACHA_INFO.cats.every((c) => p.owned.includes(`cat:${c.id}`));
+      if (owned) throw new Error("고양이를 모두 모았어요. 더 뽑을 고양이가 없어요");
+      if (p.churu < GACHA_INFO.price) throw new Error(`츄르가 ${GACHA_INFO.price - p.churu}개 모자라요 (뽑기 ${GACHA_INFO.price}츄르, 있는 츄르 ${p.churu}개)`);
+      const cat = data.gachaNext ?? "cat:calico";
+      const isNew = !p.owned.includes(cat);
+      data.prefs = { ...p, churu: p.churu - GACHA_INFO.price, owned: isNew ? [...p.owned, cat] : p.owned };
+      return { cat, isNew, prefs: data.prefs };
+    }
     case "accounts_list":
     case "batch_list":
     case "usage_get":
@@ -238,7 +256,11 @@ async function openScreen(page, screen, o, data) {
     if (screen === "arrange") await arrangeLounge(page);
     else await liftLoungeCat(page);
   }
-  if (screen === "shop") await page.getByRole("button", { name: /츄르 상점/ }).click();
+  if (screen.startsWith("shop")) {
+    await page.getByRole("button", { name: /츄르 상점/ }).click();
+    // 뽑기 연출: 버튼을 누른 뒤 --wait 만큼 기다렸다 찍는다 (흔들리는 중은 짧게, 결과는 연출이 끝난 뒤)
+    if (["shop-roll", "shop-new", "shop-dup"].includes(screen)) await page.getByRole("button", { name: /고양이 뽑기/ }).click();
+  }
   if (screen === "team") {
     // 팀 요약 탭 줄에서 첫 번째 팀 (0번은 🏢 사무실)
     await page.getByRole("tablist", { name: "팀 요약" }).getByRole("tab").nth(1).click();
@@ -262,7 +284,12 @@ async function capture(browser, base, o, data, log) {
     await page.route("**/api/**", (route) => {
       const cmd = new URL(route.request().url()).pathname.replace(/^\/api\//, "");
       const args = JSON.parse(route.request().postData() || "{}");
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fakeApi(cmd, args, data) ?? null) });
+      // 실제 백엔드처럼 Err는 400과 한국어 문장으로 돌려준다 (transport.call이 Error로 바꾼다)
+      try {
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fakeApi(cmd, args, data) ?? null) });
+      } catch (e) {
+        route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify(e.message) });
+      }
     });
     await page.goto(base, { waitUntil: "domcontentloaded" });
     // 팀 목록이 가짜 데이터로 채워질 때까지 기다린다 (앱이 시작하면서 불러온다)
