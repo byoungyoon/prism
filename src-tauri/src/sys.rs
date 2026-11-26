@@ -259,6 +259,23 @@ pub fn ensure_repo(path: &str) -> Result<(), String> {
     git(path, &args).map(|_| ())
 }
 
+/// A brand-new, empty project folder → git repo with one (empty) first commit. Same result as
+/// `ensure_repo` but with 3 git programs instead of 6: nothing to look up or add in a new folder.
+pub fn init_new_repo(path: &str) -> Result<(), String> {
+    git(path, &["init", "-b", "main"])?;
+    let exclude = std::path::Path::new(path).join(".git").join("info").join("exclude");
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let _ = std::fs::create_dir_all(exclude.parent().unwrap());
+    let _ = std::fs::write(&exclude, format!("{current}{}.prism/\n", if current.ends_with('\n') || current.is_empty() { "" } else { "\n" }));
+    let has_identity = git(path, &["config", "user.email"]).map(|e| !e.is_empty()).unwrap_or(false);
+    let mut args = vec![];
+    if !has_identity {
+        args.extend(["-c", "user.name=Prism", "-c", "user.email=prism@localhost"]);
+    }
+    args.extend(["commit", "--allow-empty", "-m", "Prism: 첫 커밋"]);
+    git(path, &args).map(|_| ())
+}
+
 /// Keeps `.prism/` out of `git status` without touching the tracked .gitignore.
 pub fn exclude_prism_dir(repo: &str) {
     let Ok(common) = git(repo, &["rev-parse", "--path-format=absolute", "--git-common-dir"]) else { return };

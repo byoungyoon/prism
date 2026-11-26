@@ -317,9 +317,9 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
     let projects = || app.state::<p::Projects>();
     let batches = || app.state::<Arc<crate::batch::Batches>>();
     match cmd {
-        "projects_list" => ok(p::projects_list(projects())),
+        "projects_list" => ok(p::projects_list(app.clone()).await),
         "workspace_root" => ok(p::workspace_root(projects())),
-        "project_create" => ok(p::project_create(projects(), arg(&a, "name")?)?),
+        "project_create" => ok(p::project_create(app.clone(), arg(&a, "name")?).await?),
         "project_touch" => ok(p::project_touch(projects(), arg(&a, "id")?)?),
         "prefs_get" => ok(p::prefs_get(projects())),
         "project_set_team" => ok(p::project_set_team(projects(), arg(&a, "id")?, arg(&a, "team")?)?),
