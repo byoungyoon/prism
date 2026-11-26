@@ -26,9 +26,3 @@ jobs:
       - run: |
           cargo test --lib -- --nocapture pty:: sys:: setup_log:: windows_path_tests::
         working-directory: src-tauri
-      # TEMP (T-125 probe): a normal PC has only Git\cmd on PATH, so no `du`
-      - if: always()
-        run: |
-          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'du.exe')) }) -join ';'
-          cargo test --lib -- --nocapture sys::tests::folder_size
-        working-directory: src-tauri

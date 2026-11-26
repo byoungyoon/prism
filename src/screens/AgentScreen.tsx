@@ -35,13 +35,27 @@ export function AgentScreen({ id }: { id: string }) {
   useEffect(() => {
     if (!cwd) return;
     let alive = true;
-    const load = () =>
-      api.gitChanges(cwd).then((c) => alive && setChanges(c)).catch(() => alive && setChanges([]));
+    let busy = false;
+    const load = () => {
+      if (busy) return;
+      busy = true;
+      void api
+        .gitChanges(cwd)
+        .then((c) => alive && setChanges(c))
+        .catch(() => alive && setChanges([]))
+        .finally(() => (busy = false));
+    };
     load();
-    const t = setInterval(load, 4000);
+    // `git status` only while the window can be seen; catch up as soon as it is shown again
+    const tick = () => {
+      if (!document.hidden) load();
+    };
+    const t = setInterval(tick, 4000);
+    document.addEventListener("visibilitychange", tick);
     return () => {
       alive = false;
       clearInterval(t);
+      document.removeEventListener("visibilitychange", tick);
     };
   }, [cwd, status]);
 
