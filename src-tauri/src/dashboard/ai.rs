@@ -207,7 +207,7 @@ fn kill(pid: u32) {
     #[cfg(unix)]
     let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
     #[cfg(windows)]
-    let _ = crate::sys::command("taskkill").args(["/PID", &pid.to_string(), "/F"]).status();
+    let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status();
 }
 
 /// claude(`-p`, Haiku) → 없으면 codex(`exec`). 프롬프트는 stdin으로 보낸다.
