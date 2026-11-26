@@ -11,6 +11,7 @@ import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { QuitConfirm } from "./components/QuitConfirm";
+import { CoatMenu } from "./components/CoatMenu";
 import { InstallNotice } from "./components/InstallNotice";
 import { EngineStage } from "./engines/EngineStage";
 import { useEngineEdit } from "./engines/editing";
@@ -192,6 +193,31 @@ function ErrorToast() {
   );
 }
 
+/** 기념 선물 안내: 닫을 때까지 남는다 */
+function GiftNotice() {
+  const { message, close } = useApp(useShallow((s) => ({ message: s.giftNotice, close: s.closeGiftNotice })));
+  return (
+    <AnimatePresence>
+      {message && (
+        <motion.div
+          role="status"
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -12 }}
+          className="glass absolute top-[104px] left-1/2 max-[820px]:top-[148px] z-50 flex w-max max-w-[calc(100%-24px)] -translate-x-1/2 items-center gap-3 rounded-2xl py-2.5 pr-2.5 pl-4 text-[13px] font-medium"
+          style={{ border: "1.5px solid var(--amber)", boxShadow: "var(--shadow)" }}
+        >
+          <span aria-hidden="true">🎁</span>
+          <span>{message}</span>
+          <button onClick={close} className="min-h-8 shrink-0 rounded-full border-0 px-3.5 text-[12.5px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
+            확인
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 /** Phone only: a small pill while the live connection is down and being re-established. */
 function ReconnectBadge() {
   const [up, setUp] = useState(true);
@@ -267,6 +293,8 @@ export default function App() {
       <UpdateBanner />
       <InstallNotice />
       <QuitConfirm />
+      <CoatMenu />
+      <GiftNotice />
       <ReconnectBadge />
       <ErrorToast />
     </div>

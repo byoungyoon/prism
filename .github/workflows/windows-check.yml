@@ -24,5 +24,5 @@ jobs:
       # the app macro wants the built screen to exist; these tests don't show it
       - run: New-Item -ItemType Directory -Force dist | Out-Null; Set-Content dist/index.html "test"
       - run: |
-          cargo test --lib -- --nocapture pty:: sys:: setup_log::
+          cargo test --lib -- --nocapture pty:: sys:: setup_log:: windows_path_tests::
         working-directory: src-tauri

@@ -4,7 +4,7 @@
 
 export interface Coat {
   id: string;
-  /** 털색 in plain words (shown nowhere yet; handy in tests and the preview) */
+  /** 털색 in plain words (상점과 털색 고르기 메뉴에 보인다) */
   word: string;
   line: string;
   /** k: head top and back */
@@ -52,9 +52,22 @@ export function setOwnedCoats(ids: string[]) {
   OWNED = pool.length ? pool : [COATS[0]];
 }
 
+/** 사용자가 팀원마다 직접 고른 털색 (Prefs.coats) */
+let CHOSEN: Record<string, string> = {};
+export function setChosenCoats(picks: Record<string, string>) {
+  CHOSEN = picks;
+}
+
+/** 고른 털색을 저장하는 팀원별 키. 같은 팀원은 새 카드를 받아도 같은 키다. 어느 팀인지 모르면 undefined */
+export const coatKey = (a: { projectId?: string; role: "lead" | "mgr" | "worker"; name: string }): string | undefined =>
+  a.projectId ? `${a.projectId}:${a.role}:${a.name}` : undefined;
+
 /** W1, W2… each a different coat in turn; other names a steady pick. 총괄 and 팀장 start elsewhere. */
-export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
+export function coatOf(name: string, role: "lead" | "mgr" | "worker", key?: string): Coat {
   const pool = OWNED;
+  // 직접 고른 털색이 먼저다
+  const picked = key ? pool.find((c) => c.id === CHOSEN[key]) : undefined;
+  if (picked) return picked;
   const n = /(\d+)\s*$/.exec(name);
   const base = role === "lead" ? 2 : role === "mgr" ? 5 : 0;
   if (n) return pool[(base + Number(n[1]) - 1 + pool.length * 4) % pool.length];
@@ -90,9 +103,9 @@ export const temperOf = (coat: Coat): Temper => TEMPER[coat.id] ?? "docile";
 const CAT_NAMES = ["두부", "안개", "모모", "치즈", "보리", "은비", "까망이", "나비", "호두", "라떼", "솜이", "턱시"];
 
 /** 화면에 보이는 이름: 작업자·팀장의 W1/M1 같은 내부 이름은 털색에 맞는 고양이 별명으로. 내부 ID는 그대로. */
-export function catName(a: { name: string; role: "lead" | "mgr" | "worker" }): string {
+export function catName(a: { name: string; role: "lead" | "mgr" | "worker"; projectId?: string }): string {
   if (a.role === "lead" || !/^[A-Za-z]+\d+$/.test(a.name)) return a.name;
-  return CAT_NAMES[COATS.indexOf(coatOf(a.name, a.role))] ?? a.name;
+  return CAT_NAMES[COATS.indexOf(coatOf(a.name, a.role, coatKey(a)))] ?? a.name;
 }
 
 /** a colour a little darker (#rrggbb → rgb()) */
@@ -110,7 +123,7 @@ export const lift = (hex: string) => {
 };
 
 /**
- * The markings of the side walk, placed on its own drawing (walk.ts): a mask on the turned face,
+ * The markings of a cat seen from the side, placed on the walk's drawing (walk.ts): a mask on the turned face,
  * stripes on the forehead and down the back, patches on the rump. `x` is from the middle of the
  * face, `ry` from the top of the head, `by` from the middle of the body (so they ride with it).
  */
@@ -135,9 +148,10 @@ function sideMark(coat: Coat, ch: string, x: number, ry: number, by: number): st
 
 /**
  * The colour of one dot. `x, y` are in the frame; `top` is where the head starts (patterns follow
- * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face; `bodyY` the middle of the body, given for the side walk only.
+ * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face; `bodyY` the middle of the body,
+ * given for the cats seen from the side (walking, lying, curled up); `back` for the one seen from behind.
  */
-export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number, bodyY?: number): string | null {
+export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number, bodyY?: number, back?: boolean): string | null {
   // x, y, top and faceX are in the drawn cat's dots (K × K per drawing dot, see art.ts), so the
   // patterns below are twice as fine as the drawing: thin tabby stripes, smaller patches
   const fur = (c: string) => {
@@ -153,7 +167,7 @@ export function dotColor(coat: Coat, ch: string, x: number, y: number, top: numb
       if (ry >= 24 && ry <= 28 && x >= faceX - 8 && x <= faceX) return coat.patch[0];
     }
     // siamese: a dark oval over the middle of the face, and dark ear rims
-    if (coat.point && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
+    if (coat.point && !back && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
     if (coat.point && ry <= 6 && ch === "k") return coat.point;
     // a few lighter hairs, so the fur is not one flat colour
     return speckle;

@@ -7,9 +7,9 @@ import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { workNews } from "./lib/workNews";
 import { api, LOGIN_REQUIRED, type AlertKind, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
-import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
+import { catName, setChosenCoats, setOwnedCoats } from "./components/critters/pixel/coats";
 import { DEFAULT_OWNED } from "./lib/shop";
-import type { GachaPulled, Prefs } from "./lib/api";
+import type { ChuruReward, GachaPulled, Prefs } from "./lib/api";
 
 /**
  * 뽑기 연출 중에는 잔액·보유 물건·사무실 털색 반영을 미룬다 (결과가 연출보다 먼저 새지 않게).
@@ -17,6 +17,28 @@ import type { GachaPulled, Prefs } from "./lib/api";
  */
 let holding = false;
 let held: Prefs | null = null;
+
+/** 팀원마다 속한 팀을 붙인다 (고른 털색을 찾는 데 쓴다). 늘 새 객체라서, 털색이 바뀌었을 때 다시 하면 memo된 고양이도 다시 그려진다 */
+const tagTeam = (snap: TeamSnapshot): TeamSnapshot => ({ ...snap, agents: snap.agents.map((a) => ({ ...a, projectId: snap.projectId })) });
+
+let rewardSeq = 0;
+
+/**
+ * 출석 확인: 지금 한 번, 그 뒤로는 사용자가 돌아오거나 화면을 누를 때 (앱을 켜 둔 채 날이 바뀌어도 받게).
+ * 하루에 한 번만 주는 것은 앱(Rust)이 지키고, 여기서는 묻는 횟수만 1분에 한 번으로 줄인다.
+ */
+function watchAttendance(ask: () => void) {
+  let last = Date.now();
+  ask();
+  const back = () => {
+    if (document.visibilityState === "hidden" || Date.now() - last < 60_000) return;
+    last = Date.now();
+    ask();
+  };
+  window.addEventListener("focus", back);
+  window.addEventListener("pointerdown", back, true);
+  document.addEventListener("visibilitychange", back);
+}
 
 export type View =
   | { name: "home" }
@@ -67,8 +89,23 @@ interface AppState {
   /** 츄르 잔액 and the things bought so far ("cat:<id>" · "item:<이름>") */
   churu: number;
   owned: string[];
+  /** 직접 고른 팀원 털색 (Prefs.coats) */
+  coats: Record<string, string>;
+  /** 팀원 털색 고르기. `coat` null이면 자동 배정으로 되돌린다 */
+  setCoat(member: string, coat: string | null): Promise<void>;
   /** the 상점 sheet is open */
   shopOpen: boolean;
+  /** rewards waiting to flash beside the 츄르 balance ("+20 출석"), oldest first */
+  rewardNotes: (ChuruReward & { id: number })[];
+  showReward(r: ChuruReward): void;
+  /** message of a gift just received; stays until the user closes it */
+  giftNotice: string | null;
+  closeGiftNotice(): void;
+  /** asks for the one-time gift. Call only when the app is visible (not behind the first-run guide) */
+  claimGift(): void;
+  dropReward(id: number): void;
+  /** a cat was petted or lifted (the app decides whether it pays) */
+  petCat(): void;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
@@ -195,9 +232,14 @@ export const useApp = create<AppState>((set, get) => {
       return;
     }
     const owned = p.owned ?? DEFAULT_OWNED;
+    const coats = p.coats ?? {};
     setOwnedCoats(owned);
+    setChosenCoats(coats);
     // a new coat renames and repaints teammates: every screen showing them draws again
-    set((s) => ({ churu: p.churu ?? 0, owned, ...(owned.join() === s.owned.join() ? {} : { teams: { ...s.teams } }) }));
+    set((s) => {
+      const same = owned.join() === s.owned.join() && JSON.stringify(coats) === JSON.stringify(s.coats);
+      return { churu: p.churu ?? 0, owned, coats, ...(same ? {} : { teams: Object.fromEntries(Object.entries(s.teams).map(([id, t]) => [id, tagTeam(t)])) }) };
+    });
   };
   const releaseGacha = () => {
     holding = false;
@@ -235,9 +277,37 @@ export const useApp = create<AppState>((set, get) => {
     autoAllowSafe: true,
     churu: 0,
     owned: [...DEFAULT_OWNED],
+    coats: {},
     shopOpen: false,
 
+    setCoat: guard(async (member: string, coat: string | null) => applyPrefs(await api.setCoat(member, coat))),
     openShop: (shopOpen) => set({ shopOpen }),
+    rewardNotes: [],
+    showReward: (r) =>
+      set((s) => {
+        // the same kind again while it still waits: one note with the sum (quick petting doesn't queue up)
+        const same = s.rewardNotes.find((n) => n.kind === r.kind);
+        const note = { ...r, amount: r.amount + (same?.amount ?? 0), id: ++rewardSeq };
+        return {
+          rewardNotes: same ? s.rewardNotes.map((n) => (n === same ? note : n)) : [...s.rewardNotes, note],
+          ...(r.gift ? { giftNotice: r.gift.message } : {}),
+        };
+      }),
+    giftNotice: null,
+    closeGiftNotice: () => set({ giftNotice: null }),
+    claimGift: () => {
+      void api
+        .rewardGift()
+        .then((r) => r && get().showReward(r))
+        .catch(() => {});
+    },
+    dropReward: (id) => set((s) => ({ rewardNotes: s.rewardNotes.filter((n) => n.id !== id) })),
+    petCat: () => {
+      void api
+        .rewardPet()
+        .then((r) => r && get().showReward(r))
+        .catch(() => {});
+    },
     mainTab: "office",
     setMainTab: (mainTab) => set({ mainTab }),
     startGacha: async () => {
@@ -272,7 +342,8 @@ export const useApp = create<AppState>((set, get) => {
     setError: (e) => set({ error: e == null ? null : msg(e) }),
 
     init: async () => {
-      await api.onSnapshot((snap) => {
+      await api.onSnapshot((raw) => {
+        const snap = tagTeam(raw);
         const prev = get().teams[snap.projectId];
         set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
         const name = get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀";
@@ -292,6 +363,15 @@ export const useApp = create<AppState>((set, get) => {
       await api.onPrefs(applyPrefs);
       if (!isRemote) await api.onAlertOpen((id) => get().showAlertTeam(id));
       void api.prefs().then(applyPrefs).catch(() => {});
+      await api.onChuruReward((r) => get().showReward(r));
+      watchAttendance(() =>
+        void api
+          .rewardAttend()
+          .then((r) => r && get().showReward(r))
+          .catch(() => {}),
+      );
+      // a first install gets it when the first-run guide ends (Onboarding), so it isn't hidden behind it
+      if (!isRemote) void api.prefs().then((p) => p.onboarded && get().claimGift()).catch(() => {});
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       const reload = async () => {
@@ -307,7 +387,7 @@ export const useApp = create<AppState>((set, get) => {
         // every team's current state up front, so teams at work show without waiting for their next update
         const projects = get().projects;
         const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
-        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, tagTeam(x)])) } }));
       };
       await reload();
       // remote: after a reconnect (or dropped updates) fetch everything again
@@ -371,7 +451,8 @@ export const useApp = create<AppState>((set, get) => {
     openProject: guard(async (id: string) => {
       const p = await api.touchProject(id);
       replaceProject(p);
-      const snap = await api.getTeam(id);
+      const raw = await api.getTeam(id);
+      const snap = raw && tagTeam(raw);
       set((s) => ({
         projectId: id,
         teams: snap ? { ...s.teams, [id]: snap } : s.teams,
@@ -384,7 +465,7 @@ export const useApp = create<AppState>((set, get) => {
 
     startTeam: async (projectId: string, cwd?: string) => {
       try {
-        const snap = await api.startTeam(projectId, cwd);
+        const snap = tagTeam(await api.startTeam(projectId, cwd));
         set((s) => ({ projectId, teams: { ...s.teams, [projectId]: snap }, view: { name: "main" }, selectedNode: "lead" }));
       } catch (e) {
         const m = msg(e);
@@ -403,7 +484,7 @@ export const useApp = create<AppState>((set, get) => {
       for (const id of ids) {
         const name = get().projects.find((p) => p.id === id)?.name ?? "팀";
         try {
-          const snap = await api.startTeam(id);
+          const snap = tagTeam(await api.startTeam(id));
           set((s) => ({ teams: { ...s.teams, [id]: snap } }));
         } catch (e) {
           failures.push({ id, name, reason: plainReason(msg(e)) });

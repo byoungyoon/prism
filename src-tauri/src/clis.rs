@@ -78,7 +78,9 @@ pub fn version(name: &str) -> Option<String> {
 fn installer(name: &str) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
-        let winget = |id: &str| ("winget".to_string(), ["install", "--id", id, "-e", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements"].map(String::from).to_vec());
+        // only run when Prism can't find the tool. --force: if Windows still has a record of it
+        // (files deleted, broken install), plain `install` turns into "no upgrade available" and fails
+        let winget = |id: &str| ("winget".to_string(), ["install", "--id", id, "-e", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements", "--force"].map(String::from).to_vec());
         // old Windows PowerShell needs TLS 1.2 switched on, and UTF-8 keeps Korean errors readable
         let script = |url: &str| {
             let ps = format!("[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; irm {url} | iex");

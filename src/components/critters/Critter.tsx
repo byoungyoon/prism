@@ -5,7 +5,7 @@ import { memo, useEffect, useState, type CSSProperties } from "react";
 import type { Agent, Role, Task } from "../../lib/api";
 import { FH, FW, K, type Row } from "./pixel/art";
 import { WALK_FRAMES } from "./pixel/walk";
-import { catName, coatOf } from "./pixel/coats";
+import { catName, coatKey, coatOf } from "./pixel/coats";
 import type { Feel } from "./pixel/faces";
 import { strip } from "./pixel/render";
 import { critterState, POSE_OF, STATE_WORD, type CritterState, type Pose } from "./state";
@@ -114,8 +114,8 @@ function useDecoded(url: string, n: number, ms: number): { url: string; n: numbe
   return ready ? want : shown;
 }
 
-function PixelCat({ name, role, state, pose, size, flip, dir, label, className, colorKey }: CritterLook & { pose: Pose; size: number; flip?: boolean; dir?: WalkDir; label?: string; className?: string; colorKey?: string }) {
-  const coat = coatOf(colorKey ?? name, role);
+function PixelCat({ name, role, state, pose, size, flip, dir, label, className, colorKey, member }: CritterLook & { member?: string; pose: Pose; size: number; flip?: boolean; dir?: WalkDir; label?: string; className?: string; colorKey?: string }) {
+  const coat = coatOf(colorKey ?? name, role, member);
   const row: Row = pose === "walk" ? (dir ?? "side") : MOTION[pose].row;
   const m = pose === "walk" && row === "side" ? SIDE_WALK : MOTION[pose];
   const feel = feelOf(state, name);
@@ -140,6 +140,8 @@ function PixelCat({ name, role, state, pose, size, flip, dir, label, className, 
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}
+      // 우클릭으로 털색을 바꿀 수 있는 팀원 (CoatMenu.tsx)
+      data-coat-key={member}
       style={{ width: FW * s, height: FH * s }}
     >
       <span className={`cr-whole${flip && row !== "front" && row !== "back" ? " px-flip" : ""}`}>
@@ -166,6 +168,7 @@ export const Critter = memo(function Critter({ agent, task, look, colorKey, stat
       label={labelled ? `${agent ? catName(agent) : name} · ${STATE_WORD[st]}` : undefined}
       className={className}
       colorKey={colorKey}
+      member={agent ? coatKey(agent) : undefined}
     />
   );
 });

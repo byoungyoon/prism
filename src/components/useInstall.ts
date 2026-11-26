@@ -22,10 +22,17 @@ export function useInstall(tool: string | null, onList: (list: CliStatus[]) => v
     let started: number | null = null;
     let next: ReturnType<typeof setTimeout>;
     const fail = (reason: string, said: string) => setFailure({ reason, detail: `install ${tool}\n${said}` });
+    let waited = 0;
     const check = async () => {
       if (started == null) return;
       // ask for the end first: the list read after it is at least as new
       const ran = await api.ptyState(started).catch(() => null);
+      // the list starts every tool's `--version` (slow on Windows): while the installer is still
+      // running, read it only every 5th time (15 s), in case it never exits
+      if (!ran?.done && ++waited % 5 !== 0) {
+        if (alive) next = setTimeout(() => void check(), 3000);
+        return;
+      }
       const list = await api.cliStatus().catch(() => null);
       if (!alive) return;
       if (list) listRef.current(list);

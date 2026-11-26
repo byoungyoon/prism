@@ -114,7 +114,13 @@ export function Onboarding() {
   // while signing in, keep checking
   useEffect(() => {
     if (step !== "login") return;
-    const t = setInterval(() => void loadAccounts(), 3000);
+    // one check at a time: each starts the CLIs, which can take longer than the interval (Windows)
+    let checking = false;
+    const t = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      void loadAccounts().finally(() => (checking = false));
+    }, 3000);
     return () => clearInterval(t);
   }, [step, loadAccounts]);
 
@@ -131,6 +137,7 @@ export function Onboarding() {
         }
       }
       setOpen(false);
+      useApp.getState().claimGift();
     } finally {
       setBusy(false);
     }
@@ -270,6 +277,12 @@ export function Onboarding() {
                           다시 시도
                         </button>
                         <span className="flex-auto" />
+                        {/* a failed install must not lock the app: the guide comes back next launch */}
+                        {failed === current.name && (
+                          <button onClick={() => void finish(false)} disabled={busy} className="min-h-9 rounded-full px-4 text-[12.5px] text-ink-2">
+                            나중에 할게요
+                          </button>
+                        )}
                         <button onClick={() => setStep("pick")} className="min-h-9 rounded-full px-4 text-[12.5px] text-ink-2">
                           이전
                         </button>

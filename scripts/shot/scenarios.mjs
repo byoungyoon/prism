@@ -192,11 +192,11 @@ const PARTIAL_OWNED = ["cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:
 /** 상점 물건 전부 (src/lib/shop.ts 의 id와 같아야 한다). demo는 전부 보유 상태로 찍는다. */
 const ALL_OWNED = [
   "cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:bicolor", "cat:silver", "cat:black", "cat:calico", "cat:brown", "cat:siamese", "cat:pink", "cat:tuxedo",
-  "item:소파", "item:책장", "item:액자", "item:스탠드", "item:햇살 자리", "item:숨숨집", "item:스크래처", "item:털실", "item:밥그릇", "item:러그", "item:러그·쿠션", "item:화분", "item:정수기", "item:캣타워",
+  "item:소파", "item:책장", "item:액자", "item:스탠드", "item:햇살 자리", "item:숨숨집", "item:스크래처", "item:털실", "item:밥그릇", "item:러그", "item:러그·쿠션", "item:화분", "item:정수기", "item:캣타워", "item:캣휠", "item:캣 터널", "item:장난감 상자",
 ];
 
 /** 저장(prefs_get) 응답: 츄르 잔액과 산 물건. 시나리오가 따로 안 주면 새로 시작한 상태 (잔액 0, 흰 고양이만). */
-const prefs = (churu = 0, owned = ["cat:white"]) => ({ providers: ["claude"], onboarded: true, lastTeams: [], autoResume: false, confirmQuit: true, askAlert: true, workAlert: true, autoAllowSafe: true, churu, owned });
+const prefs = (churu = 0, owned = ["cat:white"]) => ({ providers: ["claude"], onboarded: true, lastTeams: [], autoResume: false, confirmQuit: true, askAlert: true, workAlert: true, autoAllowSafe: true, churu, owned, coats: {} });
 
 // ── 조립 도우미 ─────────────────────────────────────────
 

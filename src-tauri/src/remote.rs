@@ -24,7 +24,7 @@ use crate::sys;
 const TS_PORT: &str = "8443";
 /// Biggest file a remote device may attach (raw bytes, not JSON).
 const MAX_UPLOAD: usize = 50 * 1024 * 1024;
-const EVENTS: [&str; 5] = ["team://snapshot", "agent://entry", "usage://update", "cli://status", "batch-update"];
+const EVENTS: [&str; 7] = ["team://snapshot", "agent://entry", "usage://update", "cli://status", "batch-update", "prefs", "churu-reward"];
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -322,6 +322,8 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "project_create" => ok(p::project_create(app.clone(), arg(&a, "name")?).await?),
         "project_touch" => ok(p::project_touch(projects(), arg(&a, "id")?)?),
         "prefs_get" => ok(p::prefs_get(projects())),
+        "reward_attend" => ok(p::reward_attend(app.clone(), projects())),
+        "reward_pet" => ok(p::reward_pet(app.clone(), projects())),
         "project_set_team" => ok(p::project_set_team(projects(), arg(&a, "id")?, arg(&a, "team")?)?),
         "project_set_preset" => ok(p::project_set_preset(projects(), arg(&a, "id")?, arg(&a, "preset")?)?),
         "project_set_knowledge" => ok(p::project_set_knowledge(projects(), arg(&a, "id")?, arg(&a, "text")?)?),

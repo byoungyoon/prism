@@ -1,9 +1,9 @@
-// 상점: 고양이 탭은 츄르로 '뽑기'(확률표·보유 목록·뽑기 연출), 소품 탭은 물건마다 그림·이름·가격과 [사기]/[보유].
+// 상점: 고양이 탭은 츄르로 '뽑기'(확률표·보유 목록·뽑기 연출), 소품 탭은 물건마다 그림·이름·가격과 [사기]/[보유], 받는 법 탭은 안내.
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useApp } from "../store";
 import { api, type GachaInfo } from "../lib/api";
-import { RARITY_CLASS, SHOP, type ShopEntry } from "../lib/shop";
+import { EARN, RARITY_CLASS, SHOP, type ShopEntry } from "../lib/shop";
 import { COATS, type Coat } from "./critters/pixel/coats";
 import { FH, FW, K } from "./critters/pixel/art";
 import { strip } from "./critters/pixel/render";
@@ -30,7 +30,7 @@ function ItemPicture({ e }: { e: ShopEntry }) {
 }
 
 /** 사무실과 같은 도트 고양이가 앉은 모습. silhouette면 털색 없이 회색 그림자 (아직 못 얻은 고양이) */
-function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boolean }) {
+export function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boolean }) {
   // 그림 한 칸(FW·K × FH·K)에서 위쪽 빈 곳(감정 표시 자리)은 잘라내고 보여준다. 그림자 모양은 흰 고양이로 통일
   const url = strip(silhouette ? COATS[0] : coat, "look", [1], "plain");
   return (
@@ -83,6 +83,48 @@ function ItemCard({ e, owned, churu, busy, onBuy }: { e: ShopEntry; owned: boole
   );
 }
 
+/** 츄르 받는 법 안내 */
+const WAYS = [
+  {
+    icon: "💬",
+    title: "AI가 일하면",
+    text: `AI가 쓴 토큰(글의 양) ${EARN.tokensPerChuru.toLocaleString("ko-KR")}개마다 1츄르. 가장 많이 모이는 방법이에요.`,
+  },
+  {
+    icon: "📅",
+    title: "매일 출석",
+    text: `하루 첫 접속에 ${EARN.attendBase}츄르. 매일 이어서 오면 하루에 ${EARN.attendStep}씩 늘어 ${EARN.attendBase + EARN.attendExtraMax}까지, 7일째마다 ${EARN.attendWeekBonus} 더 받아요. 하루를 거르면 처음부터예요.`,
+  },
+  {
+    icon: "✅",
+    title: "작업 완료",
+    text: `작업 카드 하나가 완료되면 ${EARN.cardReward}츄르 (하루 ${EARN.cardDailyMax}장까지).`,
+  },
+  {
+    icon: "🐱",
+    title: "고양이와 놀기",
+    text: `사무실의 고양이를 눌러 쓰다듬거나, 휴게실 고양이를 들어 올렸다 놓으면 ${EARN.petReward}츄르 (하루 ${EARN.petDailyMax}번까지).`,
+  },
+];
+
+function EarnGuide() {
+  return (
+    <ul aria-label="츄르 받는 법" className="m-0 flex min-h-0 list-none flex-col gap-2 overflow-y-auto p-0 pr-1">
+      {WAYS.map((w) => (
+        <li key={w.title} className="flex items-start gap-3 rounded-2xl p-3" style={{ border: "1px solid var(--line)" }}>
+          <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-[12px] text-[18px]" style={{ background: "var(--chip)" }}>
+            {w.icon}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-[13.5px] font-semibold">{w.title}</span>
+            <span className="text-[12px] leading-relaxed text-ink-2">{w.text}</span>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** 뽑기 연출 상태. stage: 흔드는 중 → 열리는 중 → 끝 (끝나야 잔액·보유가 바뀐다) */
 type Reveal = { stage: "shake" | "open" | "done"; cat: string; isNew: boolean };
 
@@ -95,7 +137,7 @@ export function ShopSheet() {
   const startGacha = useApp((s) => s.startGacha);
   const releaseGacha = useApp((s) => s.releaseGacha);
   const reduce = useReducedMotion();
-  const [tab, setTab] = useState<"cat" | "item">("cat");
+  const [tab, setTab] = useState<"cat" | "item" | "earn">("cat");
   const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [info, setInfo] = useState<GachaInfo | null>(null);
@@ -211,7 +253,7 @@ export function ShopSheet() {
             <div className="flex items-center justify-between gap-3">
               <div className="flex flex-col">
                 <span className="text-[16px] font-semibold">츄르 상점</span>
-                <span className="text-[12px] text-ink-2">고양이는 뽑기로, 휴게실 물건은 상점에서 얻어요</span>
+                <span className="text-[12px] text-ink-2">고양이는 뽑기로, 휴게실·놀이방 물건은 상점에서 얻어요</span>
               </div>
               <span className="rounded-full px-3 py-1.5 font-mono text-[13px] font-semibold" style={{ background: "var(--chip)" }}>
                 츄르 {churu.toLocaleString("ko-KR")}개
@@ -223,6 +265,7 @@ export function ShopSheet() {
                 [
                   ["cat", "고양이"],
                   ["item", "소품"],
+                  ["earn", "츄르 받는 법"],
                 ] as const
               ).map(([k, label]) => (
                 <button
@@ -330,6 +373,8 @@ export function ShopSheet() {
                   </ul>
                 </div>
               </div>
+            ) : tab === "earn" ? (
+              <EarnGuide />
             ) : (
               <>
                 <p aria-live="polite" className="m-0 min-h-[18px] text-[12px]" style={{ color: note?.ok ? "var(--work)" : "var(--block-ink)" }}>

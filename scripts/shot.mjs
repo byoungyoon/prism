@@ -56,8 +56,14 @@ const SCREENS = {
   "shop-roll": "뽑기 연출 중: 상자가 흔들리는 순간 (-s gacha --wait 300)",
   "shop-new": "뽑기 결과: 새 고양이 (-s gacha --wait 2600)",
   "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
+  "shop-earn": "상점 '츄르 받는 법' 탭",
+  reward: "츄르를 받은 순간: 잔액 옆에 '+N 출석' 표시",
+  gift: "기념 선물을 받은 순간: 잔액 옆 '+250 새 버전 기념'과 안내 문구",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
+  grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
+  "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
+  "coat-done": "털색 메뉴에서 다른 색을 고른 뒤의 모습",
   dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
   account: "계정 화면 (맨 아래에 지금 버전 표시)",
   "account-end": "계정 화면을 맨 아래까지 내린 모습",
@@ -176,6 +182,13 @@ function fakeApi(cmd, args, data) {
       return data.prefs;
     case "install_check":
       return data.install ?? null;
+    case "prefs_set_coat": {
+      const coats = { ...data.prefs.coats };
+      if (args.coat) coats[args.member] = args.coat;
+      else delete coats[args.member];
+      data.prefs = { ...data.prefs, coats };
+      return data.prefs;
+    }
     case "gacha_info":
       return GACHA_INFO;
     case "gacha_pull": {
@@ -249,6 +262,146 @@ async function liftLoungeCat(page) {
   await page.mouse.move(x, y - 90, { steps: 14 });
 }
 
+/** 지금 들려 있는 고양이와 모든 고양이의 화면 위 발 위치 */
+const catsNow = (page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll(".of-cats .cr-mover:not(.cr-leaving)")].map((m) => {
+      const r = m.querySelector(".critter").getBoundingClientRect();
+      const f = m.getBoundingClientRect();
+      const lounge = document.querySelector(".of-lounge").getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height * 0.6;
+      return { id: m.dataset.critter, held: !!m.querySelector(".cr-pose-lift"), x, y, fx: f.left, fy: f.top, h: r.height, w: r.width, left: r.left, top: r.top, inLounge: x > lounge.left && x < lounge.right && y > lounge.top && y < lounge.bottom };
+    }),
+  );
+
+/** 고양이 하나를 (px, py)에서 눌러 끌어 보고, 그 고양이가 제자리에서 바로 들렸는지 본다. 놓기 전에 shot을 부른다 */
+async function grabOnce(page, id, where, at, shot) {
+  const dx = 30;
+  const dy = -50;
+  const before = (await catsNow(page)).find((c) => c.id === id);
+  const [px, py] = at ? at(before) : [before.x, before.y];
+  // 허락 말풍선이 덮은 자리를 누르면 말풍선이 눌려야 한다 (뒤의 고양이를 집지 않는다)
+  const covered = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest(".of-ask"), [px, py]);
+  await page.mouse.move(px, py);
+  // 걷는 중인 고양이는 계속 움직이니, 누른 바로 그 순간의 발 위치를 화면 안에서 적어 둔다
+  await page.evaluate((id) => {
+    window.addEventListener(
+      "pointerdown",
+      () => {
+        const r = document.querySelector(`.of-cats [data-critter="${id}"]`).getBoundingClientRect();
+        window.__pressed = { fx: r.left, fy: r.top };
+      },
+      { capture: true, once: true },
+    );
+  }, id);
+  await page.mouse.down();
+  const pressed = await page.evaluate(() => window.__pressed);
+  await page.mouse.move(px + dx, py + dy, { steps: 3 });
+  await page.waitForTimeout(80);
+  const all = await catsNow(page);
+  const held = all.filter((c) => c.held);
+  const me = all.find((c) => c.id === id);
+  // 들린 고양이의 발은 누른 순간의 자리에서 마우스가 움직인 만큼만 옮겨 가야 한다
+  const off = Math.hypot(me.fx - (pressed.fx + dx), me.fy - (pressed.fy + dy));
+  const ok = covered ? held.length === 0 : held.length === 1 && held[0].id === id && off <= 4;
+  const got = held.map((c) => c.id).join(",") || "없음";
+  console.log(`  ${ok ? "OK  " : "FAIL"} ${where.padEnd(14)} 누름=${id}  들림=${got}  ${covered ? "(말풍선에 덮임: 안 들려야 정상)" : `어긋남=${off.toFixed(0)}px`}`);
+  await shot?.();
+  await page.mouse.up();
+  return ok;
+}
+
+/** 고양이 잡기 검사: 책상 → 휴게실 → 걸어가는 중 → 발끝 */
+async function grabCats(page, o) {
+  await page.locator(".of-cats .cr-mover").first().waitFor({ timeout: 15000 });
+  await page.waitForTimeout(9000); // 다들 자리에 앉을 때까지
+  const results = [];
+  let n = 0;
+  const shot = (tag) => () => page.screenshot({ path: path.join(o.out, `grab-${o.width}-${tag}-${++n}.png`) });
+  const first = await catsNow(page);
+  // 허락을 묻는 고양이는 답을 기다리느라 들리지 않는다 (원래 동작)
+  const asking = await page.evaluate(() => [...document.querySelectorAll(".of-cats .cr-mover")].filter((m) => m.querySelector(".cr-block")).map((m) => m.dataset.critter));
+  for (const c of first) {
+    if (asking.includes(c.id)) continue;
+    await page.waitForTimeout(2600); // 앞서 놓은 고양이가 제자리로 돌아갈 때까지
+    const now = (await catsNow(page)).find((x) => x.id === c.id);
+    await page.locator(`.of-cats [data-critter="${c.id}"]`).evaluate((el) => el.scrollIntoView({ block: "center" }));
+    results.push(await grabOnce(page, c.id, now.inLounge ? "휴게실" : "책상 구역", null, shot(now.inLounge ? "lounge" : "desk")));
+  }
+  // 책상 고양이: 끌지 않고 누르기만 하면 "귀찮아요" (책상 화면은 안 열림), 끌었다 놓으면 제 자리로 돌아간다
+  const bare = await page.evaluate(
+    (ids) =>
+      ids.filter((id) => {
+        const el = document.querySelector(`.of-cats [data-critter="${id}"] .critter`);
+        el.scrollIntoView({ block: "center" });
+        const r = el.getBoundingClientRect();
+        return !document.elementFromPoint(r.left + r.width / 2, r.top + r.height * 0.6)?.closest(".of-ask");
+      }),
+    first.filter((c) => !c.inLounge && !asking.includes(c.id)).map((c) => c.id),
+  );
+  const seatId = bare[0];
+  if (seatId) {
+    await page.waitForTimeout(2600);
+    const mover = page.locator(`.of-cats [data-critter="${seatId}"]`);
+    await mover.evaluate((el) => el.scrollIntoView({ block: "center" }));
+    const seatAt = await mover.getAttribute("style");
+    const c = (await catsNow(page)).find((x) => x.id === seatId);
+    await page.mouse.click(c.x, c.y);
+    await page.waitForTimeout(150);
+    const grumbled = (await mover.textContent()).includes("귀찮아요") && (await page.evaluate(() => window.__app.getState().view.name)) === "main";
+    console.log(`  ${grumbled ? "OK  " : "FAIL"} 책상 고양이 누르기만: "귀찮아요", 화면 그대로`);
+    await page.waitForTimeout(1700);
+    await page.mouse.move(c.x, c.y);
+    await page.mouse.down();
+    await page.mouse.move(c.x + 150, c.y + 120, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(3500);
+    const style = await mover.getAttribute("style");
+    const at = (v) => v.match(/translate3d\([^)]*\)/)[0];
+    const back = at(style) === at(seatAt);
+    console.log(`  ${back ? "OK  " : "FAIL"} 책상 고양이 놓기: 제 자리로 돌아감`);
+    results.push(grumbled, back);
+  }
+  // 발끝(그림 칸 아래쪽)을 눌러도 잡혀야 한다
+  await page.waitForTimeout(2600);
+  const rest = (await catsNow(page)).find((c) => c.inLounge);
+  if (rest) await page.locator(`.of-cats [data-critter="${rest.id}"]`).evaluate((el) => el.scrollIntoView({ block: "center" }));
+  if (rest) results.push(await grabOnce(page, rest.id, "휴게실 발끝", (c) => [c.x, c.top + c.h * 0.95]));
+  // 책상에서 휴게실로 걸어가는 중인 고양이: 일하던 고양이를 쉬게 한다
+  await page.waitForTimeout(2600);
+  const walker = await page.evaluate(() => {
+    const app = window.__app;
+    for (const [pid, team] of Object.entries(app.getState().teams)) {
+      const a = team.agents.find((x) => x.role === "worker" && x.status === "work");
+      if (!a) continue;
+      app.setState((s) => ({ teams: { ...s.teams, [pid]: { ...team, agents: team.agents.map((x) => (x.id === a.id ? { ...x, status: "wait" } : x)) } } }));
+      return `${pid}:${a.role}:${a.name}`;
+    }
+    return null;
+  });
+  if (walker) {
+    await page.waitForTimeout(700);
+    await page.locator(`.of-cats [data-critter="${walker}"]`).evaluate((el) => el.scrollIntoView({ block: "center" }));
+    results.push(await grabOnce(page, walker, "걸어가는 중", null, shot("walking")));
+  }
+  const failed = results.filter((r) => !r).length;
+  console.log(`  고양이 잡기: ${results.length - failed}/${results.length} 성공`);
+  if (failed) throw new Error(`고양이 잡기 ${failed}건 실패`);
+}
+
+/** 털색 메뉴 시연: 휴게실에서 쉬는 고양이 하나를 (없으면 아무 고양이나) 우클릭한다 */
+async function rightClickCat(page) {
+  const cats = page.locator(".of-cats .cr-mover .critter[data-coat-key]");
+  await cats.first().waitFor({ timeout: 15000 });
+  // 걸어가는 중이면 자리가 바뀌니 앉을 때까지 기다린다
+  await page.waitForTimeout(2500);
+  const resting = page.locator(".of-cats .critter[data-coat-key].cr-pose-coffee, .of-cats .critter[data-coat-key].cr-pose-sit, .of-cats .critter[data-coat-key].cr-pose-sleep");
+  const box = await ((await resting.count()) ? resting : cats).first().boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.65, { button: "right" });
+  await page.getByRole("menu").waitFor({ timeout: 5000 });
+}
+
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
 async function openScreen(page, screen, o, data) {
   const narrow = o.width <= 820;
@@ -284,10 +437,29 @@ async function openScreen(page, screen, o, data) {
     if (screen === "arrange") await arrangeLounge(page);
     else await liftLoungeCat(page);
   }
+  if (screen === "grab") {
+    if (narrow) await phoneTab("사무실").click();
+    await grabCats(page, o);
+  }
+  if (screen.startsWith("coat-")) {
+    if (narrow) await phoneTab("사무실").click();
+    await rightClickCat(page);
+    if (screen === "coat-done") {
+      // 지금 색이 아닌 것 중 마지막 털색을 고른다
+      const other = page.getByRole("menu").locator('[role="menuitemradio"][aria-checked="false"]');
+      if (await other.count()) await other.last().click();
+    }
+  }
   if (screen.startsWith("shop")) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();
     // 뽑기 연출: 버튼을 누른 뒤 --wait 만큼 기다렸다 찍는다 (흔들리는 중은 짧게, 결과는 연출이 끝난 뒤)
+    if (screen === "shop-earn") await page.getByRole("tab", { name: "츄르 받는 법" }).click();
     if (["shop-roll", "shop-new", "shop-dup"].includes(screen)) await page.getByRole("button", { name: /고양이 뽑기/ }).click();
+  }
+  if (screen === "reward") await page.evaluate(() => window.__app.getState().showReward({ kind: "attend", amount: 80, streak: 7 }));
+  if (screen === "gift") {
+    const gift = { id: "gift:release-next", amount: 250, label: "새 버전 기념", message: "새 버전 오픈 기념으로 츄르 250개를 드려요" };
+    await page.evaluate((gift) => window.__app.getState().showReward({ kind: "gift", amount: gift.amount, streak: 0, gift }), gift);
   }
   if (screen === "draft") {
     // 빈 대시보드에 할 일을 적고 초안을 만든 뒤, 미리보기가 뜰 때까지 기다린다

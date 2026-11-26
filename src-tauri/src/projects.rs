@@ -1,5 +1,6 @@
 //! Projects the user has added, and each project's team preset. Persisted as JSON.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -135,9 +136,35 @@ pub struct Settings {
     /// 가진 상점 물건 id 목록 ("cat:white"는 처음부터 가진다)
     #[serde(default = "default_owned")]
     pub owned: Vec<String>,
+    /// 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id. 없으면 화면이 이름으로 자동 배정한다
+    #[serde(default)]
+    pub coats: BTreeMap<String, String>,
     /// 츄르 1개로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
     #[serde(default)]
     pub churu_rest: u64,
+    /// 토큰 말고 츄르를 받은 기록 (같은 보상을 두 번 주지 않으려고 날짜·카드를 적어 둔다)
+    #[serde(default)]
+    pub rewards: RewardLog,
+}
+
+/// 보상 지급 기록. 날짜(`*_day`)는 이 컴퓨터의 현지 날짜를 하루 단위 번호로 적은 것 (`today`). 0이면 받은 적 없음.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RewardLog {
+    /// 마지막으로 출석 보상을 받은 날
+    pub attend_day: i32,
+    /// 연속 출석 일수 (`attend_day`까지)
+    pub streak: u32,
+    /// `card_count`를 센 날
+    pub card_day: i32,
+    pub card_count: u32,
+    /// 이미 계산한 작업 카드 (`card_key`), 오래된 것부터. 최근 `PAID_CARDS_KEPT`개만 남긴다.
+    pub paid_cards: Vec<String>,
+    /// `pet_count`를 센 날
+    pub pet_day: i32,
+    pub pet_count: u32,
+    /// 이미 받은 선물 ID (`Gift::id`). 지우지 않는다.
+    pub gifts: Vec<String>,
 }
 
 fn default_owned() -> Vec<String> {
@@ -165,9 +192,30 @@ impl Default for Settings {
             auto_allow_safe: true,
             churu: 0,
             owned: default_owned(),
+            coats: BTreeMap::new(),
             churu_rest: 0,
+            rewards: RewardLog::default(),
         }
     }
+}
+
+/// 팀원 `member`의 털색을 정한다. `coat`가 None이면 자동 배정으로 되돌린다. 가진 털색(owned의 "cat:<id>")만 고를 수 있다.
+pub fn set_coat(s: &mut Settings, member: &str, coat: Option<&str>) -> Result<(), String> {
+    if member.is_empty() {
+        return Err("어느 팀원인지 알 수 없어요".into());
+    }
+    match coat {
+        None => {
+            s.coats.remove(member);
+        }
+        Some(c) => {
+            if !s.owned.iter().any(|x| x.strip_prefix("cat:") == Some(c)) {
+                return Err("아직 없는 털색이에요. 상점에서 뽑으면 고를 수 있어요".into());
+            }
+            s.coats.insert(member.into(), c.into());
+        }
+    }
+    Ok(())
 }
 
 /// 토큰 `tokens`를 더해 (츄르 잔액, 남은 토큰)을 구한다. 환율 미만은 나머지로 이월된다.
@@ -176,7 +224,138 @@ pub fn churu_add(churu: u64, rest: u64, tokens: u64) -> (u64, u64) {
     (churu.saturating_add(total / TOKENS_PER_CHURU), total % TOKENS_PER_CHURU)
 }
 
-/// 휴게실 소품 가격 (츄르). 앱이 가격을 믿지 않도록 이 표가 기준이다.
+// ── 토큰 말고 츄르를 받는 방법 ──
+//
+// 기준은 토큰 보상 4주 약 9,600츄르(`TOKENS_PER_CHURU`), 하루 평균 약 340츄르다.
+// 아래 보상은 덤이어야 하므로(토큰 보상이 계속 주된 수입) 4주 합계를 그 1/3 아래로 잡았다.
+//   · 출석: 20 → 하루 이어질 때마다 +2 (최대 30), 7일째마다 +50. 28일 개근 = 810 + 50×4 = 1,010 (약 11%)
+//   · 작업 카드: 1장 6, 하루 10장까지. 하루 5장이면 840 (약 9%), 매일 상한을 채워도 1,680 (약 18%)
+//   · 고양이: 1번 2, 하루 5번까지(10). 28일 280 (약 3%)
+// 합계: 보통 약 2,130 (약 22%), 최대 2,970 (약 31%) → 4주에 뽑기(250) 약 8~11번 더.
+// 화면의 안내 값(src/lib/shop.ts EARN)과 같아야 한다: scripts/test/shop-prices.test.mjs 가 맞는지 본다.
+
+/// 출석 첫날 보상
+pub const ATTEND_BASE: u64 = 20;
+/// 연속 출석이 하루 늘 때마다 더 주는 양
+pub const ATTEND_STEP: u64 = 2;
+/// 연속 출석으로 더 주는 양의 상한 (6일째부터 하루 30)
+pub const ATTEND_EXTRA_MAX: u64 = 10;
+/// 연속 7일째·14일째…에 더 주는 보너스
+pub const ATTEND_WEEK_BONUS: u64 = 50;
+/// 작업 카드 1장 완료 보상. 카드는 자동으로 많이 만들 수 있어서 하루 상한을 둔다.
+pub const CARD_REWARD: u64 = 6;
+pub const CARD_DAILY_MAX: u32 = 10;
+/// 고양이 쓰다듬기·들어 올리기 1번 보상과 하루 상한 (횟수)
+pub const PET_REWARD: u64 = 2;
+pub const PET_DAILY_MAX: u32 = 5;
+/// 기억해 두는 완료 카드 수. 팀에 남는 끝난 카드보다 훨씬 많아서, 다시 열었다 닫은 카드도 걸러진다.
+const PAID_CARDS_KEPT: usize = 500;
+
+/// 딱 한 번 주는 기념 선물. `id`를 `RewardLog::gifts`에 적어 두 번 주지 않는다.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Gift {
+    pub id: &'static str,
+    pub amount: u64,
+    /// 잔액 옆 '+N ○○' 표시에 쓰는 말
+    pub label: &'static str,
+    /// 받을 때 보여 주는 안내 문구
+    pub message: &'static str,
+}
+
+/// 지금 주는 선물: 업데이트하거나 새로 설치한 뒤 처음 켤 때 한 번. 양은 고양이 뽑기 1번 값.
+/// 다음 기념 선물은 `id`를 새로 정하고 (필요하면 양·문구도) 바꾼다. 쓴 적 있는 id는 다시 쓰지 않는다.
+pub const GIFT: Gift = Gift {
+    id: "gift:release-next",
+    amount: 250,
+    label: "새 버전 기념",
+    message: "새 버전 오픈 기념으로 츄르 250개를 드려요",
+};
+
+/// 방금 받은 보상 (화면의 '+N 출석' 표시용). kind: "attend" | "card" | "pet" | "gift"
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChuruReward {
+    pub kind: &'static str,
+    pub amount: u64,
+    /// 출석일 때 연속 일수 (나머지는 0)
+    pub streak: u32,
+    /// 선물일 때만 있다
+    pub gift: Option<Gift>,
+}
+
+fn pay(s: &mut Settings, kind: &'static str, amount: u64, streak: u32) -> ChuruReward {
+    s.churu = s.churu.saturating_add(amount);
+    ChuruReward { kind, amount, streak, gift: None }
+}
+
+/// 기념 선물. 이미 받은 id면 None.
+pub fn gift_reward(s: &mut Settings, gift: Gift) -> Option<ChuruReward> {
+    if s.rewards.gifts.iter().any(|id| id == gift.id) {
+        return None;
+    }
+    s.rewards.gifts.push(gift.id.into());
+    Some(ChuruReward { gift: Some(gift), ..pay(s, "gift", gift.amount, 0) })
+}
+
+/// 하루 상한이 있는 보상의 횟수를 센다. 받을 수 있으면 true.
+/// 이미 센 날보다 앞선 날(시계를 뒤로 돌림)에는 주지 않는다.
+fn take_daily(day: &mut i32, count: &mut u32, today: i32, max: u32) -> bool {
+    if today > *day {
+        *day = today;
+        *count = 0;
+    }
+    if today < *day || *count >= max {
+        return false;
+    }
+    *count += 1;
+    true
+}
+
+/// 그날 첫 접속 보상. 오늘(또는 더 뒤 날짜로) 이미 받았으면 None.
+pub fn attend_reward(s: &mut Settings, today: i32) -> Option<ChuruReward> {
+    let r = &mut s.rewards;
+    if today <= r.attend_day {
+        return None;
+    }
+    r.streak = if today == r.attend_day + 1 { r.streak.saturating_add(1) } else { 1 };
+    r.attend_day = today;
+    let streak = r.streak;
+    let extra = (u64::from(streak - 1) * ATTEND_STEP).min(ATTEND_EXTRA_MAX);
+    let bonus = if streak % 7 == 0 { ATTEND_WEEK_BONUS } else { 0 };
+    Some(pay(s, "attend", ATTEND_BASE + extra + bonus, streak))
+}
+
+/// 완료한 카드를 구별하는 이름. 팀을 새로 만들면 카드 번호(T-1…)가 다시 시작할 수 있어서 만든 시각도 넣는다.
+pub fn card_key(project_id: &str, task_id: &str, created_at: u64) -> String {
+    format!("{project_id}:{task_id}:{created_at}")
+}
+
+/// 작업 카드 완료 보상. 한 카드는 한 번만 계산한다: 상한 때문에 못 받은 카드도 적어 두어 다음 날 다시 받지 못한다.
+pub fn card_reward(s: &mut Settings, key: &str, today: i32) -> Option<ChuruReward> {
+    let r = &mut s.rewards;
+    if r.paid_cards.iter().any(|k| k == key) {
+        return None;
+    }
+    r.paid_cards.push(key.into());
+    let over = r.paid_cards.len().saturating_sub(PAID_CARDS_KEPT);
+    r.paid_cards.drain(..over);
+    take_daily(&mut r.card_day, &mut r.card_count, today, CARD_DAILY_MAX).then(|| pay(s, "card", CARD_REWARD, 0))
+}
+
+/// 고양이 쓰다듬기·들어 올리기 보상 (하루 `PET_DAILY_MAX`번까지).
+pub fn pet_reward(s: &mut Settings, today: i32) -> Option<ChuruReward> {
+    let r = &mut s.rewards;
+    take_daily(&mut r.pet_day, &mut r.pet_count, today, PET_DAILY_MAX).then(|| pay(s, "pet", PET_REWARD, 0))
+}
+
+/// 이 컴퓨터의 현지 날짜를 하루 단위 번호로 (어제 = 오늘 - 1)
+fn today() -> i32 {
+    use chrono::Datelike;
+    chrono::Local::now().date_naive().num_days_from_ce()
+}
+
+/// 휴게실·놀이방 소품 가격 (츄르). 앱이 가격을 믿지 않도록 이 표가 기준이다.
 /// 화면의 가격표(src/lib/shop.ts)와 같아야 한다: scripts/test/shop-prices.test.mjs 가 맞는지 본다.
 pub const ITEM_PRICES: &[(&str, u64)] = &[
     ("소파", 150),
@@ -193,6 +372,9 @@ pub const ITEM_PRICES: &[(&str, u64)] = &[
     ("화분", 60),
     ("정수기", 120),
     ("캣타워", 100),
+    ("캣휠", 130),
+    ("캣 터널", 90),
+    ("장난감 상자", 40),
 ];
 
 /// 소품 가격. "item:<이름>" 이 아니거나 없는 물건이면 None.
@@ -351,6 +533,10 @@ impl Projects {
             .unwrap_or_else(|| PathBuf::from("Prism"));
         let _ = std::fs::create_dir_all(&root);
         let mut list: Vec<Project> = list;
+        // Windows: folders imported earlier were saved as `\\?\C:\…`, which can't take work copies
+        for p in &mut list {
+            p.path = sys::plain_path(&p.path);
+        }
         // agents that are no longer supported fall back to Claude
         for p in &mut list {
             for r in [&mut p.team.lead, &mut p.team.managers, &mut p.team.workers] {
@@ -443,11 +629,37 @@ impl Projects {
         Some(snap)
     }
 
+    /// 보상 규칙 하나를 적용한다. 기록이 바뀌었을 수 있으니 저장하고, 받았으면 보상과 새 Settings를 돌려준다.
+    fn reward(&self, rule: impl FnOnce(&mut Settings) -> Option<ChuruReward>) -> Option<(ChuruReward, Settings)> {
+        let got = {
+            let mut p = self.prefs.lock().unwrap();
+            rule(&mut p).map(|r| (r, p.clone()))
+        };
+        self.save_prefs();
+        got
+    }
+
+    /// 작업 카드 하나가 완료됐다 (`card_reward`).
+    pub fn reward_card(&self, key: &str) -> Option<(ChuruReward, Settings)> {
+        self.reward(|s| card_reward(s, key, today()))
+    }
+
     /// 상점에서 소품을 산다 (`buy_item`). 성공하면 저장하고 새 Settings를 돌려준다.
     pub fn buy(&self, id: &str) -> Result<Settings, String> {
         let snap = {
             let mut p = self.prefs.lock().unwrap();
             buy_item(&mut p, id)?;
+            p.clone()
+        };
+        self.save_prefs();
+        Ok(snap)
+    }
+
+    /// 팀원 털색 고르기 (`set_coat`). 성공하면 저장하고 새 Settings를 돌려준다.
+    pub fn choose_coat(&self, member: &str, coat: Option<&str>) -> Result<Settings, String> {
+        let snap = {
+            let mut p = self.prefs.lock().unwrap();
+            set_coat(&mut p, member, coat)?;
             p.clone()
         };
         self.save_prefs();
@@ -617,7 +829,7 @@ impl Projects {
         if !dir.is_dir() {
             return Err("폴더를 찾을 수 없어요".into());
         }
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let dir = sys::real_dir(dir);
         let path = dir.to_string_lossy().into_owned();
         if let Some(home) = std::env::home_dir() {
             if dir == home || dir.parent().is_none() {
@@ -755,12 +967,45 @@ pub fn shop_buy(app: AppHandle, projects: State<'_, Projects>, id: String) -> Re
     Ok(s)
 }
 
+/// 팀원 털색을 고른다 (`coat` null = 자동으로 되돌리기). 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
+#[tauri::command]
+pub fn prefs_set_coat(app: AppHandle, projects: State<'_, Projects>, member: String, coat: Option<String>) -> Result<Settings, String> {
+    let s = projects.choose_coat(&member, coat.as_deref())?;
+    let _ = app.emit("prefs", &s);
+    Ok(s)
+}
+
 /// 고양이 뽑기 1회 (인자 없음). 결과와 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
 #[tauri::command]
 pub fn gacha_pull(app: AppHandle, projects: State<'_, Projects>) -> Result<GachaPulled, String> {
     let r = projects.gacha(&mut random_u32)?;
     let _ = app.emit("prefs", &r.prefs);
     Ok(r)
+}
+
+fn announce_reward(app: &AppHandle, got: Option<(ChuruReward, Settings)>) -> Option<ChuruReward> {
+    got.map(|(reward, s)| {
+        let _ = app.emit("prefs", &s);
+        reward
+    })
+}
+
+/// 앱을 열었거나 다시 돌아왔다: 그날 처음이면 출석 보상. 이미 받았으면 null.
+#[tauri::command]
+pub fn reward_attend(app: AppHandle, projects: State<'_, Projects>) -> Option<ChuruReward> {
+    announce_reward(&app, projects.reward(|s| attend_reward(s, today())))
+}
+
+/// 앱을 켰다: 아직 안 받은 기념 선물(`GIFT`)이 있으면 준다. 받은 적 있으면 null.
+#[tauri::command]
+pub fn reward_gift(app: AppHandle, projects: State<'_, Projects>) -> Option<ChuruReward> {
+    announce_reward(&app, projects.reward(|s| gift_reward(s, GIFT)))
+}
+
+/// 고양이를 쓰다듬거나 들어 올렸다. 오늘 상한을 넘었으면 null.
+#[tauri::command]
+pub fn reward_pet(app: AppHandle, projects: State<'_, Projects>) -> Option<ChuruReward> {
+    announce_reward(&app, projects.reward(|s| pet_reward(s, today())))
 }
 
 /// 뽑기 가격과 고양이별 등급·확률 (화면 확률표용)
@@ -913,6 +1158,20 @@ mod churu_tests {
     }
 
     #[test]
+    fn only_owned_coats_can_be_chosen_and_auto_removes_the_pick() {
+        let mut s = fresh();
+        assert!(set_coat(&mut s, "p1:worker:W1", Some("black")).unwrap_err().contains("상점"));
+        assert!(set_coat(&mut s, "", Some("white")).is_err());
+        assert!(s.coats.is_empty());
+        s.owned.push("cat:black".into());
+        set_coat(&mut s, "p1:worker:W1", Some("black")).unwrap();
+        set_coat(&mut s, "p2:worker:W1", Some("white")).unwrap();
+        assert_eq!(s.coats["p1:worker:W1"], "black");
+        set_coat(&mut s, "p1:worker:W1", None).unwrap();
+        assert_eq!(s.coats.keys().collect::<Vec<_>>(), vec!["p2:worker:W1"]);
+    }
+
+    #[test]
     fn unknown_item_is_rejected() {
         let mut s = fresh();
         s.churu = 99_999;
@@ -1052,6 +1311,140 @@ mod churu_tests {
 
 
 #[cfg(test)]
+mod reward_tests {
+    use super::*;
+
+    const DAY: i32 = 740_000;
+
+    #[test]
+    fn attendance_pays_once_a_day() {
+        let mut s = Settings::default();
+        assert_eq!(attend_reward(&mut s, DAY), Some(ChuruReward { kind: "attend", amount: 20, streak: 1, gift: None }));
+        assert_eq!(attend_reward(&mut s, DAY), None);
+        assert_eq!(s.churu, 20);
+        // 시계를 어제로 돌려도 다시 받지 못한다
+        assert_eq!(attend_reward(&mut s, DAY - 1), None);
+        assert_eq!(s.churu, 20);
+    }
+
+    #[test]
+    fn streak_grows_with_weekly_bonus_and_resets_after_a_gap() {
+        let mut s = Settings::default();
+        let got: Vec<u64> = (0..14).map(|i| attend_reward(&mut s, DAY + i).unwrap().amount).collect();
+        assert_eq!(got, vec![20, 22, 24, 26, 28, 30, 80, 30, 30, 30, 30, 30, 30, 80]);
+        // 하루를 건너뛰면 처음부터
+        let back = attend_reward(&mut s, DAY + 15).unwrap();
+        assert_eq!((back.amount, back.streak), (20, 1));
+    }
+
+    #[test]
+    fn four_weeks_of_everything_stays_under_a_third_of_token_income() {
+        let mut s = Settings::default();
+        for d in 0..28 {
+            attend_reward(&mut s, DAY + d);
+            for n in 0..30 {
+                card_reward(&mut s, &format!("p:T-{d}-{n}:1"), DAY + d);
+                pet_reward(&mut s, DAY + d);
+            }
+        }
+        assert_eq!(s.churu, 1_010 + 1_680 + 280);
+        assert!(s.churu < 9_600 / 3);
+    }
+
+    #[test]
+    fn same_card_is_never_paid_twice() {
+        let mut s = Settings::default();
+        let key = card_key("p", "T-1", 100);
+        assert_eq!(card_reward(&mut s, &key, DAY).map(|r| r.amount), Some(CARD_REWARD));
+        assert_eq!(card_reward(&mut s, &key, DAY), None);
+        assert_eq!(card_reward(&mut s, &key, DAY + 1), None);
+        assert_eq!(s.churu, CARD_REWARD);
+        // 번호가 같아도 다른 팀이나 새로 만든 카드는 다른 카드
+        assert!(card_reward(&mut s, &card_key("q", "T-1", 100), DAY + 1).is_some());
+        assert!(card_reward(&mut s, &card_key("p", "T-1", 200), DAY + 1).is_some());
+    }
+
+    #[test]
+    fn card_cap_resets_next_day_but_skipped_cards_stay_skipped() {
+        let mut s = Settings::default();
+        let paid = (0..15).filter(|n| card_reward(&mut s, &format!("c{n}"), DAY).is_some()).count();
+        assert_eq!(paid, CARD_DAILY_MAX as usize);
+        assert_eq!(card_reward(&mut s, "c14", DAY + 1), None);
+        assert!(card_reward(&mut s, "new", DAY + 1).is_some());
+        assert_eq!(s.churu, CARD_REWARD * 11);
+    }
+
+    #[test]
+    fn paid_card_list_stays_bounded() {
+        let mut s = Settings::default();
+        for n in 0..PAID_CARDS_KEPT + 20 {
+            card_reward(&mut s, &format!("c{n}"), DAY);
+        }
+        assert_eq!(s.rewards.paid_cards.len(), PAID_CARDS_KEPT);
+        assert_eq!(s.rewards.paid_cards[0], "c20");
+    }
+
+    #[test]
+    fn petting_is_capped_per_day() {
+        let mut s = Settings::default();
+        let paid = (0..20).filter(|_| pet_reward(&mut s, DAY).is_some()).count();
+        assert_eq!(paid, PET_DAILY_MAX as usize);
+        assert_eq!(s.churu, 10);
+        assert!(pet_reward(&mut s, DAY + 1).is_some());
+        // 시계를 뒤로 돌려도 상한이 풀리지 않는다
+        assert_eq!(pet_reward(&mut s, DAY), None);
+        assert_eq!(s.churu, 12);
+    }
+
+    #[test]
+    fn gift_is_paid_once_per_id() {
+        let mut s = Settings::default();
+        let got = gift_reward(&mut s, GIFT).unwrap();
+        assert_eq!((got.kind, got.amount, got.gift), ("gift", 250, Some(GIFT)));
+        assert_eq!(gift_reward(&mut s, GIFT), None);
+        assert_eq!(s.churu, 250);
+        // 다음 기념 선물은 id만 바꾸면 한 번 더 받고, 앞의 선물은 그대로 받은 것으로 남는다
+        let next = Gift { id: "gift:another", ..GIFT };
+        assert!(gift_reward(&mut s, next).is_some());
+        assert_eq!(gift_reward(&mut s, next), None);
+        assert_eq!(gift_reward(&mut s, GIFT), None);
+        assert_eq!(s.churu, 500);
+    }
+
+    #[test]
+    fn gift_reaches_updaters_once_and_survives_restart() {
+        // 예전 버전이 저장한 설정(선물 기록 없음)으로 업데이트한 경우. 임시 dev.prism.* 폴더만 쓴다
+        let dir = std::env::temp_dir().join(format!("dev.prism.t126-{}", uuid::Uuid::new_v4()));
+        let file = dir.join("settings.json");
+        let open = |saved: Settings| Projects { list: Mutex::new(vec![]), file: Mutex::new(None), root: Mutex::new(dir.join("ws")), settings: Some(file.clone()), prefs: Mutex::new(saved) };
+        let old: Settings = serde_json::from_str(r#"{"root":null,"providers":["claude"],"onboarded":true,"churu":30,"rewards":{"attendDay":739999,"streak":2}}"#).unwrap();
+        let first = open(old);
+        assert!(first.reward(|s| gift_reward(s, GIFT)).is_some());
+        let again = open(serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap());
+        assert!(again.reward(|s| gift_reward(s, GIFT)).is_none());
+        assert_eq!(again.settings().churu, 280);
+        assert_eq!(again.settings().rewards.streak, 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reward_log_survives_restart() {
+        // 저장한 파일을 다시 읽어도(앱 재시작) 같은 보상을 또 받지 않는다. 정식 데이터가 아닌 임시 dev.prism.* 폴더를 쓴다
+        let dir = std::env::temp_dir().join(format!("dev.prism.t123-{}", uuid::Uuid::new_v4()));
+        let file = dir.join("settings.json");
+        let open = |saved: Settings| Projects { list: Mutex::new(vec![]), file: Mutex::new(None), root: Mutex::new(dir.join("ws")), settings: Some(file.clone()), prefs: Mutex::new(saved) };
+        let first = open(Settings::default());
+        assert!(first.reward(|s| attend_reward(s, DAY)).is_some());
+        assert!(first.reward(|s| card_reward(s, "p:T-1:1", DAY)).is_some());
+        let again = open(serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap());
+        assert!(again.reward(|s| attend_reward(s, DAY)).is_none());
+        assert!(again.reward(|s| card_reward(s, "p:T-1:1", DAY)).is_none());
+        assert_eq!(again.settings().churu, ATTEND_BASE + CARD_REWARD);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod create_tests {
     use super::*;
     use std::time::{Duration, Instant};
@@ -1083,6 +1476,18 @@ mod create_tests {
             h.join().unwrap();
         }
         (t.elapsed().as_secs_f64() * 1000.0, worst.as_secs_f64() * 1000.0)
+    }
+
+    #[test]
+    fn chosen_coat_is_still_there_after_reading_the_settings_file_again() {
+        let (root, mut ps) = scratch();
+        let file = root.join("data/settings.json");
+        ps.settings = Some(file.clone());
+        ps.prefs.lock().unwrap().owned.push("cat:black".into());
+        ps.choose_coat("p1:lead:총괄", Some("black")).unwrap();
+        let again: Settings = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(again.coats["p1:lead:총괄"], "black");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

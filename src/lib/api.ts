@@ -87,6 +87,8 @@ export interface Agent {
   id: string;
   name: string;
   role: Role;
+  /** 화면에서만: 이 팀원이 속한 프로젝트 id (스냅샷을 받을 때 붙인다. 고른 털색을 찾는 데 쓴다) */
+  projectId?: string;
   kind: Provider;
   model: string;
   effort: Effort;
@@ -356,6 +358,17 @@ export interface Prefs {
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
   owned: string[];
+  /** 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id (없으면 자동 배정) */
+  coats?: Record<string, string>;
+}
+
+/** 토큰 말고 방금 받은 츄르 (Rust ChuruReward). streak는 출석일 때의 연속 일수 */
+export interface ChuruReward {
+  kind: "attend" | "card" | "pet" | "gift";
+  amount: number;
+  streak: number;
+  /** 선물일 때만: 표시에 쓸 말과 안내 문구 (Rust Gift) */
+  gift?: { id: string; amount: number; label: string; message: string } | null;
 }
 
 /** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). tier는 흔함·레어·에픽·유니크·레전더리, percent는 소수 첫째 자리까지 */
@@ -450,11 +463,21 @@ export const api = {
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
   /** buy a shop item (소품 only; the price is Rust's): returns the updated prefs, or rejects with a plain Korean reason */
   buyItem: (id: string) => call<Prefs>("shop_buy", { id }),
+  /** 팀원 털색 고르기 (coat null = 자동으로 되돌리기). 가진 털색이 아니면 Korean reason으로 reject */
+  setCoat: (member: string, coat: string | null) => call<Prefs>("prefs_set_coat", { member, coat }),
   /** 고양이 뽑기 가격과 고양이별 등급·확률 (화면 확률표) */
   gachaInfo: () => call<GachaInfo>("gacha_info"),
   /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */
   gachaPull: () => call<GachaPulled>("gacha_pull"),
   onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
+  /** 그날 첫 접속 보상 (이미 받았으면 null) */
+  rewardAttend: () => call<ChuruReward | null>("reward_attend"),
+  /** 기념 선물 (받은 적 있으면 null) */
+  rewardGift: () => call<ChuruReward | null>("reward_gift"),
+  /** 고양이 쓰다듬기·들어 올리기 보상 (오늘 상한을 넘었으면 null) */
+  rewardPet: () => call<ChuruReward | null>("reward_pet"),
+  /** 작업 카드가 완료돼 츄르를 받았다 (출석·고양이 보상은 위 명령의 응답으로 온다) */
+  onChuruReward: (fn: (r: ChuruReward) => void): Promise<UnlistenFn> => on<ChuruReward>("churu-reward", fn),
 
   // agent CLIs
   cliStatus: () => call<CliStatus[]>("cli_status"),
