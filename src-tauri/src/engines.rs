@@ -91,6 +91,7 @@ impl Proc {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
+        crate::sys::hide_console(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| format!("{} 엔진을 시작하지 못했어요: {e}", key.engine))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -175,7 +176,7 @@ impl Proc {
             // the whole group: anything the engine started goes with it
             libc_kill(-(c.id() as i32));
         }
-        let _ = c.kill();
+        let _ = crate::sys::kill_tree(&mut c);
         let _ = c.wait();
     }
 }

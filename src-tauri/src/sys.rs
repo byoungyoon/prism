@@ -164,12 +164,41 @@ pub fn command(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(exe);
     c.args(lead).env("PATH", search_path());
+    hide_console(&mut c);
+    c
+}
+
+/// Windows: a console program started from the app would otherwise open its own black window.
+pub fn hide_console(c: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    c
+    #[cfg(not(windows))]
+    let _ = c;
+}
+
+/// Windows: ends process `pid` and everything it started. Ending only the process leaves its
+/// children running, and for an npm CLI (`cmd /c codex.cmd` → node → codex) the one process is
+/// just the `cmd` in front.
+#[cfg(windows)]
+pub fn kill_pid_tree(pid: u32) {
+    let _ = command("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).output();
+}
+
+/// `Child::kill`, taking the whole process tree with it on Windows (see `kill_pid_tree`).
+pub fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+    // only while it runs: the tree is found through the live parent
+    #[cfg(windows)]
+    if matches!(child.try_wait(), Ok(None)) {
+        kill_pid_tree(child.id());
+        // taskkill ended it already: `kill` would only report that it's gone
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+    }
+    child.kill()
 }
 
 // ── git ───────────────────────────────────────────────
@@ -399,6 +428,22 @@ mod tests {
         let found = find_windows(dirs(), "codex", has(&["a/codex.exe", "a/codex.cmd"])).unwrap();
         assert!(found.0.ends_with("codex.exe") && found.1.is_empty());
         assert!(find_windows(dirs(), "codex", has(&["a/claude.exe"])).is_none());
+    }
+
+    /// The grandchild holds the output pipe, so the pipe only ends once it is gone too.
+    #[cfg(windows)]
+    #[test]
+    fn stopping_a_cmd_program_stops_what_it_started() {
+        use std::io::Read;
+        let mut child = command("cmd").args(["/d", "/c", "ping -n 60 127.0.0.1"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let mut first = [0u8; 1];
+        out.read_exact(&mut first).unwrap(); // ping is up
+        let began = std::time::Instant::now();
+        kill_tree(&mut child).unwrap();
+        out.read_to_end(&mut vec![]).unwrap();
+        child.wait().unwrap();
+        assert!(began.elapsed() < std::time::Duration::from_secs(15), "ping kept running: {:?}", began.elapsed());
     }
 
     #[test]
