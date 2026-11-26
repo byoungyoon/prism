@@ -179,7 +179,8 @@ export const useApp = create<AppState>((set, get) => {
     }
     const owned = p.owned ?? DEFAULT_OWNED;
     setOwnedCoats(owned);
-    set({ churu: p.churu ?? 0, owned });
+    // a new coat renames and repaints teammates: every screen showing them draws again
+    set((s) => ({ churu: p.churu ?? 0, owned, ...(owned.join() === s.owned.join() ? {} : { teams: { ...s.teams } }) }));
   };
   const releaseGacha = () => {
     holding = false;
@@ -233,8 +234,6 @@ export const useApp = create<AppState>((set, get) => {
     buyItem: async (id) => {
       try {
         applyPrefs(await api.buyItem(id));
-        // the teammates' coats and the lounge follow the purchase at once
-        set((s) => ({ teams: { ...s.teams } }));
         return null;
       } catch (e) {
         return msg(e);
