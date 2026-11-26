@@ -61,7 +61,7 @@ const SCREENS = {
   gift: "기념 선물을 받은 순간: 잔액 옆 '+250 새 버전 기념'과 안내 문구",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
-  grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
+  grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고, 휴게실·놀이방 사이에 놓아 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
   "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
   "coat-done": "털색 메뉴에서 다른 색을 고른 뒤의 모습",
   dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
@@ -385,9 +385,75 @@ async function grabCats(page, o) {
     await page.locator(`.of-cats [data-critter="${walker}"]`).evaluate((el) => el.scrollIntoView({ block: "center" }));
     results.push(await grabOnce(page, walker, "걸어가는 중", null, shot("walking")));
   }
+  results.push(...(await dragRooms(page, o, shot)));
   const failed = results.filter((r) => !r).length;
   console.log(`  고양이 잡기: ${results.length - failed}/${results.length} 성공`);
   if (failed) throw new Error(`고양이 잡기 ${failed}건 실패`);
+}
+
+/** 놀이방 끌기 검사: 놀이방 안에서, 놀이방 → 휴게실, 휴게실 → 놀이방. 놓은 뒤 그 방에 남아 있어야 한다.
+ *  (성격에 따라 순순히 앉거나 "하악!" 하고 같은 방 안에서 달아난다: 어느 쪽이든 놓은 방이어야 한다) */
+async function dragRooms(page, o, shot) {
+  const size = page.viewportSize();
+  // 두 방이 한 화면에 들어오게 잠깐 키운다 (좁은 화면은 위아래로 놓인다)
+  await page.setViewportSize({ width: size.width, height: 1800 });
+  await page.waitForTimeout(1500);
+  await page.locator(".of-playroom").evaluate((el) => el.scrollIntoView({ block: "end" }));
+  await page.waitForTimeout(1500);
+  /** 고양이 발이 있는 방 */
+  const roomOf = (id) =>
+    page.evaluate((id) => {
+      const f = document.querySelector(`.of-cats [data-critter="${id}"]`).getBoundingClientRect();
+      for (const [name, sel] of [["놀이방", ".of-playroom"], ["휴게실", ".of-lounge"]]) {
+        const r = document.querySelector(sel).getBoundingClientRect();
+        if (f.left >= r.left && f.left <= r.right && f.top >= r.top && f.top <= r.bottom + 12) return name;
+      }
+      return "방 밖";
+    }, id);
+  const results = [];
+  const used = new Set();
+  const plan = [
+    ["놀이방", "놀이방"],
+    ["놀이방", "휴게실"],
+    ["휴게실", "놀이방"],
+    ["휴게실", "휴게실"],
+  ];
+  for (const [from, to] of plan) {
+    await page.waitForTimeout(2600);
+    let id = null;
+    for (const c of await catsNow(page)) if (!used.has(c.id) && (await roomOf(c.id)) === from) id ??= c.id;
+    // 처음 보는 고양이가 없으면 이미 옮겨 본 고양이도 쓴다
+    for (const c of await catsNow(page)) if ((await roomOf(c.id)) === from) id ??= c.id;
+    if (!id) {
+      console.log(`  FAIL ${from} → ${to}: ${from}에 고양이가 없음`);
+      results.push(false);
+      continue;
+    }
+    used.add(id);
+    const c = (await catsNow(page)).find((x) => x.id === id);
+    const room = await page.locator(to === "놀이방" ? ".of-playroom" : ".of-lounge").boundingBox();
+    // 같은 방 안에서는 방 반대쪽으로 옮긴다
+    const fx = c.x < room.x + room.width / 2 ? 0.72 : 0.28;
+    const tx = room.x + room.width * fx;
+    const ty = room.y + room.height * 0.7;
+    await page.mouse.move(c.x, c.y);
+    await page.mouse.down();
+    await page.mouse.move(tx, ty, { steps: 10 });
+    await page.waitForTimeout(120);
+    const lifted = (await catsNow(page)).find((x) => x.id === id).held;
+    const tag = `${from === "놀이방" ? "play" : "lounge"}-to-${to === "놀이방" ? "play" : "lounge"}`;
+    await shot(`${tag}-drag`)();
+    await page.mouse.up();
+    // 달아나는 고양이도 도착할 만큼 (놓인 고양이는 이보다 오래 그 방에 남는다)
+    await page.waitForTimeout(6000);
+    const now = await roomOf(id);
+    const ok = lifted && now === to;
+    console.log(`  ${ok ? "OK  " : "FAIL"} ${from} → ${to}  ${id}  놓은 뒤 6초: ${now}`);
+    await shot(`${tag}-after`)();
+    results.push(ok);
+  }
+  await page.setViewportSize(size);
+  return results;
 }
 
 /** 털색 메뉴 시연: 휴게실에서 쉬는 고양이 하나를 (없으면 아무 고양이나) 우클릭한다 */
