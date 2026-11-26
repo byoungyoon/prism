@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp } from "../store";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, pty, type Account, type CliStatus, type Provider } from "../lib/api";
 import { TerminalView } from "./TerminalView";
+import { ConnectPanel } from "./ConnectPanel";
+import { PROVIDER_NAME } from "../lib/topAccount";
 import { isRemote } from "../lib/transport";
 import { useShallow } from "zustand/react/shallow";
 
@@ -29,7 +30,7 @@ function isApiBilled(a: Account) {
 
 function planLabel(a: Account) {
   const s = a.status;
-  if (s.authMethod === "missing") return `${PROVIDER_INFO[a.provider].title} 프로그램이 설치돼 있지 않아요`;
+  if (s.authMethod === "missing") return "로그인 안 됨 · 연결을 누르면 필요한 프로그램부터 설치해요";
   if (!s.loggedIn) return "로그인 안 됨";
   if (isApiBilled(a)) return "사용량만큼 요금 청구";
   if (a.provider === "codex") return "ChatGPT 구독";
@@ -38,7 +39,7 @@ function planLabel(a: Account) {
   return `구독${plan ? ` · ${plan}` : ""}`;
 }
 
-function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
+function Row({ a, onConnect, children }: { a: Account; onConnect: (a: Account) => void; children?: ReactNode }) {
   const { loadAccounts, setError } = useApp(useShallow((s) => ({ loadAccounts: s.loadAccounts, setError: s.setError })));
   const [confirm, setConfirm] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
@@ -50,10 +51,17 @@ function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
     }
   };
   const ok = a.status.loggedIn;
+  const [leaving, setLeaving] = useState(false);
+  const logout = async () => {
+    setLeaving(true);
+    await act(() => api.logoutAccount(a.id));
+    setLeaving(false);
+  };
+  const outline = "min-h-8 shrink-0 rounded-full bg-transparent px-3 text-[12.5px] whitespace-nowrap disabled:opacity-60";
   return (
     <motion.li layout initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, height: 0 }} transition={spring} className="list-none">
       <div
-        className="flex items-center gap-3 rounded-xl px-3.5 py-3"
+        className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl px-3.5 py-3"
         style={{ background: a.active ? "var(--glass2)" : "transparent", border: `1.5px solid ${a.active ? "var(--navy)" : "var(--line)"}` }}
       >
         <button
@@ -67,7 +75,7 @@ function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
           {initialOf(a)}
           <span className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full" style={{ background: ok ? "var(--work)" : "var(--done)", border: "2px solid var(--bg2)" }} />
         </button>
-        <div className="flex min-w-0 flex-auto flex-col">
+        <div className="flex min-w-[150px] flex-1 flex-col">
           <span className="flex items-center gap-2 text-[14px] font-semibold">
             {a.name}
             {a.active && (
@@ -76,21 +84,41 @@ function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
               </span>
             )}
           </span>
+          {ok && (
+            <span className="truncate text-[12px] font-semibold" style={{ color: "var(--work-ink)" }}>
+              로그인됨: {PROVIDER_NAME[a.provider]}
+            </span>
+          )}
           <span className="truncate text-[12px] text-ink-2">
             {a.status.email ? `${a.status.email} · ` : ""}
             {planLabel(a)}
           </span>
         </div>
-        {ok ? (
-          <button onClick={() => act(() => api.logoutAccount(a.id))} className="min-h-8 shrink-0 rounded-full px-3 text-[12.5px] whitespace-nowrap" style={{ border: "1px solid var(--line)" }}>
-            로그아웃
-          </button>
-        ) : (
-          <button onClick={() => onLogin(a.id)} className="min-h-8 shrink-0 rounded-full border-0 px-3.5 text-[12.5px] font-semibold whitespace-nowrap" style={{ background: "var(--amber)", color: "#2B2520" }}>
-            로그인
+        {!a.active && (
+          <button onClick={() => act(() => api.setActiveAccount(a.id))} className={outline} style={{ border: "1px solid var(--line)" }}>
+            이 계정 쓰기
           </button>
         )}
-        {a.id !== "default" &&
+        {ok ? (
+          <>
+            {/* Antigravity switches and signs out inside its own screen */}
+            {a.provider !== "antigravity" && (
+              <>
+                <button disabled={leaving} onClick={() => onConnect(a)} className={outline} style={{ border: "1px solid var(--line)" }}>
+                  계정 바꾸기
+                </button>
+                <button disabled={leaving} onClick={() => void logout()} className={outline} style={{ border: "1px solid var(--line)" }}>
+                  {leaving ? "로그아웃 중…" : "로그아웃"}
+                </button>
+              </>
+            )}
+          </>
+        ) : (
+          <button onClick={() => onConnect(a)} className="min-h-9 shrink-0 rounded-full border-0 px-4 text-[13px] font-semibold whitespace-nowrap" style={{ background: "var(--amber)", color: "#2B2520" }}>
+            {PROVIDER_NAME[a.provider]} 연결
+          </button>
+        )}
+        {a.dir !== null &&
           (confirm ? (
             <button onClick={() => act(() => api.removeAccount(a.id))} onBlur={() => setConfirm(false)} className="min-h-8 shrink-0 rounded-full border-0 px-3 text-[12px] whitespace-nowrap" style={{ background: "var(--block)", color: "#fff" }}>
               지우기
@@ -106,132 +134,13 @@ function Row({ a, onLogin }: { a: Account; onLogin: (id: string) => void }) {
           이 계정은 쓴 만큼 요금이 청구되는 방식이라 AI가 일한 만큼 실제 비용이 나가요.
         </p>
       )}
+      {children && <div className="mt-2">{children}</div>}
     </motion.li>
   );
 }
 
-export function LoginTerminal({ id, onDone }: { id: string; onDone: () => void }) {
-  const accounts = useApp((s) => s.accounts);
-  const loadAccounts = useApp((s) => s.loadAccounts);
-  const [ptyId, setPtyId] = useState<number | null>(null);
-  const [url, setUrl] = useState<string | null>(null);
-  const [code, setCode] = useState("");
-  const [sent, setSent] = useState(false);
-  const acct = accounts.find((a) => a.id === id);
-  const name = acct ? `${PROVIDER_INFO[acct.provider].title} ${acct.name}` : "";
-  const needsCode = acct?.provider === "claude";
-
-  useEffect(() => {
-    let started: number | null = null;
-    let detach: (() => void) | undefined;
-    let text = "";
-    // start on a short delay: React (dev) runs effects twice, and two logins would race —
-    // the browser would open one session's page while the other waits for the code
-    const timer = setTimeout(() => {
-      api
-        .loginAccount(id, 92, 18)
-        .then(async (p) => {
-          started = p;
-          setPtyId(p);
-          // read the sign-in URL from the output so it can be reopened
-          detach = await pty.attach(p, (bytes) => {
-            text += new TextDecoder().decode(bytes);
-            const m = text.match(/https:\/\/\S+oauth\S+/);
-            if (m) setUrl(m[0]);
-          });
-        })
-        .catch((e) => useApp.getState().setError(e));
-    }, 150);
-    // the browser does the sign-in; watch for it to land
-    const t = setInterval(() => void loadAccounts(), 2500);
-    return () => {
-      clearTimeout(timer);
-      clearInterval(t);
-      detach?.();
-      if (started != null) void pty.kill(started);
-      // closed before the next check: pick up a sign-in that just landed
-      void loadAccounts();
-    };
-  }, [id, loadAccounts]);
-
-  const done = acct?.status.loggedIn;
-  useEffect(() => {
-    if (done) {
-      const t = setTimeout(onDone, 900);
-      return () => clearTimeout(t);
-    }
-  }, [done, onDone]);
-
-  const submit = () => {
-    const c = code.trim();
-    if (!c || ptyId == null) return;
-    void pty.write(ptyId, c).then(() => setTimeout(() => void pty.write(ptyId, "\r"), 150));
-    setSent(true);
-    setCode("");
-  };
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex flex-col gap-2.5">
-      <div className="flex items-center gap-2 text-[13px]">
-        {done ? (
-          <span className="font-semibold" style={{ color: "var(--work-ink)" }}>
-            ✓ {name} 로그인 완료
-          </span>
-        ) : (
-          <>
-            <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
-            <span className="flex-auto">{name} 로그인 중 · 브라우저에서 로그인해 주세요.</span>
-            {url && (
-              <button onClick={() => void openUrl(url)} className="text-[12px] whitespace-nowrap underline" style={{ color: "var(--navy)" }}>
-                브라우저 다시 열기
-              </button>
-            )}
-            <button onClick={onDone} className="text-[12px] text-ink-2 underline">
-              취소
-            </button>
-          </>
-        )}
-      </div>
-
-      {needsCode && !done && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit();
-          }}
-          className="flex flex-col gap-1.5 rounded-xl p-3"
-          style={{ background: "rgba(232,161,90,0.12)", border: "1px solid var(--amber)" }}
-        >
-          <label htmlFor={`code-${id}`} className="text-[12.5px] font-semibold">
-            ② 로그인하면 브라우저에 나오는 코드를 붙여넣으세요
-          </label>
-          <div className="flex gap-2">
-            <input
-              id={`code-${id}`}
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="코드 붙여넣기 (⌘V)"
-              autoFocus
-              className="min-h-10 min-w-0 flex-auto rounded-lg px-3 font-mono text-[13px] outline-none"
-              style={{ background: "var(--tile)", border: "1px solid var(--line)" }}
-            />
-            <button type="submit" disabled={!code.trim() || ptyId == null} className="min-h-10 shrink-0 rounded-lg border-0 px-4 text-[13px] font-semibold whitespace-nowrap disabled:opacity-50" style={{ background: "var(--amber)", color: "#2B2520" }}>
-              확인
-            </button>
-          </div>
-          {sent && <span className="text-[11.5px] text-ink-2">확인 중… 잠시 뒤 자동으로 닫혀요. 안 닫히면 아래 검은 화면의 메시지를 확인해 주세요.</span>}
-        </form>
-      )}
-
-      <div className="h-[160px] rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
-        {ptyId != null && <TerminalView ptyId={ptyId} fontSize={11.5} className="h-full w-full" />}
-      </div>
-    </motion.div>
-  );
-}
-
 /** Runs the vendor's official installer in a visible terminal; closes once the CLI answers. */
-function InstallTerminal({ name, onDone }: { name: Provider; onDone: () => void }) {
+function InstallTerminal({ name, onDone, onClose }: { name: Provider; onDone: () => void; onClose: () => void }) {
   const [ptyId, setPtyId] = useState<number | null>(null);
   const [done, setDone] = useState(false);
   useEffect(() => {
@@ -276,15 +185,18 @@ function InstallTerminal({ name, onDone }: { name: Provider; onDone: () => void 
           <>
             <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
             <span className="flex-auto">{PROVIDER_INFO[name].title} 프로그램을 설치하는 중…</span>
-            <button onClick={onDone} className="text-[12px] text-ink-2 underline">
+            <button onClick={onClose} className="text-[12px] text-ink-2 underline">
               닫기
             </button>
           </>
         )}
       </div>
-      <div className="h-[220px] rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
-        {ptyId != null && <TerminalView ptyId={ptyId} fontSize={12} className="h-full w-full" />}
-      </div>
+      <details className="text-[12px] text-ink-2">
+        <summary className="cursor-pointer select-none">설치 과정 보기</summary>
+        <div className="mt-2 h-[220px] rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
+          {ptyId != null && <TerminalView ptyId={ptyId} fontSize={12} className="h-full w-full" />}
+        </div>
+      </details>
     </motion.div>
   );
 }
@@ -363,7 +275,10 @@ function Subscriptions({ open }: { open: boolean }) {
 export function AccountSheet() {
   const { accountSheet, accounts, closeAccounts, loadAccounts, setError } = useApp(useShallow((s) => ({ accountSheet: s.accountSheet, accounts: s.accounts, closeAccounts: s.closeAccounts, loadAccounts: s.loadAccounts, setError: s.setError })));
   const [loginId, setLoginId] = useState<string | null>(null);
+  const [pressed, setPressed] = useState(0);
   const [installing, setInstalling] = useState<Provider | null>(null);
+  /** account to sign in to once its program is installed */
+  const [afterInstall, setAfterInstall] = useState<string | null>(null);
   const [clis, setClis] = useState<CliStatus[]>([]);
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -388,8 +303,28 @@ export function AccountSheet() {
       setLoginId(null);
       setAdding(null);
       setInstalling(null);
+      setAfterInstall(null);
     }
   }, [accountSheet]);
+
+  // one button: switch to the account, install its program if needed, then sign in
+  const connect = async (a: Account) => {
+    try {
+      if (!a.active) await api.setActiveAccount(a.id);
+      if (a.status.authMethod === "missing") {
+        setLoginId(null);
+        setAfterInstall(a.id);
+        setInstalling(a.provider);
+      } else {
+        setInstalling(null);
+        setPressed((n) => n + 1); // pressing again starts over
+        setLoginId(a.id);
+      }
+    } catch (e) {
+      setError(e);
+    }
+  };
+  const closeLogin = useCallback(() => setLoginId(null), []);
 
   const add = async () => {
     if (!name.trim() || !adding) return;
@@ -399,7 +334,8 @@ export function AccountSheet() {
       await loadAccounts();
       setName("");
       setAdding(null);
-      setLoginId(id);
+      const added = useApp.getState().accounts.find((a) => a.id === id);
+      if (added) await connect(added);
     } catch (e) {
       setError(e);
     }
@@ -459,7 +395,7 @@ export function AccountSheet() {
                   <div className="flex items-baseline gap-2 px-1">
                     <h3 className="m-0 text-[13.5px] font-semibold">{PROVIDER_INFO[prov].title}</h3>
                     <span className="flex-auto text-[11.5px] text-ink-2">{PROVIDER_INFO[prov].sub}</span>
-                    {!loginId && adding !== prov && (
+                    {adding !== prov && (
                       <button onClick={() => setAdding(prov)} className="text-[11.5px] text-ink-2 underline underline-offset-2">
                         + 계정 추가
                       </button>
@@ -471,7 +407,9 @@ export function AccountSheet() {
                       {accounts
                         .filter((a) => a.provider === prov)
                         .map((a) => (
-                          <Row key={a.id} a={a} onLogin={setLoginId} />
+                          <Row key={a.id} a={a} onConnect={(x) => void connect(x)}>
+                            {loginId === a.id && <ConnectPanel key={pressed} id={a.id} onClose={closeLogin} />}
+                          </Row>
                         ))}
                     </AnimatePresence>
                   </ul>
@@ -481,9 +419,19 @@ export function AccountSheet() {
 
             <AnimatePresence mode="wait">
               {installing ? (
-                <InstallTerminal key={`install-${installing}`} name={installing} onDone={() => setInstalling(null)} />
-              ) : loginId ? (
-                <LoginTerminal key={loginId} id={loginId} onDone={() => setLoginId(null)} />
+                <InstallTerminal
+                  key={`install-${installing}`}
+                  name={installing}
+                  onDone={() => {
+                    setInstalling(null);
+                    setLoginId(afterInstall);
+                    setAfterInstall(null);
+                  }}
+                  onClose={() => {
+                    setInstalling(null);
+                    setAfterInstall(null);
+                  }}
+                />
               ) : adding ? (
                 <motion.form
                   key="add"
@@ -505,7 +453,7 @@ export function AccountSheet() {
                     취소
                   </button>
                   <button type="submit" disabled={!name.trim()} className="min-h-9 shrink-0 rounded-lg border-0 px-4 text-[13px] font-semibold whitespace-nowrap disabled:opacity-50" style={{ background: "var(--amber)", color: "#2B2520" }}>
-                    추가하고 로그인
+                    추가하고 연결
                   </button>
                 </motion.form>
               ) : (
