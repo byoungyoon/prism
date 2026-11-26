@@ -29,8 +29,13 @@ export interface PlacedCritter {
   speed?: number;
   /** now and then it stretches, sways in its chair or glances aside (a cat at its desk) */
   fidget?: boolean;
-  /** the spot moved because the room's layout shifted (the cat stays at the same desk): jump with it instead of walking behind it */
+  /** the spot moved because the room's layout shifted (the cat stays at the same desk): jump with it instead of walking behind it.
+   *  Ignored while it is still on its way somewhere — then it just heads for the new spot */
   snap?: boolean;
+  /** held by a person: it is wherever x/y say, right now */
+  drag?: boolean;
+  /** a small sign over its head for a moment (it was just given work, or sent to rest) */
+  flag?: string;
   /** where it comes in from when it first appears: it starts there and walks to its spot */
   from?: { x: number; y: number };
   /** held by a person and struggling (wiggles in the hand) */
@@ -60,61 +65,106 @@ if (typeof document !== "undefined") {
   sync();
 }
 
-const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, still, width, leaving }: { item: PlacedCritter; layer?: string; size: number; speed: number; bubble: boolean; name: boolean; still: boolean; width?: number; leaving?: number }) {
+type Point = { x: number; y: number };
+/** one walk: from where, to where, when it set off and how long it takes */
+interface Leg {
+  from: Point;
+  to: Point;
+  at: number;
+  ms: number;
+  flip: boolean;
+  dir: WalkDir;
+}
+/** where a walking critter is right now (the CSS transition is linear, so this matches the screen) */
+const along = (l: Leg, now = Date.now()): Point => {
+  const t = l.ms > 0 ? Math.min(1, Math.max(0, (now - l.at) / l.ms)) : 1;
+  return { x: l.from.x + (l.to.x - l.from.x) * t, y: l.from.y + (l.to.y - l.from.y) * t };
+};
+/** the last walk of every critter on a layer that remembers (`remember`): a layer taken off the screen
+ *  and put back (another tab) shows each one where it had got to, not jumped to its spot */
+const memory = new Map<string, Leg>();
+
+const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, still, width, leaving, remember }: { item: PlacedCritter; layer?: string; size: number; speed: number; bubble: boolean; name: boolean; still: boolean; width?: number; leaving?: number; remember?: boolean }) {
   const o = useOverride(item.id, layer);
-  // a critter that comes in from somewhere starts there for one painted frame, then heads for its spot
-  const [entered, setEntered] = useState(!item.from || still);
+  // a critter that comes in from somewhere (the door, or where it was when the layer went away)
+  // starts there for one painted frame, then heads for its spot
+  const memoryKey = remember ? `${layer}:${item.id}` : "";
+  const [past] = useState(() => (memoryKey ? memory.get(memoryKey) : undefined));
+  const [from] = useState(() => (past ? along(past) : item.from));
+  const [entered, setEntered] = useState(!from || still);
+  /** the first walk after starting at `from` is always walked, never snapped */
+  const entering = useRef(!entered);
   useEffect(() => {
     if (entered) return;
     let b = 0;
     const a = requestAnimationFrame(() => (b = requestAnimationFrame(() => setEntered(true))));
     return () => (cancelAnimationFrame(a), cancelAnimationFrame(b));
   }, [entered]);
-  const start = !entered && item.from;
+  const start = !entered && from;
   const x = start ? start.x : (o?.x ?? item.x);
   const y = start ? start.y : (o?.y ?? item.y);
   const tracing = !!o?.draw;
   const pace = o?.speed ?? item.speed ?? speed;
   // The walk is worked out while rendering, so the new spot and the time to get there reach the
   // DOM together. (Set from an effect, the transform landed one paint before the duration: the
-  // cat jumped instead of walking.) `walk.to` is the spot it is heading for; `walk.until` when it
-  // arrives. Re-rendering with the same spot changes nothing (also under StrictMode's double render).
-  const walk = useRef<{ to: { x: number; y: number } | null; ms: number; flip: boolean; dir: WalkDir; until: number }>({ to: null, ms: 0, flip: false, dir: "side", until: 0 });
-  const w = walk.current;
-  if (!w.to || w.to.x !== x || w.to.y !== y) {
-    const prev = w.to;
-    w.to = { x, y };
-    const dx = prev ? x - prev.x : 0;
-    const dist = prev ? Math.hypot(dx, y - prev.y) : 0;
-    if (!prev || still || dist < 1 || item.snap) {
-      w.ms = 0;
+  // cat jumped instead of walking.) The leg is the walk it is on; re-rendering with the same spot
+  // changes nothing (also under StrictMode's double render). A new spot while still on the way
+  // starts from where it has got to, so a small shift of the room never makes it dash the rest.
+  const leg = useRef<Leg | null>(null);
+  const prev = leg.current;
+  if (!prev || prev.to.x !== x || prev.to.y !== y) {
+    const to = { x, y };
+    const now = Date.now();
+    const here = prev ? along(prev, now) : to;
+    const onTheWay = !!prev && now < prev.at + prev.ms;
+    const dx = x - here.x;
+    const dy = y - here.y;
+    const dist = Math.hypot(dx, dy);
+    const jump = item.drag || (item.snap && !onTheWay && !entering.current);
+    if (prev) entering.current = false;
+    const next: Leg = { from: here, to, at: now, ms: 0, flip: prev?.flip ?? past?.flip ?? false, dir: prev?.dir ?? past?.dir ?? "side" };
+    if (!prev || still || dist < 1 || jump) {
+      next.from = to;
     } else if (tracing) {
       // traced frame by frame: no transition, just face the way the pen goes
-      w.ms = 0;
-      if (Math.abs(dx) > 0.6) w.flip = dx < 0;
+      next.from = to;
+      if (Math.abs(dx) > 0.6) next.flip = dx < 0;
     } else {
       // a time in proportion to the distance, facing the way it goes: mostly down = toward you,
       // mostly up = away, otherwise sideways
-      w.ms = Math.min(12000, Math.max(200, (dist / pace) * 1000));
-      if (Math.abs(dx) > 2) w.flip = dx < 0;
-      const dy = y - prev.y;
-      w.dir = Math.abs(dy) > Math.abs(dx) * 1.3 ? (dy > 0 ? "front" : "back") : "side";
-      w.until = Date.now() + w.ms;
+      next.ms = Math.min(12000, Math.max(200, (dist / pace) * 1000));
+      // a last little correction keeps the way it was facing
+      if (!onTheWay || dist > 24) {
+        if (Math.abs(dx) > 2) next.flip = dx < 0;
+        next.dir = Math.abs(dy) > Math.abs(dx) * 1.3 ? (dy > 0 ? "front" : "back") : "side";
+      }
     }
+    leg.current = next;
   }
+  const w = leg.current!;
+  useEffect(() => {
+    // before it has set off from `from`, the remembered walk stays as it was
+    if (memoryKey && entered && !leaving) memory.set(memoryKey, w);
+  }, [memoryKey, entered, leaving, w]);
+  useEffect(() => {
+    if (entered) entering.current = false;
+  }, [entered]);
   // walking pose while on the way, its own pose again once there
   const [, arrived] = useState(0);
-  const left = w.until - Date.now();
+  const until = w.at + w.ms;
+  const left = until - Date.now();
   const moving = left > 0 && !tracing && !still;
   useEffect(() => {
     if (left <= 0) return;
     const t = setTimeout(() => arrived((n) => n + 1), left + 20);
     return () => clearTimeout(t);
-  }, [w.until, left > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [until, left > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const real = item.state ?? (item.agent ? critterState(item.agent, item.task) : (item.look?.state ?? "idle"));
   const state: CritterState = moving ? "walk" : (o?.state ?? real);
   const say = o?.say ?? item.say ?? (item.agent ? critterLine(item.agent, item.task) : "");
+  // the sign of a change takes the bubble's place for its moment
+  const flag = leaving ? "" : item.flag;
   const label = (item.agent ? catName(item.agent) : item.look?.name) ?? "";
   const h = hash(item.id);
   // fidgets come every 9–16 s, each cat on its own beat
@@ -126,9 +176,9 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
       style={{ transform: `translate3d(${x}px, ${y}px, 0)`, transitionDuration: `${moving ? w.ms : 0}ms`, animationDuration: leaving ? `${leaving}ms` : undefined }}
     >
       <div className={`cr-anchor${fidget ? " cr-fidget" : ""}`} style={fidget as CSSProperties | undefined}>
-        {bubble && say && (
-          <span className="cr-say" title={say} style={{ marginBottom: -size * 0.1, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
-            {say}
+        {bubble && (flag || say) && (
+          <span key={flag ? "flag" : "say"} className={`cr-say${flag ? " cr-flag" : ""}`} title={flag || say} style={{ marginBottom: -size * 0.1, transform: width ? `translateX(${Math.max(0, 78 - x) - Math.max(0, x + 78 - width)}px)` : undefined }}>
+            {flag || say}
           </span>
         )}
         <span className={`cr-in${item.struggle ? " cr-struggle" : ""}`}>
@@ -145,9 +195,10 @@ const leaveMs = (from: { x: number; y: number }, door: { x: number; y: number } 
   door ? Math.min(4000, Math.max(700, (Math.hypot(door.x - from.x, door.y - from.y) / pace) * 1000)) + 300 : 600;
 
 /** `<CritterLayer items={[{ id, agent, x, y }]} />` inside a `position: relative` box. */
+/** `remember`: keep every critter's walk, so a layer put back on the screen goes on from there (needs `id`) */
 /** `width`: the layer's width, so bubbles near its edges shift inward instead of being cut off */
 /** `door`: where a critter that leaves (clocks out) walks to while it fades; without one it fades in place */
-export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true, names = false, className, width, door }: { id?: string; items: PlacedCritter[]; size?: number; speed?: number; bubbles?: boolean; names?: boolean; className?: string; width?: number; door?: { x: number; y: number } }) {
+export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true, names = false, className, width, door, remember }: { id?: string; items: PlacedCritter[]; size?: number; speed?: number; bubbles?: boolean; names?: boolean; className?: string; width?: number; door?: { x: number; y: number }; remember?: boolean }) {
   const still = useReducedMotion();
   // critters that just left: kept a moment, heading for the door. Worked out while rendering, so a
   // leaving critter never drops out of the list for a frame (it would come back at the door).
@@ -159,9 +210,17 @@ export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true,
     for (const [id, it] of prev.current) {
       if (now.has(id) || gone.current.has(id)) continue;
       const ms = leaveMs(it, door, speed);
-      gone.current.set(id, { item: { ...it, ...(door ? { x: door.x, y: door.y } : {}), say: "", fidget: false, speed: undefined }, ms, until: Date.now() + ms });
+      gone.current.set(id, { item: { ...it, ...(door ? { x: door.x, y: door.y } : {}), snap: false, drag: false, flag: undefined, say: "", fidget: false, speed: undefined }, ms, until: Date.now() + ms });
     }
   }
+  // one that left comes in afresh next time (kept in an effect: a render may be thrown away)
+  const idsKey = JSON.stringify(items.map((it) => it.id));
+  const had = useRef<string[]>([]);
+  useEffect(() => {
+    const ids: string[] = JSON.parse(idsKey);
+    if (remember) for (const k of had.current) if (!ids.includes(k)) memory.delete(`${id}:${k}`);
+    had.current = ids;
+  }, [idsKey, remember, id]);
   prev.current = new Map(items.map((it) => [it.id, it]));
   const [, tick] = useState(0);
   const leavers = [...gone.current.values()];
@@ -185,10 +244,10 @@ export function CritterLayer({ id, items, size = 32, speed = 70, bubbles = true,
       {/* one list in a steady order (the order each critter first came in): a critter whose DOM
           node moved would lose its walk (a moved node starts over without a transition) */}
       {[
-        ...items.map((it) => ({ id: it.id, el: <Walker key={it.id} item={it} layer={id} size={size} speed={speed} bubble={bubbles} name={names} still={still} width={width} /> })),
+        ...items.map((it) => ({ id: it.id, el: <Walker key={it.id} item={it} layer={id} size={size} speed={speed} bubble={bubbles} name={names} still={still} width={width} remember={remember} /> })),
         ...leavers
           .filter((g) => !shown.has(g.item.id))
-          .map((g) => ({ id: g.item.id, el: <Walker key={g.item.id} item={g.item} layer={id} size={size} speed={speed} bubble={false} name={names} still={still} width={width} leaving={g.ms} /> })),
+          .map((g) => ({ id: g.item.id, el: <Walker key={g.item.id} item={g.item} layer={id} size={size} speed={speed} bubble={false} name={names} still={still} width={width} remember={remember} leaving={g.ms} /> })),
       ]
         .sort((a, b) => seq(a.id) - seq(b.id))
         .map((x) => x.el)}
