@@ -1,9 +1,9 @@
-// 웹사이트 칸: 자식 웹뷰를 칸 자리에 겹쳐 띄운다. 칸이 움직이면 web_bounds로 따라가고,
-// 끌기·설정 창·다른 화면으로 가면 web_hide로 숨긴다.
+// 웹사이트 칸: 자식 웹뷰를 칸 자리에 겹쳐 띄운다. 칸이 움직이면 web_bounds로 따라가고(스크롤로 잘리면 보이는 만큼만),
+// 끌기·팝업·화면 밖·설정 창·다른 화면이면 web_hide로 숨긴다.
 import { useEffect, useRef, useState } from "react";
 import { dashboardApi } from "../../../lib/api";
-import { useApp } from "../../../store";
 import { errText, useDash } from "../state.ts";
+import { clipsOf, isCovered, visibleRect } from "../webCover.ts";
 import { specOf } from "./specs.ts";
 import type { BodyProps, ConnectorUI, FormProps } from "./types";
 
@@ -44,64 +44,74 @@ function WebForm({ widget, onConfig }: FormProps) {
   );
 }
 
+type Hold = "drag" | "cover" | "offscreen" | null;
+
+const HOLD_TEXT = {
+  drag: "움직이는 중이라 잠시 가려 뒀어요",
+  cover: "창이 열려 있는 동안 잠시 가려 뒀어요",
+  offscreen: "칸이 다 보이면 웹 화면이 다시 나와요",
+};
+
 function WebBody({ widget }: BodyProps) {
   const slot = useRef<HTMLDivElement>(null);
-  const dragging = useDash((s) => s.dragging);
-  const overlay = useApp((s) => s.accountSheet != null || s.shopOpen);
-  const holding = dragging || overlay;
+  const [hold, setHold] = useState<Hold>(null);
   const [err, setErr] = useState<string | null>(null);
-  const { id, x, y, w, h } = widget;
+  const { id } = widget;
   const url = widget.config.url ?? "";
-  const rect = () => {
-    const r = slot.current?.getBoundingClientRect();
-    return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null;
-  };
 
-  // 주소가 정해지면 웹뷰를 열고, 칸을 떠나면 숨긴다
+  // 웹뷰를 열고, 매 화면마다 자리를 확인해서 바뀐 때만 알려 준다.
+  // 스크롤·크기 바꾸기·화면 전환 효과·팝업을 한곳에서 따라간다. 칸을 떠나면 숨긴다.
   useEffect(() => {
-    const r = rect();
-    if (!r || !url) return;
-    dashboardApi.webOpen(id, url, r.x, r.y, r.w, r.h).then(() => setErr(null)).catch((e) => setErr(errText(e)));
+    if (!url) return;
+    let frame = 0;
+    let opened = false;
+    /** 마지막으로 보낸 상태: 보이는 자리, "hidden", 아직 안 보냄(null) */
+    let sent: string | null = null;
+    let alive = true;
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      const el = slot.current;
+      if (!el) return;
+      const box = el.getBoundingClientRect();
+      const rect = visibleRect(box, clipsOf(el));
+      const reason: Hold = useDash.getState().dragging ? "drag" : isCovered(box) ? "cover" : rect ? null : "offscreen";
+      setHold(reason);
+      const next = reason || !rect ? "hidden" : [rect.x, rect.y, rect.w, rect.h].map(Math.round).join(",");
+      if (next === sent) return;
+      const wasShown = sent !== null && sent !== "hidden";
+      sent = next;
+      if (next === "hidden") {
+        if (opened) void dashboardApi.webHide(id).catch(() => {});
+        return;
+      }
+      const { x, y, w, h } = rect!;
+      // 가려진 동안에는 열지 않는다 (열면 바로 위에 떠 버린다)
+      if (!opened) {
+        opened = true;
+        dashboardApi
+          .webOpen(id, url, x, y, w, h)
+          .then(() => alive && setErr(null))
+          .catch((e) => alive && setErr(errText(e)));
+        return;
+      }
+      // 명령은 보낸 순서대로 처리되므로, 뒤이은 숨기기가 보이기에 덮이지 않게 바로 이어 보낸다
+      void dashboardApi.webBounds(id, x, y, w, h).catch(() => {});
+      if (!wasShown) void dashboardApi.webShow(id).catch(() => {});
+    };
+    tick();
     return () => {
+      alive = false;
+      cancelAnimationFrame(frame);
       void dashboardApi.webHide(id).catch(() => {});
     };
   }, [id, url]);
-
-  // 칸이 움직이거나 가려질 때: 가려야 하면 숨기고, 아니면 자리를 맞추고 보여 준다
-  useEffect(() => {
-    if (holding) {
-      void dashboardApi.webHide(id).catch(() => {});
-      return;
-    }
-    const r = rect();
-    if (!r) return;
-    void dashboardApi.webBounds(id, r.x, r.y, r.w, r.h).then(() => dashboardApi.webShow(id)).catch(() => {});
-  }, [id, holding, x, y, w, h]);
-
-  // 스크롤·창 크기·칸 크기가 바뀌면 자리를 다시 맞춘다
-  useEffect(() => {
-    const follow = () => {
-      if (holding) return;
-      const r = rect();
-      if (r) void dashboardApi.webBounds(id, r.x, r.y, r.w, r.h).catch(() => {});
-    };
-    window.addEventListener("scroll", follow, true);
-    window.addEventListener("resize", follow);
-    const ro = new ResizeObserver(follow);
-    if (slot.current) ro.observe(slot.current);
-    return () => {
-      window.removeEventListener("scroll", follow, true);
-      window.removeEventListener("resize", follow);
-      ro.disconnect();
-    };
-  }, [id, holding]);
 
   return (
     <div className="dash-web">
       {/* 웹뷰가 이 자리 위에 떠 있다. 아래 글자는 웹뷰가 없을 때만 보인다 */}
       <div ref={slot} className="dash-web-slot" aria-label={`${host(url)} 웹 화면`}>
         <span className="dash-web-ph">🌐 {host(url)}</span>
-        {holding && <span className="dash-web-ph">움직이는 중이라 잠시 가려 뒀어요</span>}
+        {hold && <span className="dash-web-ph">{HOLD_TEXT[hold]}</span>}
         {err && <span role="alert" className="dash-err">웹 화면을 열지 못했어요: {err}</span>}
       </div>
     </div>
