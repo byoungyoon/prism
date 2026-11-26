@@ -451,6 +451,8 @@ export const api = {
   setActiveAccount: (id: string) => call<void>("account_set_active", { id }),
   loginAccount: (id: string, cols: number, rows: number) => call<number>("account_login", { id, cols, rows }),
   logoutAccount: (id: string) => call<void>("account_logout", { id }),
+  /** exit code of a sign-in program, null while it still runs */
+  loginExit: (ptyId: number) => call<number | null>("account_login_exit", { ptyId }),
 
   usage: () => call<Usage[]>("usage_get"),
   refreshUsage: () => call<void>("usage_refresh"),

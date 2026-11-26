@@ -2,6 +2,7 @@
 // line says which team), and orders go out from one box. Every order names its recipients with
 // "@팀이름" — there is no default and no send-to-all. Attachments are copied to each recipient.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { OlderButton, useRecent } from "../lib/recent";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AnimatePresence, motion } from "motion/react";
@@ -100,6 +101,9 @@ export function UnifiedChat() {
     if ("card" in it) return view === "chat" || batchHasReport(it.card);
     return (view === "report") === (it.m.kind === "report");
   });
+
+  // only the newest RECENT_STEP are drawn (older on request)
+  const recent = useRecent(shownItems, scrollRef, view);
 
   // 팀별 합치기 대기 카드(보고가 채팅에 있는 것만)와, 묶음 카드가 들어갈 마지막 보고 자리
   const pendingOf = (pid: string, team: { tasks: Task[] }) =>
@@ -301,8 +305,9 @@ export function UnifiedChat() {
             <b className="font-semibold">@팀이름</b>으로 받을 팀을 꼭 지정해 주세요.
           </p>
         )}
+        <OlderButton hidden={recent.hidden} onClick={recent.more} />
         <AnimatePresence initial={false}>
-          {shownItems.map((it) => {
+          {recent.visible.map((it) => {
             if ("card" in it)
               return (
                 <motion.div key={it.key} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={spring} className="flex w-full max-w-[94%] flex-col self-start">

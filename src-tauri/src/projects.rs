@@ -816,18 +816,18 @@ pub fn project_set_preset(projects: State<'_, Projects>, id: String, preset: Str
 }
 
 #[tauri::command]
-pub fn worktrees_list(path: String) -> Vec<sys::WorktreeInfo> {
-    sys::worktrees(&path)
+pub async fn worktrees_list(path: String) -> Vec<sys::WorktreeInfo> {
+    tauri::async_runtime::spawn_blocking(move || sys::worktrees(&path)).await.unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn git_changes(cwd: String) -> Vec<sys::Change> {
-    sys::changes(&cwd)
+pub async fn git_changes(cwd: String) -> Vec<sys::Change> {
+    tauri::async_runtime::spawn_blocking(move || sys::changes(&cwd)).await.unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn git_diff(cwd: String, path: String) -> String {
-    sys::diff(&cwd, &path)
+pub async fn git_diff(cwd: String, path: String) -> String {
+    tauri::async_runtime::spawn_blocking(move || sys::diff(&cwd, &path)).await.unwrap_or_default()
 }
 
 #[cfg(test)]

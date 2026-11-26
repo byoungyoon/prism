@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { api, type CliStatus, type Provider } from "../lib/api";
 import { useApp } from "../store";
 import { Installer } from "./SetupSheet";
-import { LoginTerminal } from "./AccountSheet";
+import { ConnectPanel } from "./ConnectPanel";
 import { isRemote } from "../lib/transport";
 import { useShallow } from "zustand/react/shallow";
 
@@ -45,6 +45,7 @@ export function Onboarding() {
   const [tools, setTools] = useState<CliStatus[]>([]);
   const [attempt, setAttempt] = useState(0);
   const [loggingIn, setLoggingIn] = useState<string | null>(null);
+  const closeLogin = useCallback(() => setLoggingIn(null), []);
   const [idea, setIdea] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,8 +101,12 @@ export function Onboarding() {
       setStep("login");
     }
     if (step === "login" && loginTargets.length && !notLoggedIn.length) {
-      setLoggingIn(null);
-      setStep("start");
+      // leave "로그인됨" on screen long enough to be read
+      const t = setTimeout(() => {
+        setLoggingIn(null);
+        setStep("start");
+      }, 1800);
+      return () => clearTimeout(t);
     }
   }, [open, step, tools.length, missing.length, loginTargets.length, notLoggedIn.length, loadAccounts]);
 
@@ -271,8 +276,8 @@ export function Onboarding() {
                 {step === "login" && (
                   <>
                     <div className="flex flex-col gap-1.5">
-                      <h1 className="m-0 text-[24px] font-semibold">구독 계정으로 로그인해 주세요</h1>
-                      <p className="m-0 text-[13.5px] leading-relaxed text-ink-2">평소 쓰는 계정으로 로그인하면 돼요. 브라우저가 열려요.</p>
+                      <h1 className="m-0 text-[24px] font-semibold">구독 계정을 연결해 주세요</h1>
+                      <p className="m-0 text-[13.5px] leading-relaxed text-ink-2">연결을 누르면 브라우저가 열려요. 평소 쓰는 계정으로 로그인만 하면 끝이에요.</p>
                     </div>
                     <div className="flex flex-col gap-2">
                       {loginTargets.map((a) => {
@@ -284,7 +289,7 @@ export function Onboarding() {
                             </span>
                             <span className="flex flex-auto flex-col">
                               <span className="text-[14px] font-semibold">{sub.title}</span>
-                              <span className="text-[12px] text-ink-2">{a.status.loggedIn ? (a.status.email ?? "로그인됨") : "아직 로그인 안 됨"}</span>
+                              <span className="text-[12px] text-ink-2">{a.status.loggedIn ? `로그인됨: ${sub.title}${a.status.email ? ` · ${a.status.email}` : ""}` : "로그인 안 됨"}</span>
                             </span>
                             {a.status.loggedIn ? (
                               <span className="text-[13px] font-semibold" style={{ color: "var(--work-ink)" }}>
@@ -296,7 +301,7 @@ export function Onboarding() {
                                 className="min-h-10 rounded-full border-0 px-5 text-[13.5px] font-semibold"
                                 style={{ background: "var(--amber)", color: "#2B2520" }}
                               >
-                                {sub.title}로 로그인
+                                {sub.title} 연결
                               </button>
                             )}
                           </div>
@@ -304,7 +309,7 @@ export function Onboarding() {
                       })}
                       {!loginTargets.length && <span className="text-[13px] text-ink-2">계정 확인 중…</span>}
                     </div>
-                    {loggingIn && <LoginTerminal key={loggingIn} id={loggingIn} onDone={() => setLoggingIn(null)} />}
+                    {loggingIn && <ConnectPanel key={loggingIn} id={loggingIn} onClose={closeLogin} />}
                   </>
                 )}
 

@@ -3,6 +3,7 @@ mod alerts;
 mod batch;
 mod clis;
 mod dashboard;
+mod engines;
 mod launch;
 mod projects;
 mod prompts;
@@ -185,6 +186,7 @@ pub fn run() {
             accounts::account_set_active,
             accounts::account_login,
             accounts::account_logout,
+            accounts::account_login_exit,
             projects::projects_list,
             projects::workspace_root,
             projects::workspace_set_root,
@@ -285,6 +287,7 @@ pub fn run() {
                 if !PREPARED.swap(true, Ordering::SeqCst) {
                     put_teams_away(app, "quit");
                 }
+                engines::engines().stop_all();
             }
             _ => {}
         });

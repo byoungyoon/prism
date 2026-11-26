@@ -6,13 +6,13 @@
 use std::collections::HashMap;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
-use crate::pty::{Pty, SpawnSpec};
+use crate::pty::{ExitHook, Pty, SpawnSpec};
 use crate::sys;
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -81,6 +81,8 @@ pub struct Accounts {
     file: Option<PathBuf>,
     base: PathBuf,
     state: Mutex<File>,
+    /// sign-in programs by PTY id; the slot gets the exit code when one ends
+    logins: Mutex<HashMap<u32, Arc<Mutex<Option<u32>>>>>,
 }
 
 impl Accounts {
@@ -103,7 +105,7 @@ impl Accounts {
         if let Some(old) = state.active.take() {
             state.actives.entry("claude".into()).or_insert(old);
         }
-        Self { file, base: data.join("claude-profiles"), state: Mutex::new(state) }
+        Self { file, base: data.join("claude-profiles"), state: Mutex::new(state), logins: Mutex::default() }
     }
 
     fn save(&self, state: &File) {
@@ -279,7 +281,8 @@ pub fn account_set_active(accts: State<'_, Accounts>, id: String) -> Result<(), 
     Ok(())
 }
 
-/// Runs `claude auth login` in a PTY the UI shows; the browser handles the actual sign-in.
+/// Runs the CLI's sign-in in a PTY (the UI doesn't show it, except Antigravity's). The CLI opens
+/// the browser and receives the result itself on a localhost address, so there is no code to copy.
 #[tauri::command]
 pub fn account_login(accts: State<'_, Accounts>, pty: State<'_, Pty>, id: String, cols: u16, rows: u16) -> Result<u32, String> {
     let a = accts.get(&id).ok_or("없는 계정이에요")?;
@@ -292,7 +295,18 @@ pub fn account_login(accts: State<'_, Accounts>, pty: State<'_, Pty>, id: String
         "antigravity" => vec![], // the TUI asks to sign in with Google on first run
         _ => vec!["auth".into(), "login".into(), "--claudeai".into()],
     };
-    pty.spawn(SpawnSpec { program: Some(program), args, cwd, env, cols, rows }, None)
+    let exit = Arc::new(Mutex::new(None));
+    let slot = exit.clone();
+    let hook: ExitHook = Box::new(move |code| *slot.lock().unwrap() = Some(code.unwrap_or(1)));
+    let pty_id = pty.spawn(SpawnSpec { program: Some(program), args, cwd, env, cols, rows }, Some(hook))?;
+    accts.logins.lock().unwrap().insert(pty_id, exit);
+    Ok(pty_id)
+}
+
+/// Exit code of a sign-in started by `account_login`; None while it still runs.
+#[tauri::command]
+pub fn account_login_exit(accts: State<'_, Accounts>, pty_id: u32) -> Option<u32> {
+    accts.logins.lock().unwrap().get(&pty_id).and_then(|slot| *slot.lock().unwrap())
 }
 
 #[tauri::command]
@@ -304,7 +318,10 @@ pub async fn account_logout(app: AppHandle, id: String) -> Result<(), String> {
             "antigravity" => return Err("Antigravity는 앱 안에서 /logout 으로 로그아웃해요".to_string()),
             _ => &["auth", "logout"],
         };
-        cli(&a.provider, a.dir.as_deref()).args(args).output().map(|_| ()).map_err(|e| e.to_string())
+        match cli(&a.provider, a.dir.as_deref()).args(args).output() {
+            Ok(out) if out.status.success() => Ok(()),
+            _ => Err("로그아웃하지 못했어요. 잠시 뒤 다시 눌러 주세요".to_string()),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
