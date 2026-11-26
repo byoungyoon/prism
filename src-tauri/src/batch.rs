@@ -165,7 +165,7 @@ fn kill(pid: u32) {
     #[cfg(unix)]
     let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
     #[cfg(windows)]
-    let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).status();
+    crate::sys::kill_pid_tree(pid);
 }
 
 pub struct Batches {

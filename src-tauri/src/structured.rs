@@ -160,7 +160,7 @@ fn reap<T>(weak: &Weak<T>, child: impl Fn(&T) -> &Mutex<Child>) -> Option<i32> {
 /// Kill and reap on drop, so a dropped driver never leaves a zombie process behind.
 fn reap_on_drop(child: &mut Child) {
     if let Ok(None) = child.try_wait() {
-        let _ = child.kill();
+        let _ = sys::kill_tree(child);
         let _ = child.wait();
     }
 }
@@ -308,7 +308,7 @@ impl Driver for Claude {
 
     fn kill(&self) {
         self.stdin.lock().unwrap().take(); // EOF lets it finish cleanly
-        let _ = self.child.lock().unwrap().kill();
+        let _ = sys::kill_tree(&mut self.child.lock().unwrap());
     }
 
     fn cancel(&self) {
@@ -549,7 +549,7 @@ impl Driver for CodexHandle {
         self.0.killed.store(true, std::sync::atomic::Ordering::Relaxed);
         self.0.queue.lock().unwrap().clear();
         if let Some(c) = self.0.running.lock().unwrap().as_mut() {
-            let _ = c.kill();
+            let _ = sys::kill_tree(c);
         }
         (self.0.sink)(Event::Exit(Some(0)));
     }
@@ -856,7 +856,7 @@ impl Driver for Acp {
 
     fn kill(&self) {
         self.stdin.lock().unwrap().take();
-        let _ = self.child.lock().unwrap().kill();
+        let _ = sys::kill_tree(&mut self.child.lock().unwrap());
     }
 
     fn cancel(&self) {
@@ -1023,6 +1023,7 @@ mod token_tests {
         assert!(claude_tokens(&json!({ "type": "result", "is_error": true }), "x", &mut fresh()).is_empty());
     }
 
+    #[cfg(unix)] // the stand-in CLI is a shell script
     /// A fake `codex`: `exec resume …` fails the way a lost conversation does (as a JSON event, or
     /// only on stderr), a plain `exec …` starts thread "new-thread" and echoes its message back.
     fn fake_codex(name: &str, lost_on_stderr: bool) -> (Arc<Codex>, mpsc::Receiver<String>) {
@@ -1065,6 +1066,7 @@ mod token_tests {
         (codex, rx)
     }
 
+    #[cfg(unix)] // the stand-in CLI is a shell script
     fn until_end(rx: &mpsc::Receiver<String>) -> Vec<String> {
         let mut seen = vec![];
         while let Ok(e) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
@@ -1077,6 +1079,7 @@ mod token_tests {
         seen
     }
 
+    #[cfg(unix)] // the stand-in CLI is a shell script
     #[test]
     fn a_lost_codex_conversation_starts_a_new_one_without_an_error() {
         for (name, on_stderr) in [("event", false), ("stderr", true)] {
@@ -1091,6 +1094,7 @@ mod token_tests {
         }
     }
 
+    #[cfg(unix)] // the stand-in CLI is a shell script
     #[test]
     fn a_lost_conversation_only_restarts_once() {
         // a fresh conversation that fails the same way is a real error, not a loop

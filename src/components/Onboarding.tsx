@@ -114,7 +114,13 @@ export function Onboarding() {
   // while signing in, keep checking
   useEffect(() => {
     if (step !== "login") return;
-    const t = setInterval(() => void loadAccounts(), 3000);
+    // one check at a time: each starts the CLIs, which can take longer than the interval (Windows)
+    let checking = false;
+    const t = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      void loadAccounts().finally(() => (checking = false));
+    }, 3000);
     return () => clearInterval(t);
   }, [step, loadAccounts]);
 

@@ -164,12 +164,88 @@ pub fn command(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(exe);
     c.args(lead).env("PATH", search_path());
+    hide_console(&mut c);
+    c
+}
+
+/// Windows: a console program started from the app would otherwise open its own black window.
+pub fn hide_console(c: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    c
+    #[cfg(not(windows))]
+    let _ = c;
+}
+
+/// Windows: ends process `pid` and everything it started. Ending only the process leaves its
+/// children running, and for an npm CLI (`cmd /c codex.cmd` → node → codex) the one process is
+/// just the `cmd` in front.
+#[cfg(windows)]
+pub fn kill_pid_tree(pid: u32) {
+    let _ = command("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).output();
+}
+
+/// `Child::kill`, taking the whole process tree with it on Windows (see `kill_pid_tree`).
+pub fn kill_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+    // only while it runs: the tree is found through the live parent
+    #[cfg(windows)]
+    if matches!(child.try_wait(), Ok(None)) {
+        kill_pid_tree(child.id());
+        // taskkill ended it already: `kill` would only report that it's gone
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return Ok(());
+        }
+    }
+    child.kill()
+}
+
+// ── folders ───────────────────────────────────────────
+
+/// `\\?\C:\x` → `C:\x`, `\\?\UNC\server\share` → `\\server\share`; anything else as it is.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn without_verbatim(path: &str) -> String {
+    let Some(rest) = path.strip_prefix(r"\\?\") else { return path.to_string() };
+    if let Some(share) = rest.strip_prefix(r"UNC\") {
+        return format!(r"\\{share}");
+    }
+    if rest.as_bytes().get(1) == Some(&b':') { rest.to_string() } else { path.to_string() }
+}
+
+/// Windows: the ordinary spelling of a folder. `git worktree add` fails under a `\\?\` one.
+pub fn plain_path(path: &str) -> String {
+    #[cfg(windows)]
+    return without_verbatim(path);
+    #[cfg(not(windows))]
+    path.to_string()
+}
+
+/// `canonicalize` in the ordinary spelling (on Windows it answers with `\\?\`); `dir` if it fails.
+pub fn real_dir(dir: PathBuf) -> PathBuf {
+    let Ok(real) = std::fs::canonicalize(&dir) else { return dir };
+    #[cfg(windows)]
+    return PathBuf::from(plain_path(&real.to_string_lossy()));
+    #[cfg(not(windows))]
+    real
+}
+
+/// Whether two spellings name one folder. Windows: git answers `C:/a/b` for the app's `C:\a\b`
+/// (and long names for short `NAME~1` ones).
+pub fn same_dir(a: &str, b: &str) -> bool {
+    #[cfg(windows)]
+    return Path::new(a) == Path::new(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y);
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
+/// Whether `path` is inside a project's `.prism/worktrees` (either slash on Windows).
+pub fn is_work_copy(path: &str) -> bool {
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
+    path.contains("/.prism/worktrees/")
 }
 
 // ── git ───────────────────────────────────────────────
@@ -266,13 +342,34 @@ pub fn share_node_modules(repo: &str, work: &Path) {
     let _ = std::os::unix::fs::symlink(&src, &dst);
 }
 
-/// Disk space used by `path` in bytes (`du`); 0 when it is missing.
+/// The sizes of the files under `dir` added up, without following links.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn file_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries
+        .flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => file_bytes(&e.path()),
+            // on Windows the size comes with the listing: no extra open per file
+            Ok(t) if t.is_file() => e.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Disk space used by `path` in bytes (`du`; Windows has none, so the files are added up there);
+/// 0 when it is missing.
 pub fn disk_bytes(path: &str) -> u64 {
     if !Path::new(path).exists() {
         return 0;
     }
-    let Ok(out) = command("du").args(["-sk", path]).output() else { return 0 };
-    String::from_utf8_lossy(&out.stdout).split_whitespace().next().and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(0) * 1024
+    #[cfg(windows)]
+    return file_bytes(Path::new(path));
+    #[cfg(not(windows))]
+    {
+        let Ok(out) = command("du").args(["-sk", path]).output() else { return 0 };
+        String::from_utf8_lossy(&out.stdout).split_whitespace().next().and_then(|kb| kb.parse::<u64>().ok()).unwrap_or(0) * 1024
+    }
 }
 
 /// Makes `path` a git repo with at least one commit (agents branch their worktrees from HEAD).
@@ -362,6 +459,15 @@ fn claude_json(config_dir: Option<&str>) -> Option<PathBuf> {
     }
 }
 
+/// How Claude Code names a folder under `projects` in `.claude.json`. On Windows that is with `/`
+/// ("D:/work/My Proj").
+fn trust_key(dir: &str) -> String {
+    let key = real_dir(PathBuf::from(dir)).to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let key = key.replace('\\', "/");
+    key
+}
+
 /// Marks `dir` as trusted for Claude Code so agents don't stall on the folder-trust prompt.
 /// Agent worktrees live under the project dir, so trusting the project root covers them.
 /// Only touches the one project entry; everything else in the file is preserved.
@@ -369,7 +475,7 @@ pub fn ensure_claude_trust(dir: &str, config_dir: Option<&str>) {
     let Some(file) = claude_json(config_dir) else { return };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
     let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&text) else { return };
-    let key = std::fs::canonicalize(dir).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.to_string());
+    let key = trust_key(dir);
     let Some(projects) = root.get_mut("projects").and_then(|p| p.as_object_mut()) else { return };
     let entry = projects.entry(key).or_insert_with(|| serde_json::json!({}));
     if entry.get("hasTrustDialogAccepted").and_then(|v| v.as_bool()) == Some(true) {
@@ -399,6 +505,74 @@ mod tests {
         let found = find_windows(dirs(), "codex", has(&["a/codex.exe", "a/codex.cmd"])).unwrap();
         assert!(found.0.ends_with("codex.exe") && found.1.is_empty());
         assert!(find_windows(dirs(), "codex", has(&["a/claude.exe"])).is_none());
+    }
+
+    /// The grandchild holds the output pipe, so the pipe only ends once it is gone too.
+    #[cfg(windows)]
+    #[test]
+    fn stopping_a_cmd_program_stops_what_it_started() {
+        use std::io::Read;
+        let mut child = command("cmd").args(["/d", "/c", "ping -n 60 127.0.0.1"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let mut first = [0u8; 1];
+        out.read_exact(&mut first).unwrap(); // ping is up
+        let began = std::time::Instant::now();
+        kill_tree(&mut child).unwrap();
+        out.read_to_end(&mut vec![]).unwrap();
+        child.wait().unwrap();
+        assert!(began.elapsed() < std::time::Duration::from_secs(15), "ping kept running: {:?}", began.elapsed());
+    }
+
+    /// Windows has no `du`, and a stock Git install doesn't put its copy on PATH.
+    #[cfg(windows)]
+    #[test]
+    fn folder_size_counts_the_files() {
+        let dir = std::env::temp_dir().join(format!("prism-size-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100_000]).unwrap();
+        std::fs::write(dir.join("sub").join("b.bin"), vec![0u8; 50_000]).unwrap();
+        let size = disk_bytes(&dir.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(size >= 150_000, "size was {size}");
+    }
+
+    #[test]
+    fn only_the_verbatim_prefix_of_drives_and_shares_is_dropped() {
+        assert_eq!(without_verbatim(r"\\?\C:\work\a"), r"C:\work\a");
+        assert_eq!(without_verbatim(r"\\?\UNC\nas\share\a"), r"\\nas\share\a");
+        assert_eq!(without_verbatim(r"\\?\Volume{1234}\a"), r"\\?\Volume{1234}\a");
+        assert_eq!(without_verbatim(r"C:\work\a"), r"C:\work\a");
+    }
+
+    #[test]
+    fn files_in_subfolders_are_added_up() {
+        let dir = std::env::temp_dir().join(format!("prism-bytes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.join("sub").join("b.bin"), vec![0u8; 500]).unwrap();
+        let size = file_bytes(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(size, 1500);
+    }
+
+    /// An imported folder, as the app keeps it, must take work copies and match Claude's spelling.
+    #[cfg(windows)]
+    #[test]
+    fn a_resolved_folder_takes_work_copies_and_is_named_like_claude_names_it() {
+        let dir = std::env::temp_dir().join(format!("prism real {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = real_dir(dir.clone()).to_string_lossy().into_owned();
+        assert!(!real.starts_with(r"\\?\"), "{real}");
+        git(&real, &["init", "-b", "main"]).unwrap();
+        git(&real, &["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--allow-empty", "-m", "a"]).unwrap();
+        let copy = Path::new(&real).join(".prism").join("worktrees").join("x");
+        add_worktree(&real, &copy, "prism/x").unwrap();
+        let listed = work_copies(&real);
+        assert!(same_dir(&listed[0].path, &copy.to_string_lossy()), "{}", listed[0].path);
+        assert!(is_work_copy(&copy.to_string_lossy()));
+        // `git rev-parse` spells it the way Claude Code does
+        assert_eq!(trust_key(&real), git(&real, &["rev-parse", "--show-toplevel"]).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

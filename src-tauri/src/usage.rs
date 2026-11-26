@@ -68,7 +68,7 @@ fn output_within(cmd: &mut Command, limit: Duration) -> Option<Output> {
         let _ = tx.send(buf);
     });
     let Ok(stdout) = rx.recv_timeout(limit) else {
-        let _ = child.kill();
+        let _ = crate::sys::kill_tree(&mut child);
         let _ = child.wait();
         return None;
     };
@@ -77,7 +77,7 @@ fn output_within(cmd: &mut Command, limit: Duration) -> Option<Output> {
             Ok(Some(status)) => return Some(Output { status, stdout, stderr: vec![] }),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
-                let _ = child.kill();
+                let _ = crate::sys::kill_tree(&mut child);
                 let _ = child.wait();
                 return None;
             }

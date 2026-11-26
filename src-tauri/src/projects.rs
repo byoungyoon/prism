@@ -496,6 +496,10 @@ impl Projects {
             .unwrap_or_else(|| PathBuf::from("Prism"));
         let _ = std::fs::create_dir_all(&root);
         let mut list: Vec<Project> = list;
+        // Windows: folders imported earlier were saved as `\\?\C:\…`, which can't take work copies
+        for p in &mut list {
+            p.path = sys::plain_path(&p.path);
+        }
         // agents that are no longer supported fall back to Claude
         for p in &mut list {
             for r in [&mut p.team.lead, &mut p.team.managers, &mut p.team.workers] {
@@ -788,7 +792,7 @@ impl Projects {
         if !dir.is_dir() {
             return Err("폴더를 찾을 수 없어요".into());
         }
-        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let dir = sys::real_dir(dir);
         let path = dir.to_string_lossy().into_owned();
         if let Some(home) = std::env::home_dir() {
             if dir == home || dir.parent().is_none() {

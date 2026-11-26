@@ -2379,7 +2379,7 @@ fn removable_copies(repo: &str, team: Option<&Team>, now: u64, manual: bool) -> 
         .into_iter()
         .filter(|w| {
             let name = std::path::Path::new(&w.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            if name.starts_with("team-") || team.is_some_and(|t| t.cwd == w.path) || (w.branch.is_some() && w.branch == into) {
+            if name.starts_with("team-") || team.is_some_and(|t| sys::same_dir(&t.cwd, &w.path)) || (w.branch.is_some() && w.branch == into) {
                 return false;
             }
             let merged = match (&w.branch, &into) {
@@ -2390,7 +2390,7 @@ fn removable_copies(repo: &str, team: Option<&Team>, now: u64, manual: bool) -> 
                 .and_then(|t| t.tasks.iter().find(|x| w.branch.is_some() && x.branch == w.branch))
                 .filter(|t| t.stage == "done" || t.stage == "failed")
                 .map(|t| t.updated_at);
-            let in_use = team.is_some_and(|t| t.agents.iter().any(|a| a.cwd == w.path && a.status != "done" && a.status != "off"));
+            let in_use = team.is_some_and(|t| t.agents.iter().any(|a| a.status != "done" && a.status != "off" && sys::same_dir(&a.cwd, &w.path)));
             copy_removable(merged, card_over_at, in_use, manual, now)
         })
         .map(|w| w.path)
@@ -3798,7 +3798,7 @@ impl TeamManager {
         let mut fresh = false;
         if !alive {
             let wt = agent.cwd.clone();
-            let base = if wt.contains("/.prism/worktrees/") && !std::path::Path::new(&wt).exists() {
+            let base = if sys::is_work_copy(&wt) && !std::path::Path::new(&wt).exists() {
                 // its folder was cleared after merging: same place, cut from the latest state
                 let parent_cwd = agent
                     .parent_id
@@ -5482,7 +5482,7 @@ impl TeamManager {
         let branch = t.branch.clone().or_else(|| agent.and_then(|a| a.branch.clone()));
         let worktree = agent
             .map(|a| PathBuf::from(&a.cwd))
-            .filter(|p| p.to_string_lossy().contains("/.prism/worktrees/"))
+            .filter(|p| sys::is_work_copy(&p.to_string_lossy()))
             .or_else(|| Some(worktrees_dir(&team.project.path).join(format!("{}-{}", team.run, t.id.to_lowercase()))))
             .filter(|p| p.is_dir());
         Ok(TaskSpot { repo: team.project.path.clone(), worktree, branch })
@@ -6574,6 +6574,52 @@ mod copy_cleanup_tests {
         assert!(copy("run-t-2").exists(), "unmerged work keeps its folder");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// git lists work copies with `/` while the app builds the same folders with `\`.
+#[cfg(all(test, windows))]
+mod windows_path_tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_a_member_is_working_in_is_not_cleaned_up() {
+        let root = std::env::temp_dir().join(format!("prism-t125-{}", now_ms()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let r = repo.to_string_lossy().into_owned();
+        sys::git(&r, &["init", "-b", "main"]).unwrap();
+        sys::git(&r, &["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--allow-empty", "-m", "first"]).unwrap();
+        // just started: no commit of its own yet, so it counts as merged
+        let copy = worktrees_dir(&r).join("run-t-1");
+        sys::add_worktree(&r, &copy, "prism/run/t-1").unwrap();
+        let agent: Agent = serde_json::from_value(json!({
+            "id": "W1", "name": "W1", "role": "worker", "kind": "claude", "model": "", "effort": "", "status": "work",
+            "taskId": "T-1", "parentId": "lead", "ptyId": null, "cwd": copy.to_string_lossy(), "branch": "prism/run/t-1",
+            "sessionId": "", "costUsd": 0.0, "startedAt": 0, "statusSince": 0, "lastNote": null, "structured": true, "activity": []
+        }))
+        .unwrap();
+        let team = Team {
+            restarted: None,
+            project: serde_json::from_value(json!({ "id": "p", "name": "p", "path": r, "isGit": true })).unwrap(),
+            homes: HashMap::new(),
+            run: "run".into(),
+            cwd: r.clone(),
+            branch: Some("main".into()),
+            home: None,
+            agents: vec![agent],
+            tasks: vec![],
+            chat: vec![],
+            events: vec![],
+            next_task: 0,
+            next_msg: 0,
+            next_mgr: 0,
+            next_lone: 0,
+            always_allow: Default::default(),
+        };
+        let listed = removable_copies(&r, Some(&team), now_ms(), false);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(listed.is_empty(), "a copy in use would be deleted: {listed:?}");
     }
 }
 
