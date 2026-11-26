@@ -44,6 +44,7 @@ export function Onboarding() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [tools, setTools] = useState<CliStatus[]>([]);
   const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState<string | null>(null);
   const [loggingIn, setLoggingIn] = useState<string | null>(null);
   const closeLogin = useCallback(() => setLoggingIn(null), []);
   const [idea, setIdea] = useState("");
@@ -245,23 +246,27 @@ export function Onboarding() {
                               {t.installed ? "✓" : ""}
                             </span>
                             <span className="flex-auto text-[14px] font-medium">{t.label}</span>
-                            <span className="text-[12px] text-ink-2">{t.installed ? "준비됨" : now ? "설치 중…" : "대기"}</span>
+                            <span className="text-[12px] text-ink-2">{t.installed ? "준비됨" : now ? (failed === t.name ? "설치 실패" : "설치 중…") : "대기"}</span>
                           </li>
                         );
                       })}
                       {!tools.length && <span className="text-[13px] text-ink-2">확인하는 중…</span>}
                     </ul>
                     {current && (
-                      <details className="text-[12px] text-ink-2">
+                      <details className="text-[12px] text-ink-2" open={failed === current.name}>
                         <summary className="cursor-pointer select-none">설치 과정 보기</summary>
                         <div className="mt-2">
-                          <Installer key={`${current.name}-${attempt}`} tool={current} onCheck={() => void checkTools()} />
+                          <Installer key={`${current.name}-${attempt}`} tool={current} onCheck={() => void checkTools()} onFailed={setFailed} />
                         </div>
                       </details>
                     )}
                     {current && (
                       <div className="flex gap-2">
-                        <button onClick={() => setAttempt((n) => n + 1)} className="min-h-9 rounded-full px-4 text-[12.5px]" style={{ border: "1px solid var(--line)" }}>
+                        <button
+                          onClick={() => {
+                            setFailed(null);
+                            setAttempt((n) => n + 1);
+                          }} className="min-h-9 rounded-full px-4 text-[12.5px]" style={{ border: "1px solid var(--line)" }}>
                           다시 시도
                         </button>
                         <span className="flex-auto" />

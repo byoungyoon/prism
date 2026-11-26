@@ -1,5 +1,7 @@
 // 연결(로그인) 흐름의 판단. 화면은 components/ConnectPanel.tsx.
 
+import { blockedReason } from "./setupFailure.ts";
+
 export type LoginPhase = "waiting" | "success" | "failed";
 
 /** `exit` is the sign-in program's exit code (null while it still runs). When switching accounts
@@ -21,7 +23,8 @@ const REASONS: [RegExp, string][] = [
 export function loginFailureReason(output: string): string {
   // the URL's own words (scope, redirect…) must not look like an error
   const text = output.replace(/https?:\/\/\S+/g, "");
-  return REASONS.find(([re]) => re.test(text))?.[1] ?? "로그인이 끝나지 않았어요. 브라우저에서 로그인을 마쳤는지 확인해 주세요.";
+  // what the computer blocked comes first: "permission denied" is not the user saying no
+  return blockedReason(text) ?? REASONS.find(([re]) => re.test(text))?.[1] ?? "로그인이 끝나지 않았어요. 브라우저에서 로그인을 마쳤는지 확인해 주세요.";
 }
 
 /** The page Prism may reopen: only one that returns to this computer by itself. Claude prints a

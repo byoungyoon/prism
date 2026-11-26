@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::pty::{Pty, SpawnSpec};
-use crate::sys;
+use crate::{setup_log, sys};
 
 /// Agent CLIs that auto-update.
 pub const CLIS: [&str; 3] = ["claude", "codex", "agy"];
@@ -79,11 +79,16 @@ fn installer(name: &str) -> (String, Vec<String>) {
     #[cfg(windows)]
     {
         let winget = |id: &str| ("winget".to_string(), ["install", "--id", id, "-e", "--source", "winget", "--accept-package-agreements", "--accept-source-agreements"].map(String::from).to_vec());
+        // old Windows PowerShell needs TLS 1.2 switched on, and UTF-8 keeps Korean errors readable
+        let script = |url: &str| {
+            let ps = format!("[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; irm {url} | iex");
+            ("powershell".to_string(), vec!["-NoProfile".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), ps])
+        };
         return match name {
             "git" => winget("Git.Git"),
             "node" => winget("OpenJS.NodeJS.LTS"),
-            "claude" => ("powershell".into(), vec!["-NoProfile".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), "irm https://claude.ai/install.ps1 | iex".into()]),
-            "agy" => ("powershell".into(), vec!["-NoProfile".into(), "-ExecutionPolicy".into(), "Bypass".into(), "-Command".into(), "irm https://antigravity.google/cli/install.ps1 | iex".into()]),
+            "claude" => script("https://claude.ai/install.ps1"),
+            "agy" => script("https://antigravity.google/cli/install.ps1"),
             _ => ("npm".into(), vec!["install".into(), "-g".into(), "@openai/codex@latest".into()]),
         };
     }
@@ -171,13 +176,14 @@ pub fn cli_set_auto_update(state: State<'_, CliState>, on: bool) {
 
 /// Install (or reinstall to latest) in a PTY the UI shows, so the user sees the installer run.
 #[tauri::command]
-pub fn cli_install(pty: State<'_, Pty>, name: String, cols: u16, rows: u16) -> Result<u32, String> {
+pub fn cli_install(app: AppHandle, pty: State<'_, Pty>, name: String, cols: u16, rows: u16) -> Result<u32, String> {
     if !tools().contains(&name.as_str()) {
         return Err("알 수 없는 도구".into());
     }
     let (program, args) = installer(&name);
     let cwd = std::env::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
-    pty.spawn(SpawnSpec { program: Some(program), args, cwd, env: vec![], cols, rows }, None)
+    let spec = SpawnSpec { program: Some(program), args, cwd, env: vec![], cols, rows };
+    setup_log::spawn(&app, &pty, spec, format!("install {name}"))
 }
 
 /// Run one update now (button), returning the fresh status.

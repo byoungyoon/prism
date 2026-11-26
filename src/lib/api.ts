@@ -420,6 +420,13 @@ export interface Batch {
   finishedAt?: number;
 }
 
+export interface PtyState {
+  done: boolean;
+  code: number | null;
+  /** last output of a finished program, with terminal escapes */
+  tail: string;
+}
+
 export const api = {
   remoteStatus: () => call<RemoteStatus>("remote_status"),
   setRemote: (on: boolean) => call<RemoteStatus>("remote_set", { on }),
@@ -464,8 +471,8 @@ export const api = {
   setActiveAccount: (id: string) => call<void>("account_set_active", { id }),
   loginAccount: (id: string, cols: number, rows: number) => call<number>("account_login", { id, cols, rows }),
   logoutAccount: (id: string) => call<void>("account_logout", { id }),
-  /** exit code of a sign-in program, null while it still runs */
-  loginExit: (ptyId: number) => call<number | null>("account_login_exit", { ptyId }),
+  /** how a program is doing; still answers after it ended (null: unknown id) */
+  ptyState: (id: number) => call<PtyState | null>("pty_state", { id }),
 
   usage: () => call<Usage[]>("usage_get"),
   refreshUsage: () => call<void>("usage_refresh"),
