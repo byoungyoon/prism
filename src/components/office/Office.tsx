@@ -663,9 +663,12 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     if (!g || e.pointerId !== g.pid) return;
     stopGesture(g);
     catG.current = null;
+    // a pat or a lift that was let go of may earn 츄르 (not a press the system took away)
+    if (e.type === "pointerup") useApp.getState().petCat();
     if (!g.on) {
-      // a press on a cat at work: it is bothered by it, for a moment
+      // a press on a cat at work: it is bothered by it, for a moment; a resting one purrs
       if (g.desk) feel(g.key, { say: "귀찮아요" }, 1600);
+      else feel(g.key, { ...mood[g.key], say: "골골…" }, 1600);
       return;
     }
     setHeld(null);

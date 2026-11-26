@@ -56,6 +56,8 @@ const SCREENS = {
   "shop-roll": "뽑기 연출 중: 상자가 흔들리는 순간 (-s gacha --wait 300)",
   "shop-new": "뽑기 결과: 새 고양이 (-s gacha --wait 2600)",
   "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
+  "shop-earn": "상점 '츄르 받는 법' 탭",
+  reward: "츄르를 받은 순간: 잔액 옆에 '+N 출석' 표시",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
   "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
@@ -317,8 +319,10 @@ async function openScreen(page, screen, o, data) {
   if (screen.startsWith("shop")) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();
     // 뽑기 연출: 버튼을 누른 뒤 --wait 만큼 기다렸다 찍는다 (흔들리는 중은 짧게, 결과는 연출이 끝난 뒤)
+    if (screen === "shop-earn") await page.getByRole("tab", { name: "츄르 받는 법" }).click();
     if (["shop-roll", "shop-new", "shop-dup"].includes(screen)) await page.getByRole("button", { name: /고양이 뽑기/ }).click();
   }
+  if (screen === "reward") await page.evaluate(() => window.__app.getState().showReward({ kind: "attend", amount: 80, streak: 7 }));
   if (screen === "draft") {
     // 빈 대시보드에 할 일을 적고 초안을 만든 뒤, 미리보기가 뜰 때까지 기다린다
     await page.getByLabel("하는 일을 설명해 주세요").fill("고객 문의 엑셀에서 답 안 단 문의만 보고, 슬랙 고객센터 채널도 같이 보고 싶어요");
