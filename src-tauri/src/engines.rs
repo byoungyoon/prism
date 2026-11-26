@@ -86,6 +86,7 @@ impl Proc {
         }
         let mut cmd = Command::new(cli);
         cmd.args(key.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::sys::no_window(&mut cmd);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

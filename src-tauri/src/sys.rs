@@ -164,12 +164,17 @@ pub fn command(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut c = Command::new(exe);
     c.args(lead).env("PATH", search_path());
+    no_window(&mut c);
+    c
+}
+
+/// On Windows a console program started by a windowed app gets its own black console window.
+pub fn no_window(_c: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        _c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    c
 }
 
 // ── git ───────────────────────────────────────────────
