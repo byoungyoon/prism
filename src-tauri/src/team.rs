@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::projects::{now_ms, Project, Projects};
 use crate::pty::Pty;
@@ -2296,10 +2295,6 @@ impl TeamManager {
         Ok(())
     }
 
-    fn notify(&self, title: &str, body: &str) {
-        let _ = self.app.notification().builder().title(title).body(body).show();
-    }
-
     // ── lifecycle ─────────────────────────────────────
 
     /// What batches (묶음 지시) need to judge whether a team has finished; None if the team is gone.
@@ -4244,13 +4239,11 @@ impl TeamManager {
                     path.push(p.clone());
                     cur = team.agent(&p).and_then(|a| a.parent_id.clone());
                 }
-                let names = path.iter().map(|p| team.name_of(p)).collect::<Vec<_>>().join(" → ");
                 let mut options = v("options");
                 options.truncate(3);
                 team.set_status(aid, "block");
                 team.say("escalation", question.clone(), Some(Escalation { agent_id: aid.into(), task_id: me.task_id.clone(), path, options, answer: None }));
                 team.log(format!("{}이(가) 막혔다: {}", me.name, short(&question, 50)), Some("block"));
-                self.notify(&format!("[{}] 막힘 · {names}", team.project.name), &question);
                 "사용자에게 질문했어요. 답은 '[Prism 답변]'으로 옵니다. 지금은 멈추고 기다리세요.".into()
             }
             _ => return Err(format!("알 수 없는 도구: {tool}")),

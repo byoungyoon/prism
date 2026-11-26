@@ -256,7 +256,8 @@ export function SettingsScreen() {
   const confirmQuit = useApp((s) => s.confirmQuit);
   const setConfirmQuit = useApp((s) => s.setConfirmQuit);
   const askAlert = useApp((s) => s.askAlert);
-  const setAskAlert = useApp((s) => s.setAskAlert);
+  const workAlert = useApp((s) => s.workAlert);
+  const setAlert = useApp((s) => s.setAlert);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -419,13 +420,20 @@ export function SettingsScreen() {
           </span>
         </Card>
 
-        {/* the desktop app's own setting: a phone browser has no say over this computer's notifications */}
+        {/* the desktop app's own settings: a phone browser has no say over this computer's notifications */}
         {!isRemote && (
-          <Card title="허락이 필요할 때 알림" aside={<Switch on={askAlert} onChange={(on) => void setAskAlert(on)} label="허락이 필요할 때 알림" />}>
-            <span className="text-[12px] leading-relaxed text-ink-2">
-              팀원이 내 허락을 기다리면 컴퓨터 알림으로 알려줘요. 알림을 누르면 그 팀의 허락 칸이 열려요. 그 팀을 보고 있을 때는 알리지 않아요. 알림이 안 오면 컴퓨터의 시스템 설정 &rarr; 알림에서 Prism을 허용해 주세요.
-            </span>
-          </Card>
+          <>
+            <Card title="허락이 필요할 때 알림" aside={<Switch on={askAlert} onChange={(on) => void setAlert("ask", on)} label="허락이 필요할 때 알림" />}>
+              <span className="text-[12px] leading-relaxed text-ink-2">
+                팀원이 내 허락을 기다리면 컴퓨터 알림으로 알려줘요. 알림을 누르면 그 팀의 허락 칸이 열려요. 그 팀을 보고 있을 때는 알리지 않아요. 알림이 안 오면 컴퓨터의 시스템 설정 &rarr; 알림에서 Prism을 허용해 주세요.
+              </span>
+            </Card>
+            <Card title="일이 끝나면 알림" aside={<Switch on={workAlert} onChange={(on) => void setAlert("work", on)} label="일이 끝나면 알림" />}>
+              <span className="text-[12px] leading-relaxed text-ink-2">
+                총괄에게 일이 끝났다는 보고가 오거나 마무리(합치기)되면 알려줘요. 일이 실패하거나 막혔을 때도 알려줘요. 알림을 누르면 그 팀이 열려요. 그 팀을 보고 있을 때는 알리지 않아요.
+              </span>
+            </Card>
+          </>
         )}
 
         <WorkCopies projectId={project.id} />

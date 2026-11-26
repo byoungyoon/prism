@@ -29,7 +29,7 @@ const ALL_OWNED = [
 ];
 
 /** 저장(prefs_get) 응답: 츄르 잔액과 산 물건. 시나리오가 따로 안 주면 새로 시작한 상태 (잔액 0, 흰 고양이만). */
-const prefs = (churu = 0, owned = ["cat:white"]) => ({ providers: ["claude"], onboarded: true, lastTeams: [], autoResume: false, confirmQuit: true, askAlert: true, churu, owned });
+const prefs = (churu = 0, owned = ["cat:white"]) => ({ providers: ["claude"], onboarded: true, lastTeams: [], autoResume: false, confirmQuit: true, askAlert: true, workAlert: true, churu, owned });
 
 // ── 조립 도우미 ─────────────────────────────────────────
 

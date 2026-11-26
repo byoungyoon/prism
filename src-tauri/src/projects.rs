@@ -120,9 +120,12 @@ pub struct Settings {
     /// 사용자 허락이 필요하면 데스크톱 알림을 띄운다
     #[serde(default = "yes")]
     pub ask_alert: bool,
+    /// 일이 끝나거나(합치기 포함) 실패·막히면 데스크톱 알림을 띄운다
+    #[serde(default = "yes")]
+    pub work_alert: bool,
     /// 처음 한 번의 안내 알림(macOS가 알림 허용을 묻게 하는 것)을 보냈는가
     #[serde(default)]
-    pub ask_alert_primed: bool,
+    pub alert_primed: bool,
     /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
     #[serde(default)]
     pub churu: u64,
@@ -154,7 +157,8 @@ impl Default for Settings {
             restart: None,
             confirm_quit: true,
             ask_alert: true,
-            ask_alert_primed: false,
+            work_alert: true,
+            alert_primed: false,
             churu: 0,
             owned: default_owned(),
             churu_rest: 0,
@@ -224,24 +228,32 @@ impl Projects {
         self.prefs.lock().unwrap().confirm_quit
     }
 
-    pub fn ask_alert(&self) -> bool {
-        self.prefs.lock().unwrap().ask_alert
-    }
-
-    pub fn set_ask_alert(&self, on: bool) -> Settings {
-        self.prefs.lock().unwrap().ask_alert = on;
-        self.save_prefs();
+    pub fn settings(&self) -> Settings {
         self.prefs.lock().unwrap().clone()
     }
 
-    /// True once: the alert is on and its introduction hasn't been sent yet (marked as sent here).
-    pub fn take_ask_alert_priming(&self) -> bool {
+    /// Turns one desktop alert on or off: the permission one (`ask`) or the finished-work one.
+    pub fn set_alert(&self, ask: bool, on: bool) -> Settings {
         {
             let mut p = self.prefs.lock().unwrap();
-            if !p.ask_alert || p.ask_alert_primed {
+            if ask {
+                p.ask_alert = on;
+            } else {
+                p.work_alert = on;
+            }
+        }
+        self.save_prefs();
+        self.settings()
+    }
+
+    /// True once: some alert is on and the introduction hasn't been sent yet (marked as sent here).
+    pub fn take_alert_priming(&self) -> bool {
+        {
+            let mut p = self.prefs.lock().unwrap();
+            if !(p.ask_alert || p.work_alert) || p.alert_primed {
                 return false;
             }
-            p.ask_alert_primed = true;
+            p.alert_primed = true;
         }
         self.save_prefs();
         true

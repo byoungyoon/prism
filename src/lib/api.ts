@@ -348,11 +348,16 @@ export interface Prefs {
   confirmQuit: boolean;
   /** desktop notification when a request starts waiting for the user */
   askAlert: boolean;
+  /** desktop notification when work finishes, fails or gets stuck */
+  workAlert: boolean;
   /** 츄르 잔액 (상점에서 쓰는 돈) */
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
   owned: string[];
 }
+
+/** desktop alerts, switched separately: a permission request | work finished, failed or stuck */
+export type AlertKind = "ask" | "work";
 
 /** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
 export type QuitKind = "window" | "quit";
@@ -389,11 +394,11 @@ export const api = {
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
   setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
-  setAskAlert: (on: boolean) => call<Prefs>("prefs_set_ask_alert", { on }),
-  /** desktop only: notify that a team is waiting for permission (skipped when off, or when `watching` and the window is in front) */
-  askAlert: (projectId: string, title: string, body: string, watching: boolean) => call<void>("ask_alert", { projectId, title, body, watching }),
+  setAlert: (kind: AlertKind, on: boolean) => call<Prefs>("prefs_set_alert", { kind, on }),
+  /** desktop only: a clickable notification about a team (skipped when that kind is off, or when `watching` and the window is in front) */
+  teamAlert: (projectId: string, kind: AlertKind, title: string, body: string, watching: boolean) => call<void>("team_alert", { projectId, kind, title, body, watching }),
   /** desktop only: the user clicked such a notification */
-  onAskOpen: (fn: (projectId: string) => void): Promise<UnlistenFn> => on<string>("ask-open", fn),
+  onAlertOpen: (fn: (projectId: string) => void): Promise<UnlistenFn> => on<string>("alert-open", fn),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),

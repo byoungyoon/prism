@@ -88,7 +88,8 @@ function MainView() {
   // a clicked notification: the 허락 칸 sits in the chat tab
   const askFocus = useApp((s) => s.askFocus);
   useEffect(() => {
-    if (askFocus) setTab("chat");
+    // only a fresh click: an old one (nothing to scroll to) mustn't move the tab later
+    if (askFocus && Date.now() - askFocus.at < 3000) setTab("chat");
   }, [askFocus]);
   const pending = useShownTeams().reduce(
     (n, { team }) => n + team.chat.filter(waitsForMe).length,
