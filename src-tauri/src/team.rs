@@ -4657,11 +4657,17 @@ pub fn usage_get(teams: Teams<'_>) -> Vec<Usage> {
 pub fn refresh_usage(app: &AppHandle) {
     let accounts = app.state::<crate::accounts::Accounts>();
     let (claude_dir, codex_dir) = (accounts.active_dir("claude"), accounts.active_dir("codex"));
-    let a = std::thread::spawn(move || crate::usage::claude(claude_dir.as_deref()));
-    let b = std::thread::spawn(move || crate::usage::codex(codex_dir.as_deref()));
-    let c = std::thread::spawn(crate::usage::antigravity);
-    let list: Vec<Usage> = [a, b, c].into_iter().filter_map(|h| h.join().ok()).collect();
-    app.state::<Arc<TeamManager>>().set_usage(list);
+    let teams = app.state::<Arc<TeamManager>>();
+    crate::usage::fetch_each(
+        vec![
+            ("claude", Box::new(move || crate::usage::claude(claude_dir.as_deref()))),
+            ("codex", Box::new(move || crate::usage::codex(codex_dir.as_deref()))),
+            ("antigravity", Box::new(crate::usage::antigravity)),
+        ],
+        // above the slowest healthy path (keychain 10s ×2 + request 10s)
+        std::time::Duration::from_secs(45),
+        |u| teams.set_usage(vec![u]),
+    );
 }
 
 #[tauri::command]
