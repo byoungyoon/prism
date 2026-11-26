@@ -254,6 +254,8 @@ export function SettingsScreen() {
   const setAutoResume = useApp((s) => s.setAutoResume);
   const confirmQuit = useApp((s) => s.confirmQuit);
   const setConfirmQuit = useApp((s) => s.setConfirmQuit);
+  const autoAllowSafe = useApp((s) => s.autoAllowSafe);
+  const setAutoAllowSafe = useApp((s) => s.setAutoAllowSafe);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -403,6 +405,12 @@ export function SettingsScreen() {
             </span>
           </Card>
         </div>
+
+        <Card title="안전한 일은 자동 허락" aside={<Switch on={autoAllowSafe} onChange={(on) => void setAutoAllowSafe(on)} label="안전한 일은 자동 허락" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            파일 읽기·찾기, 빌드와 테스트, 자기 브랜치에 저장(커밋)처럼 위험하지 않은 일은 팀원이 묻지 않고 해요. 설치, 파일 지우기·옮기기, 작업 폴더 밖에 쓰기, 인터넷 연결과 올리기(push)는 계속 물어봐요. 모든 팀에 적용되고, 끄면 안전한 일도 허락을 구해요.
+          </span>
+        </Card>
 
         <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">

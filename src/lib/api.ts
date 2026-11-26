@@ -346,6 +346,8 @@ export interface Prefs {
   restart?: "update" | "quit" | null;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** 안전한 일(읽기·빌드·내 브랜치 커밋)은 묻지 않고 허락 */
+  autoAllowSafe: boolean;
   /** 츄르 잔액 (상점에서 쓰는 돈) */
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
@@ -407,6 +409,7 @@ export const api = {
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
   setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
+  setAutoAllowSafe: (on: boolean) => call<Prefs>("prefs_set_auto_allow_safe", { on }),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),

@@ -68,6 +68,8 @@ interface AppState {
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** let teammates do safe things without asking */
+  autoAllowSafe: boolean;
 
   openShop(on: boolean): void;
   /** buy one shop item (소품); resolves to null on success, or a plain Korean reason to show */
@@ -108,6 +110,7 @@ interface AppState {
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
   setConfirmQuit(on: boolean): Promise<void>;
+  setAutoAllowSafe(on: boolean): Promise<void>;
   dismissFailures(): void;
   setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
@@ -212,6 +215,7 @@ export const useApp = create<AppState>((set, get) => {
     clockingIn: false,
     critters: savedCritters(),
     confirmQuit: true,
+    autoAllowSafe: true,
     churu: 0,
     owned: [...DEFAULT_OWNED],
     shopOpen: false,
@@ -289,7 +293,7 @@ export const useApp = create<AppState>((set, get) => {
         const prefs = await api.prefs().catch(() => null);
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
-          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit });
+          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit, autoAllowSafe: prefs.autoAllowSafe });
           // restarted for an update: everyone comes back, whatever the setting says
           const updated = prefs.restart === "update";
           if ((prefs.autoResume || updated) && !autoResumed) {
@@ -409,6 +413,14 @@ export const useApp = create<AppState>((set, get) => {
         await api.setConfirmQuit(on);
       } catch (e) {
         set({ confirmQuit: !on, error: msg(e) });
+      }
+    },
+    setAutoAllowSafe: async (on) => {
+      set({ autoAllowSafe: on });
+      try {
+        await api.setAutoAllowSafe(on);
+      } catch (e) {
+        set({ autoAllowSafe: !on, error: msg(e) });
       }
     },
     dismissFailures: () => set({ startFailures: [] }),

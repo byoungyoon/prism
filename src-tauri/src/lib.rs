@@ -190,6 +190,7 @@ pub fn run() {
             projects::prefs_set,
             projects::prefs_set_auto_resume,
             projects::prefs_set_confirm_quit,
+            projects::prefs_set_auto_allow_safe,
             projects::prefs_clear_restart,
             projects::shop_buy,
             projects::gacha_pull,
