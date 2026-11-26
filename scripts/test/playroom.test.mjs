@@ -2,7 +2,7 @@
 //   node --test scripts/test/   (pnpm test)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { actsFor, emptyPlay, leavePlay, PLAY_MAX, quota, SCRIPTS, tickPlay } from "../../src/components/office/playRules.ts";
+import { actsFor, emptyPlay, dropRoom, leavePlay, placeInPlay, PLAY_MAX, quota, SCRIPTS, tickPlay } from "../../src/components/office/playRules.ts";
 
 const now = 1_000_000;
 const keys = ["a", "b", "c", "d", "e"];
@@ -59,4 +59,24 @@ test("들어 올린 고양이는 놀이를 그만두고 바로 다시 불려 가
   const s = leavePlay({ ...emptyPlay(), cats: { a: { act: "rod", step: 0, until: now + 5000 } } }, "a", now);
   assert.equal(s.cats.a, undefined);
   assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + 1000 }).cats.a, undefined);
+});
+
+test("사람이 놀이방에 놓은 고양이는 그 자리에 남고, 시간이 지나면 다시 놀이 규칙을 따른다", () => {
+  const spot = { x: 100, y: 200 };
+  const s = placeInPlay(leavePlay(emptyPlay(), "a", now), "a", spot, now);
+  assert.deepEqual(s.cats.a.spot, spot);
+  assert.equal(s.rest.a, undefined);
+  assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + 1000, random: first }), s);
+  assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + SCRIPTS.stay[0].ms, random: first }).cats.a, undefined);
+  assert.ok(!actsFor(() => true).includes("stay"));
+});
+
+test("놓은 곳의 방을 고른다: 방 밖이면 가까운 방", () => {
+  const lounge = { x: 0, y: 0, w: 400, h: 400 };
+  const play = { x: 0, y: 422, w: 400, h: 390 };
+  assert.equal(dropRoom({ x: 200, y: 200 }, lounge, play), "lounge");
+  assert.equal(dropRoom({ x: 200, y: 600 }, lounge, play), "play");
+  assert.equal(dropRoom({ x: 200, y: 405 }, lounge, play), "lounge");
+  assert.equal(dropRoom({ x: 200, y: 418 }, lounge, play), "play");
+  assert.equal(dropRoom({ x: -300, y: 700 }, lounge, play), "play");
 });

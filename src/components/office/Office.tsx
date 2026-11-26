@@ -12,13 +12,15 @@ import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { Playroom } from "./Playroom";
-import { actsFor, emptyPlay, leavePlay, SCRIPTS, tickPlay, type PlayState, type PlayStep } from "./playRules";
+import { actsFor, dropRoom, emptyPlay, leavePlay, placeInPlay, SCRIPTS, tickPlay, type PlayState, type PlayStep, type RoomName } from "./playRules";
 import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
 import { catName, coatKey, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
+/** a room a resting cat can be put in: its whole frame, and the floor inside it where a cat's feet go */
+type CatRoom = { frame: Box; floor: Box };
 
 const ROLE_WORD = { lead: "총괄", mgr: "팀장", worker: "작업자" } as const;
 
@@ -130,7 +132,8 @@ interface CatGesture {
   on: boolean;
   compliant: boolean;
   origin: Spot;
-  box: Box;
+  /** the room it was picked up from (or was on its way to) */
+  from: RoomName;
   move: (e: PointerEvent) => void;
   up: (e: PointerEvent) => void;
 }
@@ -336,7 +339,10 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
-  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; play: Record<string, Spot>; track: { x0: number; x1: number; y: number } | null; door: Spot; w: number } | null>(null);
+  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; play: Record<string, Spot>; rooms: Record<RoomName, CatRoom>; track: { x0: number; x1: number; y: number } | null; door: Spot; w: number } | null>(null);
+  // (a drag's listeners are those of the drawing it started in: they read the newest measurement here)
+  const roomRef = useRef(room);
+  roomRef.current = room;
   useLayoutEffect(() => {
     const el = content.current;
     if (!el) return;
@@ -351,7 +357,13 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       });
       const le = el.querySelector("[data-lounge]");
       const l = le?.getBoundingClientRect();
-      const lounge = l ? { x: l.left - o.left + 24, y: l.top - o.top + size + 26, w: Math.max(10, l.width - 48), h: Math.max(10, l.height - size - 40) } : { x: 20, y: 60, w: 100, h: 60 };
+      const catRoom = (r: DOMRect | undefined): CatRoom => {
+        if (!r) return { frame: { x: 0, y: 0, w: 140, h: 140 }, floor: { x: 20, y: 60, w: 100, h: 60 } };
+        const frame = { x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height };
+        return { frame, floor: { x: frame.x + 24, y: frame.y + size + 26, w: Math.max(10, r.width - 48), h: Math.max(10, r.height - size - 40) } };
+      };
+      const rooms = { lounge: catRoom(l), play: catRoom(el.querySelector("[data-playroom]")?.getBoundingClientRect()) };
+      const lounge = rooms.lounge.floor;
       // a cat goes to the sofa, the coffee machine or a plant: it stands just in front of it
       const clamp = (p: Spot) => ({ x: Math.min(lounge.x + lounge.w, Math.max(lounge.x, p.x)), y: Math.min(lounge.y + lounge.h, Math.max(lounge.y, p.y)) });
       const marks = [...(le?.querySelectorAll<HTMLElement>("[data-spot]") ?? [])].map((m) => {
@@ -380,7 +392,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
       setRoom((prev) => {
-        const next = { seats, lounge, marks, blocks, play, track, door, w: el.clientWidth };
+        const next = { seats, lounge, marks, blocks, play, rooms, track, door, w: el.clientWidth };
         return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
       });
     };
@@ -447,16 +459,16 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     }, 900);
     return () => clearInterval(t);
   }, [measured, loungeKey, actsKey, still]); // eslint-disable-line react-hooks/exhaustive-deps
-  // a cat picked up by a person stops playing
-  const heldKey = held?.key;
-  useEffect(() => {
-    if (heldKey) setPlay((s) => leavePlay(s, heldKey, Date.now()));
-  }, [heldKey]);
   /** what a cat in the playroom is doing and where it stands for it */
   const playing = (key: string): { step: PlayStep; spot: Spot } | undefined => {
     const c = loungers.includes(key) ? play.cats[key] : undefined;
     const step = c && SCRIPTS[c.act][c.step];
     if (!step || !room) return undefined;
+    if (step.at === "stay") {
+      // where a person put it, from the playroom's corner (it moves along when the room moves)
+      const f = room.rooms.play.frame;
+      return c.spot && { step, spot: { x: f.x + within(c.spot.x, 0, f.w), y: f.y + within(c.spot.y, 0, f.h) } };
+    }
     if (step.at !== "ball") {
       const spot = room.play[step.at];
       return spot && { step, spot };
@@ -736,7 +748,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       on: false,
       compliant,
       origin: home ?? spot,
-      box: room.lounge,
+      from: !desk && playing(key) ? "play" : "lounge",
       move: onCatMove,
       up: onCatUp,
     };
@@ -752,6 +764,8 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     if (!g.on) {
       if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) < DRAG_PX) return;
       g.on = true;
+      // a cat picked up by a person stops playing
+      setPlay((s) => leavePlay(s, g.key, Date.now()));
     }
     const p = local(e);
     g.x = p.x - g.ox;
@@ -772,20 +786,31 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       return;
     }
     setHeld(null);
-    const b = g.box;
     if (g.desk) {
       // a cat at work goes back to its seat (on foot), grumbling if it's a rebel
       feel(g.key, { say: g.compliant ? "일해야 해요" : "하악!", fast: true }, 2200);
-    } else if (g.compliant) {
+      return;
+    }
+    // a resting cat stays in the room it is put down in (the lounge or the playroom)
+    const to = roomRef.current && dropRoom({ x: g.x, y: g.y - size / 2 }, roomRef.current.rooms.lounge.frame, roomRef.current.rooms.play.frame);
+    if (!to) return;
+    const { frame, floor } = roomRef.current!.rooms[to];
+    if (g.compliant) {
       // a docile cat stays where it is put: it sits or lies down there for a while
-      const x = within(g.x, b.x, b.x + b.w);
-      const y = within(g.y, b.y, b.y + b.h);
-      setStrolls((c) => ({ ...c, [g.key]: { x: x - b.x, y: y - b.y } }));
+      settle(g.key, to, { x: within(g.x, floor.x, floor.x + floor.w), y: within(g.y, floor.y, floor.y + floor.h) }, frame, floor);
       feel(g.key, { pose: Math.random() < 0.5 ? "sit" : "coffee" }, 9000);
     } else {
-      // a rebel hisses and runs back to where it was
-      setStrolls((c) => ({ ...c, [g.key]: { x: g.origin.x - b.x, y: g.origin.y - b.y } }));
+      // a rebel hisses and runs back to where it was — or, carried to the other room, off to a corner of its own there
+      settle(g.key, to, to === g.from ? g.origin : { x: floor.x + Math.random() * floor.w, y: floor.y + Math.random() * floor.h }, frame, floor);
       feel(g.key, { say: "하악!", fast: true }, 2200);
+    }
+  };
+  /** a resting cat's new place (in the room's pixels), in the lounge or the playroom */
+  const settle = (key: string, to: RoomName, at: Spot, frame: Box, floor: Box) => {
+    if (to === "play") setPlay((s) => placeInPlay(s, key, { x: at.x - frame.x, y: at.y - frame.y }, Date.now()));
+    else {
+      setPlay((s) => leavePlay(s, key, Date.now()));
+      setStrolls((c) => ({ ...c, [key]: { x: at.x - floor.x, y: at.y - floor.y } }));
     }
   };
   const startPiece = (e: { clientX: number; clientY: number; pointerId: number }, piece: HTMLElement) => {
