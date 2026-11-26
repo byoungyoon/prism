@@ -495,6 +495,8 @@ export function AccountSheet() {
                 <motion.span layout transition={spring} className="absolute top-1 size-5 rounded-full" style={{ left: autoUpdate ? 24 : 4, background: "#fff", boxShadow: "0 2px 6px rgba(0,0,0,0.18)" }} />
               </button>
             </div>
+            {/* which version this is — people report "I still see the old one" */}
+            <span className="shrink-0 text-center font-mono text-[11.5px] text-ink-2 select-text">Prism {__APP_VERSION__}</span>
           </motion.section>
         </motion.div>
       )}

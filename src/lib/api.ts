@@ -381,6 +381,17 @@ export interface GachaPulled {
 /** desktop alerts, switched separately: a permission request | work finished, failed or stuck */
 export type AlertKind = "ask" | "work";
 
+/** Why an old Prism is (or would be) what shows up; see src-tauri/src/install.rs. */
+export type InstallKind = "replaced" | "newerRunning" | "oldRunning" | "openInstalled" | "move";
+export interface InstallIssue {
+  kind: InstallKind;
+  /** the version running in this window */
+  version: string;
+  other: string | null;
+  /** where this app was opened from, when outside Applications */
+  place: string | null;
+}
+
 /** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
 export type QuitKind = "window" | "quit";
 /** Sent when a close or quit would stop `working` members. */
@@ -424,6 +435,8 @@ export const api = {
   setAutoAllowSafe: (on: boolean) => call<Prefs>("prefs_set_auto_allow_safe", { on }),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
+  installCheck: () => call<InstallIssue | null>("install_check"),
+  installFix: (kind: InstallKind) => call<void>("install_fix", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),

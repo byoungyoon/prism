@@ -59,6 +59,13 @@ const SCREENS = {
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
   dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
+  account: "계정 화면 (맨 아래에 지금 버전 표시)",
+  "account-end": "계정 화면을 맨 아래까지 내린 모습",
+  "install-old": "안내: 예전 Prism이 아직 켜져 있음",
+  "install-newer": "안내: 지금 연 것이 예전 버전 (새 버전이 이미 켜져 있음)",
+  "install-open": "안내: 다운로드 폴더의 예전 복사본을 열었음",
+  "install-move": "안내: 설치 파일(DMG) 안에서 켜져 응용 프로그램 폴더로 옮기기",
+  "install-replaced": "안내: 켜 둔 사이에 새 버전이 설치됨",
   draft: "대시보드 설명으로 만들기: 설명을 적고 '초안 만들기' 뒤 미리보기 (-s dash-draft)",
 };
 
@@ -145,6 +152,15 @@ async function launchBrowser() {
   }
 }
 
+/** install-* 화면에서 백엔드(install_check)가 돌려줄 값 */
+const INSTALL_ISSUES = {
+  "install-old": { kind: "oldRunning", version: "0.3.9", other: "0.3.7", place: null },
+  "install-newer": { kind: "newerRunning", version: "0.3.7", other: "0.3.9", place: "다운로드 폴더" },
+  "install-open": { kind: "openInstalled", version: "0.3.7", other: "0.3.9", place: "다운로드 폴더" },
+  "install-move": { kind: "move", version: "0.3.9", other: "0.3.7", place: "설치 파일(DMG) 안" },
+  "install-replaced": { kind: "replaced", version: "0.3.8", other: "0.3.9", place: null },
+};
+
 /** /api/<명령> 요청에 가짜 팀 데이터로 답한다. 실제 백엔드(Tauri/원격 서버) 없이도 화면이 채워진다. */
 function fakeApi(cmd, args, data) {
   // 대시보드 명령(웹·엑셀·슬랙·AI 보기·설계도)은 시나리오의 대시보드 목 데이터로 답한다
@@ -158,6 +174,8 @@ function fakeApi(cmd, args, data) {
       return "/tmp";
     case "prefs_get":
       return data.prefs;
+    case "install_check":
+      return data.install ?? null;
     case "gacha_info":
       return GACHA_INFO;
     case "gacha_pull": {
@@ -254,6 +272,12 @@ async function openScreen(page, screen, o, data) {
     if (screen === "board") await phoneTab("보드").click();
     if (screen === "chat") await phoneTab("총괄").click();
   }
+  if (screen.startsWith("account")) {
+    await page.evaluate(() => window.__app.getState().openAccounts());
+    await page.getByRole("dialog", { name: "계정" }).waitFor();
+    if (screen === "account-end") await page.getByRole("dialog", { name: "계정" }).evaluate((el) => (el.scrollTop = el.scrollHeight));
+  }
+  if (screen.startsWith("install-")) await page.getByRole("alertdialog").waitFor({ timeout: 15000 });
   if (screen === "arrange" || screen === "lift") {
     if (narrow) await phoneTab("사무실").click();
     await page.locator(".of-lounge [data-piece]").first().waitFor({ timeout: 15000 }).catch(() => {});
@@ -296,7 +320,8 @@ async function capture(browser, base, o, data, log) {
       const args = JSON.parse(route.request().postData() || "{}");
       // 실제 백엔드처럼 Err는 400과 한국어 문장으로 돌려준다 (transport.call이 Error로 바꾼다)
       try {
-        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fakeApi(cmd, args, data) ?? null) });
+        const shown = { ...data, install: INSTALL_ISSUES[screen] };
+        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fakeApi(cmd, args, cmd === "install_check" ? shown : data) ?? null) });
       } catch (e) {
         route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify(e.message) });
       }

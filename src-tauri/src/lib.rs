@@ -4,6 +4,7 @@ mod batch;
 mod clis;
 mod dashboard;
 mod engines;
+mod install;
 mod launch;
 mod projects;
 mod prompts;
@@ -28,6 +29,9 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Set once the teams were put away for a restart (`app_prepare_restart`), so the exit that follows
 /// doesn't record the now-empty team list over the one saved for the restart.
 static PREPARED: AtomicBool = AtomicBool::new(false);
+
+/// Set when this app quits to make way for another version: nothing more is written to disk.
+static LEFT_AS_IS: AtomicBool = AtomicBool::new(false);
 
 /// Set once the user confirmed closing or quitting: the close/exit that follows goes through without asking again.
 static CONFIRMED: AtomicBool = AtomicBool::new(false);
@@ -90,6 +94,51 @@ fn app_prepare_restart(app: tauri::AppHandle, reason: Option<String>) {
     put_teams_away(&app, why);
 }
 
+/// Is an old version showing up (or about to)? See `install`. None when all is well.
+#[tauri::command]
+async fn install_check() -> Option<install::Issue> {
+    tauri::async_runtime::spawn_blocking(install::check).await.ok().flatten()
+}
+
+/// The one button in that notice.
+#[tauri::command]
+async fn install_fix(app: tauri::AppHandle, kind: install::Kind) -> Result<(), String> {
+    let working = app.try_state::<Arc<team::TeamManager>>().map(|t| t.working_count()).unwrap_or(0);
+    let then = tauri::async_runtime::spawn_blocking(move || install::repair(kind, working))
+        .await
+        .map_err(|e| e.to_string())??;
+    match then {
+        install::Then::Stay => {}
+        install::Then::RestartSaving => {
+            app_prepare_restart(app.clone(), Some("update".into()));
+            app.request_restart();
+        }
+        install::Then::RestartClean => {
+            leave_saved_state();
+            app.request_restart();
+        }
+        install::Then::SwitchTo { bundle, running } => {
+            // from here on nothing is written: the one we open reads the saved state itself
+            leave_saved_state();
+            if let Err(e) = install::open_app(&bundle, running) {
+                LEFT_AS_IS.store(false, Ordering::SeqCst);
+                QUITTING.store(false, Ordering::SeqCst);
+                PREPARED.store(false, Ordering::SeqCst);
+                return Err(e);
+            }
+            app.exit(0);
+        }
+    }
+    Ok(())
+}
+
+/// Quit without recording this window's teams over what another Prism saved.
+fn leave_saved_state() {
+    LEFT_AS_IS.store(true, Ordering::SeqCst);
+    QUITTING.store(true, Ordering::SeqCst);
+    PREPARED.store(true, Ordering::SeqCst);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // helper mode: stdio MCP bridge for agents that only speak stdio MCP (Antigravity)
@@ -131,7 +180,9 @@ pub fn run() {
             let remember = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                saver.flush();
+                if !LEFT_AS_IS.load(Ordering::SeqCst) {
+                    saver.flush();
+                }
                 // remember who is clocked in (never an empty list from here: at startup nobody is in yet)
                 if !QUITTING.load(Ordering::SeqCst) {
                     let live = saver.live_ids();
@@ -205,6 +256,8 @@ pub fn run() {
             projects::gacha_info,
             app_prepare_restart,
             app_quit_confirm,
+            install_check,
+            install_fix,
             projects::project_set_team,
             projects::project_set_preset,
             projects::project_set_knowledge,
