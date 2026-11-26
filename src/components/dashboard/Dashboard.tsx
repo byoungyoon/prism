@@ -7,7 +7,7 @@ import { specOf } from "./connectors/specs.ts";
 import { arrange, boxPx, clampBox, deltaCells, findFreeSpot, GAP_PX, ROW_PX, type Box } from "./grid.ts";
 import { WidgetCard } from "./WidgetCard";
 import { loadDashboard, useDash } from "./state.ts";
-import type { Widget, WidgetKind } from "../../lib/api";
+import { dashboardApi, type Widget, type WidgetKind } from "../../lib/api";
 
 /** 화면 폭을 아직 못 쟀을 때 쓰는 값 */
 const FALLBACK_W = 960;
@@ -56,6 +56,9 @@ export function Dashboard() {
     setWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
+
+  // 대시보드 탭을 떠나면 웹 칸을 모두 숨긴다 (칸마다 숨기지만 하나도 남지 않게 한 번 더)
+  useEffect(() => () => void dashboardApi.webHideAll().catch(() => {}), []);
 
   // 화면을 떠날 때 끌기가 남아 있으면 걷는다
   useEffect(() => () => stopDrag.current?.(), []);
