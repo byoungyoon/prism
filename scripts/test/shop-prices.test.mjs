@@ -37,3 +37,17 @@ test("소품 가격: 화면(shop.ts)과 앱(ITEM_PRICES)이 같다", () => {
     assert.equal(app.get(name), price, `"${name}" 가격이 다릅니다 (화면 ${price} · 앱 ${app.get(name)})`);
   }
 });
+
+test("츄르 받는 양: 안내(shop.ts EARN)와 앱(Rust 상수)이 같다", () => {
+  const block = read("src/lib/shop.ts").match(/export const EARN = \{([^}]*)\}/)?.[1];
+  assert.ok(block, "shop.ts 에서 EARN을 찾지 못했어요");
+  const screen = [...block.matchAll(/(\w+): (\d+)/g)];
+  assert.ok(screen.length > 0);
+  const rust = read("src-tauri/src/projects.rs");
+  for (const [, key, value] of screen) {
+    const name = key.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase();
+    const found = rust.match(new RegExp(`const ${name}: u(?:32|64) = ([\\d_]+);`))?.[1];
+    assert.ok(found, `projects.rs 에 ${name} 이 없어요`);
+    assert.equal(Number(found.replaceAll("_", "")), Number(value), `${name} 값이 다릅니다`);
+  }
+});

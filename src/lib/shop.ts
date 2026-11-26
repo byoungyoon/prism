@@ -47,3 +47,16 @@ const ITEMS: { name: string; price: number; hint: string }[] = [
 
 /** 상점에 나오는 소품 전부 */
 export const SHOP: ShopEntry[] = ITEMS.map((it): ShopEntry => ({ id: `item:${it.name}`, kind: "item", name: it.name, price: it.price, hint: it.hint }));
+
+/** 토큰 말고 츄르를 받는 양 (안내용). Rust 상수(ATTEND_*·CARD_*·PET_*·TOKENS_PER_CHURU)와 같아야 한다 */
+export const EARN = {
+  tokensPerChuru: 12500,
+  attendBase: 20,
+  attendStep: 2,
+  attendExtraMax: 10,
+  attendWeekBonus: 50,
+  cardReward: 6,
+  cardDailyMax: 10,
+  petReward: 2,
+  petDailyMax: 5,
+} as const;

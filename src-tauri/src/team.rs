@@ -4949,8 +4949,16 @@ impl TeamManager {
     fn finish_card(&self, team: &mut Team, tid: &str, log: String) -> Result<(), String> {
         let pid = team.project.id.clone();
         let t = team.task_mut(tid).ok_or("그런 작업 카드가 없어요")?;
+        // 츄르 보상은 보고까지 온 일을 닫을 때만 (실패했거나 시작도 안 한 카드를 정리하는 건 완료가 아니다)
+        let reward_key = (t.stage == "review").then(|| crate::projects::card_key(&pid, tid, t.created_at));
         t.stage = "done".into();
         t.updated_at = now_ms();
+        if let Some(key) = reward_key {
+            if let Some((reward, s)) = self.app.try_state::<Projects>().and_then(|p| p.reward_card(&key)) {
+                let _ = self.app.emit("prefs", s);
+                let _ = self.app.emit("churu-reward", reward);
+            }
+        }
         // clock the member out only if this is still the card it holds: after a follow-up
         // ("이어서") it is already busy with the next one in the same folder
         let assignee = t.assignee.clone().filter(|a| team.agent(a).is_some_and(|x| x.task_id.as_deref() == Some(tid)));

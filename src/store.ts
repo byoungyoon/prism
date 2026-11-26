@@ -9,7 +9,7 @@ import { workNews } from "./lib/workNews";
 import { api, LOGIN_REQUIRED, type AlertKind, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
 import { DEFAULT_OWNED } from "./lib/shop";
-import type { GachaPulled, Prefs } from "./lib/api";
+import type { ChuruReward, GachaPulled, Prefs } from "./lib/api";
 
 /**
  * 뽑기 연출 중에는 잔액·보유 물건·사무실 털색 반영을 미룬다 (결과가 연출보다 먼저 새지 않게).
@@ -17,6 +17,25 @@ import type { GachaPulled, Prefs } from "./lib/api";
  */
 let holding = false;
 let held: Prefs | null = null;
+
+let rewardSeq = 0;
+
+/**
+ * 출석 확인: 지금 한 번, 그 뒤로는 사용자가 돌아오거나 화면을 누를 때 (앱을 켜 둔 채 날이 바뀌어도 받게).
+ * 하루에 한 번만 주는 것은 앱(Rust)이 지키고, 여기서는 묻는 횟수만 1분에 한 번으로 줄인다.
+ */
+function watchAttendance(ask: () => void) {
+  let last = Date.now();
+  ask();
+  const back = () => {
+    if (document.visibilityState === "hidden" || Date.now() - last < 60_000) return;
+    last = Date.now();
+    ask();
+  };
+  window.addEventListener("focus", back);
+  window.addEventListener("pointerdown", back, true);
+  document.addEventListener("visibilitychange", back);
+}
 
 export type View =
   | { name: "home" }
@@ -69,6 +88,12 @@ interface AppState {
   owned: string[];
   /** the 상점 sheet is open */
   shopOpen: boolean;
+  /** rewards waiting to flash beside the 츄르 balance ("+20 출석"), oldest first */
+  rewardNotes: (ChuruReward & { id: number })[];
+  showReward(r: ChuruReward): void;
+  dropReward(id: number): void;
+  /** a cat was petted or lifted (the app decides whether it pays) */
+  petCat(): void;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
@@ -238,6 +263,21 @@ export const useApp = create<AppState>((set, get) => {
     shopOpen: false,
 
     openShop: (shopOpen) => set({ shopOpen }),
+    rewardNotes: [],
+    showReward: (r) =>
+      set((s) => {
+        // the same kind again while it still waits: one note with the sum (quick petting doesn't queue up)
+        const same = s.rewardNotes.find((n) => n.kind === r.kind);
+        const note = { ...r, amount: r.amount + (same?.amount ?? 0), id: ++rewardSeq };
+        return { rewardNotes: same ? s.rewardNotes.map((n) => (n === same ? note : n)) : [...s.rewardNotes, note] };
+      }),
+    dropReward: (id) => set((s) => ({ rewardNotes: s.rewardNotes.filter((n) => n.id !== id) })),
+    petCat: () => {
+      void api
+        .rewardPet()
+        .then((r) => r && get().showReward(r))
+        .catch(() => {});
+    },
     mainTab: "office",
     setMainTab: (mainTab) => set({ mainTab }),
     startGacha: async () => {
@@ -292,6 +332,13 @@ export const useApp = create<AppState>((set, get) => {
       await api.onPrefs(applyPrefs);
       if (!isRemote) await api.onAlertOpen((id) => get().showAlertTeam(id));
       void api.prefs().then(applyPrefs).catch(() => {});
+      await api.onChuruReward((r) => get().showReward(r));
+      watchAttendance(() =>
+        void api
+          .rewardAttend()
+          .then((r) => r && get().showReward(r))
+          .catch(() => {}),
+      );
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       const reload = async () => {

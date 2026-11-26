@@ -255,6 +255,8 @@ pub fn run() {
             projects::shop_buy,
             projects::gacha_pull,
             projects::gacha_info,
+            projects::reward_attend,
+            projects::reward_pet,
             app_prepare_restart,
             app_quit_confirm,
             install_check,

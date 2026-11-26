@@ -358,6 +358,13 @@ export interface Prefs {
   owned: string[];
 }
 
+/** 토큰 말고 방금 받은 츄르 (Rust ChuruReward). streak는 출석일 때의 연속 일수 */
+export interface ChuruReward {
+  kind: "attend" | "card" | "pet";
+  amount: number;
+  streak: number;
+}
+
 /** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). tier는 흔함·레어·에픽·유니크·레전더리, percent는 소수 첫째 자리까지 */
 export interface GachaCatInfo {
   id: string;
@@ -455,6 +462,12 @@ export const api = {
   /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */
   gachaPull: () => call<GachaPulled>("gacha_pull"),
   onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
+  /** 그날 첫 접속 보상 (이미 받았으면 null) */
+  rewardAttend: () => call<ChuruReward | null>("reward_attend"),
+  /** 고양이 쓰다듬기·들어 올리기 보상 (오늘 상한을 넘었으면 null) */
+  rewardPet: () => call<ChuruReward | null>("reward_pet"),
+  /** 작업 카드가 완료돼 츄르를 받았다 (출석·고양이 보상은 위 명령의 응답으로 온다) */
+  onChuruReward: (fn: (r: ChuruReward) => void): Promise<UnlistenFn> => on<ChuruReward>("churu-reward", fn),
 
   // agent CLIs
   cliStatus: () => call<CliStatus[]>("cli_status"),
