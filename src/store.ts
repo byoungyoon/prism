@@ -36,6 +36,9 @@ interface AppState {
   selectedNode: string;
   selectedCard: string | null;
   error: string | null;
+  /** 관제탑 화면 종류: 사무실(기본) 또는 대시보드 탭 */
+  mainTab: "office" | "dashboard";
+  setMainTab(mainTab: "office" | "dashboard"): void;
 
   // accounts
   accounts: Account[];
@@ -235,6 +238,8 @@ export const useApp = create<AppState>((set, get) => {
     shopOpen: false,
 
     openShop: (shopOpen) => set({ shopOpen }),
+    mainTab: "office",
+    setMainTab: (mainTab) => set({ mainTab }),
     startGacha: async () => {
       holding = true;
       try {

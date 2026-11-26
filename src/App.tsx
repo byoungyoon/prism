@@ -16,6 +16,7 @@ import { useEngineEdit } from "./engines/editing";
 import { HomeScreen } from "./screens/HomeScreen";
 import { AgentScreen } from "./screens/AgentScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { Dashboard } from "./components/dashboard/Dashboard";
 import { useShallow } from "zustand/react/shallow";
 
 const page = {
@@ -83,6 +84,7 @@ const PHONE_TABS = [
 
 function MainView() {
   const { left, right } = useApp(useShallow((s) => ({ left: s.left, right: s.right })));
+  const dash = useApp((s) => s.mainTab === "dashboard");
   const narrow = useNarrow();
   const [tab, setTab] = useState<(typeof PHONE_TABS)[number]["id"]>("chat");
   // a clicked notification: the 허락 칸 sits in the chat tab
@@ -96,8 +98,8 @@ function MainView() {
     0,
   );
 
-  if (narrow)
-    return (
+  // 사무실은 가려만 두고 계속 떠 있게 (고양이·휴게실 상태 유지). 대시보드는 열 때만 붙여서 웹 칸이 사무실 위에 남지 않게 한다.
+  const office = narrow ? (
       <div className="relative flex min-h-0 min-w-0 flex-auto flex-col gap-2 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div role="tablist" aria-label="화면" className="glass flex max-w-full gap-0.5 self-center rounded-full p-1">
           {PHONE_TABS.map((t) => {
@@ -120,13 +122,24 @@ function MainView() {
           {tab === "chat" ? <LeadColumn /> : tab === "feed" ? <CenterOffice /> : <TaskBoard />}
         </div>
       </div>
-    );
-
-  return (
+    ) : (
     <div className="relative flex min-h-0 flex-auto gap-3 p-3">
       {left && <LeadColumn />}
       <CenterPanel />
       {right && <TaskBoard />}
+    </div>
+    );
+
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-auto flex-col">
+      <div hidden={dash} className="relative flex min-h-0 min-w-0 flex-auto flex-col">
+        {office}
+      </div>
+      {dash && (
+        <div className="relative flex min-h-0 min-w-0 flex-auto flex-col p-3 max-[820px]:p-2">
+          <Dashboard />
+        </div>
+      )}
     </div>
   );
 }
