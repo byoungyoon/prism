@@ -270,6 +270,12 @@ export function Onboarding() {
                           다시 시도
                         </button>
                         <span className="flex-auto" />
+                        {/* a failed install must not lock the app: the guide comes back next launch */}
+                        {failed === current.name && (
+                          <button onClick={() => void finish(false)} disabled={busy} className="min-h-9 rounded-full px-4 text-[12.5px] text-ink-2">
+                            나중에 할게요
+                          </button>
+                        )}
                         <button onClick={() => setStep("pick")} className="min-h-9 rounded-full px-4 text-[12.5px] text-ink-2">
                           이전
                         </button>
