@@ -7,6 +7,16 @@
 /** 처음에 가진 물건 (돈 없이 쓸 수 있는 털색) */
 export const DEFAULT_OWNED = ["cat:white"];
 
+/** 뽑기 등급 이름(Rust GACHA_CATS) → 표시 색 클래스(styles.css .rarity-*). 흰 고양이의 '기본'은 뽑기 등급이 아니다. */
+export const RARITY_CLASS: Record<string, string> = {
+  기본: "rarity-base",
+  흔함: "rarity-common",
+  레어: "rarity-rare",
+  에픽: "rarity-epic",
+  유니크: "rarity-unique",
+  레전더리: "rarity-legendary",
+};
+
 export interface ShopEntry {
   id: string;
   kind: "item";

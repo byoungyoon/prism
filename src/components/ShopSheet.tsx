@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useApp } from "../store";
 import { api, type GachaInfo } from "../lib/api";
-import { SHOP, type ShopEntry } from "../lib/shop";
+import { RARITY_CLASS, SHOP, type ShopEntry } from "../lib/shop";
 import { COATS, type Coat } from "./critters/pixel/coats";
 import { FH, FW, K } from "./critters/pixel/art";
 import { strip } from "./critters/pixel/render";
@@ -46,6 +46,11 @@ function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boo
       />
     </span>
   );
+}
+
+/** 등급 표시: 등급마다 다른 색의 작은 알약 (레전더리만 은은하게 반짝인다) */
+function RarityBadge({ tier }: { tier: string }) {
+  return <span className={`rarity ${RARITY_CLASS[tier] ?? "rarity-base"}`}>{tier}</span>;
 }
 
 function ItemCard({ e, owned, churu, busy, onBuy }: { e: ShopEntry; owned: boolean; churu: number; busy: boolean; onBuy: () => void }) {
@@ -182,6 +187,9 @@ export function ShopSheet() {
   const pullDisabled = !info || animating || allCollected || short > 0;
   const revealCoat = reveal ? COATS.find((c) => `cat:${c.id}` === reveal.cat) : undefined;
   const revealWord = revealCoat?.word ?? "";
+  /** 고양이 등급: 흰 고양이는 '기본', 나머지는 뽑기 정보에서 */
+  const tierOf = (id: string) => (id === "white" ? "기본" : info?.cats.find((x) => x.id === id)?.tier ?? "");
+  const revealTier = revealCoat ? tierOf(revealCoat.id) : "";
   const list = SHOP;
 
   return (
@@ -253,8 +261,15 @@ export function ShopSheet() {
                     <span role="status" aria-live="polite" className="text-[13.5px] font-semibold">
                       {!reveal ? "고양이 뽑기" : reveal.stage === "shake" ? "두근두근…" : reveal.isNew ? "새 고양이!" : "이미 가진 고양이"}
                     </span>
-                    <span className="text-[11.5px] text-ink-2">
-                      {reveal && reveal.stage !== "shake" ? `${revealWord} 고양이` : `한 번에 ${price.toLocaleString("ko-KR")}츄르 (같은 고양이가 나와도 값은 같아요)`}
+                    <span className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-2">
+                      {reveal && reveal.stage !== "shake" ? (
+                        <>
+                          {revealTier && <RarityBadge tier={revealTier} />}
+                          <span>{revealWord} 고양이</span>
+                        </>
+                      ) : (
+                        `한 번에 ${price.toLocaleString("ko-KR")}츄르 (같은 고양이가 나와도 값은 같아요)`
+                      )}
                     </span>
                     {allCollected ? (
                       <span className="text-[11.5px]" style={{ color: "var(--block-ink)" }}>고양이를 모두 모았어요</span>
@@ -283,10 +298,11 @@ export function ShopSheet() {
                     <span className="text-[12px] font-semibold">뽑기 확률 (한 마리당)</span>
                     <ul className="m-0 grid list-none grid-cols-2 gap-x-3 gap-y-1 p-0 text-[12px] text-ink-2">
                       {info.cats.map((c) => (
-                        <li key={c.id} className="flex justify-between gap-2">
+                        <li key={c.id} className="flex items-center justify-between gap-2">
                           <span>{COATS.find((x) => x.id === c.id)?.word ?? c.id}</span>
-                          <span className="font-mono">
-                            {c.tier} {c.percent}%
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <RarityBadge tier={c.tier} />
+                            <span className="w-8 text-right font-mono">{c.percent}%</span>
                           </span>
                         </li>
                       ))}
@@ -302,12 +318,12 @@ export function ShopSheet() {
                   <ul className="m-0 grid list-none grid-cols-3 gap-2 p-0">
                     {COATS.map((c) => {
                       const got = have(c.id);
-                      const tier = c.id === "white" ? "기본" : info?.cats.find((x) => x.id === c.id)?.tier ?? "";
+                      const tier = tierOf(c.id);
                       return (
                         <li key={c.id} className="flex flex-col items-center gap-1 rounded-2xl p-2" style={{ border: "1px solid var(--line)" }}>
                           <CatPicture coat={c} silhouette={!got} />
                           <span className="text-[12px] font-semibold">{got ? `${c.word} 고양이` : "아직 없어요"}</span>
-                          {tier && <span className="text-[11px] text-ink-2">{tier}</span>}
+                          {tier && <RarityBadge tier={tier} />}
                         </li>
                       );
                     })}
