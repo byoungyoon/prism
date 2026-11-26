@@ -26,15 +26,9 @@ jobs:
       - run: |
           cargo test --lib -- --nocapture pty:: sys:: setup_log:: windows_path_tests::
         working-directory: src-tauri
-      # TEMP (T-125 probe): how does Claude Code spell a project folder in .claude.json on Windows?
+      # TEMP (T-125 probe): a normal PC has only Git\cmd on PATH, so no `du`
       - if: always()
         run: |
-          npm install -g @anthropic-ai/claude-code
-          $env:CLAUDE_CONFIG_DIR = "$env:RUNNER_TEMP\cc"
-          New-Item -ItemType Directory -Force $env:CLAUDE_CONFIG_DIR, "$env:RUNNER_TEMP\My Proj" | Out-Null
-          Set-Location "$env:RUNNER_TEMP\My Proj"
-          git init -q
-          claude --version
-          claude mcp add --scope local probe -- cmd /c echo
-          Write-Output "PROBE cwd: $((Get-Location).Path)"
-          Get-Content "$env:CLAUDE_CONFIG_DIR\.claude.json"
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'du.exe')) }) -join ';'
+          cargo test --lib -- --nocapture sys::tests::folder_size
+        working-directory: src-tauri
