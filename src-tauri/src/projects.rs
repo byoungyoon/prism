@@ -129,13 +129,13 @@ pub struct Settings {
     /// let members do safe things (reading, building, local commits…) without asking anyone
     #[serde(default = "yes")]
     pub auto_allow_safe: bool,
-    /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
+    /// 츄르 잔액 (토큰 TOKENS_PER_CHURU개당 1개씩 쌓인다)
     #[serde(default)]
     pub churu: u64,
     /// 가진 상점 물건 id 목록 ("cat:white"는 처음부터 가진다)
     #[serde(default = "default_owned")]
     pub owned: Vec<String>,
-    /// 1,000토큰으로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
+    /// 츄르 1개로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
     #[serde(default)]
     pub churu_rest: u64,
 }
@@ -144,10 +144,10 @@ fn default_owned() -> Vec<String> {
     vec!["cat:white".into()]
 }
 
-/// 토큰 25,000개당 츄르 1개. 토큰 = input + output + cache_write (cache_read는 뺀다).
+/// 토큰 12,500개당 츄르 1개. 토큰 = input + output + cache_write (cache_read는 뺀다).
 /// 이 컴퓨터 최근 4주 주간 평균 약 2,990만 토큰(입력+출력+캐시생성, 캐시읽기 제외)
-/// → 4주 약 1억 1,960만 토큰 ≈ 상점 전체 합계 약 4,800츄르가 되도록 정함.
-pub const TOKENS_PER_CHURU: u64 = 25_000;
+/// → 4주 약 1억 1,960만 토큰 ≈ 약 4,800츄르(25,000개당 1개)로 처음 정했고, 이후 받는 양을 2배(약 9,600츄르)로 늘림.
+pub const TOKENS_PER_CHURU: u64 = 12_500;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -224,22 +224,23 @@ pub fn buy_item(s: &mut Settings, id: &str) -> Result<(), String> {
 /// 뽑기 1회 가격 (츄르). 환급은 없다: 이미 가진 고양이가 나와도 같은 가격을 낸다.
 pub const GACHA_PRICE: u64 = 250;
 
-/// 뽑기 대상 고양이 11종 (흰 고양이는 처음부터 가져서 뺀다). (id, 등급, 가중치), 가중치 합 300.
-/// 흔함 36(12%) · 귀함 24(8%) · 아주 귀함 16(약 5.3%).
+/// 뽑기 대상 고양이 11종 (흰 고양이는 처음부터 가져서 뺀다). (id, 등급, 가중치), 가중치 합 100 → 가중치가 곧 확률(%).
+/// 한 마리당: 흔함 14% · 레어 8% · 에픽 6% · 유니크 5% · 레전더리 3%.
 /// 근거: 한 달 약 4,780츄르 - 소품 930 = 3,850츄르 → 환급 없이 250씩 15번 뽑는다.
-/// 모의 뽑기 6만 번: 11종 중 평균 약 8.1종 (중앙값 8, 93%가 7종 이상) → 흰 고양이 포함 약 9/12종.
+/// 15번 뽑으면 11종 중 평균 약 7.8종 (기댓값) → 흰 고양이 포함 약 9/12종. 샴을 얻을 확률은 약 37%.
+/// id는 저장 데이터(Prefs.owned)에 쓰이므로 바꾸지 않는다.
 pub const GACHA_CATS: &[(&str, &str, u32)] = &[
-    ("grey", "흔함", 36),
-    ("cream", "흔함", 36),
-    ("ginger", "흔함", 36),
-    ("bicolor", "흔함", 36),
-    ("pink", "흔함", 36),
-    ("silver", "귀함", 24),
-    ("black", "귀함", 24),
-    ("brown", "귀함", 24),
-    ("calico", "아주 귀함", 16),
-    ("tuxedo", "아주 귀함", 16),
-    ("siamese", "아주 귀함", 16),
+    ("grey", "흔함", 14),
+    ("ginger", "흔함", 14),
+    ("cream", "흔함", 14),
+    ("bicolor", "흔함", 14),
+    ("pink", "레어", 8),
+    ("black", "레어", 8),
+    ("silver", "레어", 8),
+    ("brown", "에픽", 6),
+    ("calico", "에픽", 6),
+    ("tuxedo", "유니크", 5),
+    ("siamese", "레전더리", 3),
 ];
 
 /// 뽑기 결과. `cat`은 "cat:<털색 id>", `is_new`는 처음 얻은 고양이인지.
@@ -290,7 +291,7 @@ pub fn gacha_roll(s: &mut Settings, rand: &mut dyn FnMut() -> u32) -> Result<(St
     Ok((cat, is_new))
 }
 
-/// 화면이 확률표를 그릴 때 쓰는 값. percent는 소수 첫째 자리까지 (5.3 등).
+/// 화면이 확률표를 그릴 때 쓰는 값. percent는 소수 첫째 자리까지.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GachaCatInfo {
@@ -838,6 +839,15 @@ mod churu_tests {
     }
 
     #[test]
+    fn churu_is_paid_at_double_the_old_rate() {
+        // 예전에는 25,000토큰에 1개였다: 같은 토큰으로 이제 2개
+        assert_eq!(churu_add(0, 0, 25_000), (2, 0));
+        assert_eq!(churu_add(0, 0, 1_000_000), (80, 0));
+        // 이미 모은 츄르는 다시 계산하지 않는다
+        assert_eq!(churu_add(100, 0, 0), (100, 0));
+    }
+
+    #[test]
     fn rest_below_rate_carries_over() {
         // 환율 미만은 츄르로 안 바뀌고 나머지로 이월된다
         assert_eq!(churu_add(0, 0, TOKENS_PER_CHURU - 1), (0, TOKENS_PER_CHURU - 1));
@@ -897,9 +907,9 @@ mod churu_tests {
     }
 
     #[test]
-    fn gacha_weights_sum_to_300_with_eleven_cats() {
+    fn gacha_weights_sum_to_100_with_eleven_cats() {
         let total: u32 = GACHA_CATS.iter().map(|c| c.2).sum();
-        assert_eq!(total, 300);
+        assert_eq!(total, 100);
         assert_eq!(GACHA_CATS.len(), 11);
         // white(기본 보유)은 뽑기 대상이 아니다
         assert!(GACHA_CATS.iter().all(|c| c.0 != "white"));
@@ -909,16 +919,29 @@ mod churu_tests {
     #[test]
     fn pick_boundaries_follow_weights() {
         assert_eq!(pick_cat(&mut || 0), "grey");
-        assert_eq!(pick_cat(&mut || 35), "grey");
-        assert_eq!(pick_cat(&mut || 36), "cream");
-        assert_eq!(pick_cat(&mut || 179), "pink"); // 36×5 = 180 미만이면 흔함
-        assert_eq!(pick_cat(&mut || 180), "silver");
-        assert_eq!(pick_cat(&mut || 299), "siamese");
+        assert_eq!(pick_cat(&mut || 13), "grey");
+        assert_eq!(pick_cat(&mut || 14), "ginger");
+        assert_eq!(pick_cat(&mut || 55), "bicolor"); // 14×4 = 56 미만이면 흔함
+        assert_eq!(pick_cat(&mut || 56), "pink");
+        assert_eq!(pick_cat(&mut || 80), "brown"); // 56 + 8×3 = 80부터 에픽
+        assert_eq!(pick_cat(&mut || 92), "tuxedo");
+        assert_eq!(pick_cat(&mut || 96), "tuxedo");
+        assert_eq!(pick_cat(&mut || 97), "siamese");
+        assert_eq!(pick_cat(&mut || 99), "siamese");
+    }
+
+    #[test]
+    fn pick_over_one_full_cycle_matches_percent() {
+        // 난수 0..100을 한 번씩 넣으면 각 고양이가 정확히 자기 확률(%)만큼 나온다
+        for (id, _, w) in GACHA_CATS {
+            let hits = (0..100u32).filter(|&x| pick_cat(&mut || x) == *id).count();
+            assert_eq!(hits, *w as usize, "{id}");
+        }
     }
 
     #[test]
     fn pick_skips_values_outside_even_range() {
-        // u32::MAX 근처 값은 300으로 똑같이 나눠지지 않아 버리고 다시 뽑는다 (치우침 방지)
+        // u32::MAX 근처 값은 100으로 똑같이 나눠지지 않아 버리고 다시 뽑는다 (치우침 방지)
         let mut seq = vec![u32::MAX, u32::MAX - 1, 7].into_iter();
         assert_eq!(pick_cat(&mut || seq.next().unwrap()), "grey");
     }
@@ -972,14 +995,24 @@ mod churu_tests {
     }
 
     #[test]
-    fn gacha_info_lists_eleven_cats_with_percent() {
+    fn gacha_info_lists_five_tiers_summing_to_100_percent() {
         let info = gacha_info_value();
         assert_eq!(info.price, 250);
         assert_eq!(info.cats.len(), 11);
-        let grey = info.cats.iter().find(|c| c.id == "grey").unwrap();
-        assert_eq!((grey.tier, grey.percent), ("흔함", 12.0));
-        let siamese = info.cats.iter().find(|c| c.id == "siamese").unwrap();
-        assert_eq!((siamese.tier, siamese.percent), ("아주 귀함", 5.3));
+        assert_eq!(info.cats.iter().map(|c| c.percent).sum::<f64>(), 100.0);
+        // (등급, 한 마리당 확률, 그 등급의 고양이)
+        let expected: &[(&str, f64, &[&str])] = &[
+            ("흔함", 14.0, &["grey", "ginger", "cream", "bicolor"]),
+            ("레어", 8.0, &["pink", "black", "silver"]),
+            ("에픽", 6.0, &["brown", "calico"]),
+            ("유니크", 5.0, &["tuxedo"]),
+            ("레전더리", 3.0, &["siamese"]),
+        ];
+        for (tier, percent, ids) in expected {
+            let found: Vec<&str> = info.cats.iter().filter(|c| c.tier == *tier).map(|c| c.id).collect();
+            assert_eq!(found, ids.to_vec(), "{tier}");
+            assert!(info.cats.iter().filter(|c| c.tier == *tier).all(|c| c.percent == *percent), "{tier}");
+        }
     }
 
     #[test]

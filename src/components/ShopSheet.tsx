@@ -3,8 +3,11 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useApp } from "../store";
 import { api, type GachaInfo } from "../lib/api";
-import { SHOP, type ShopEntry } from "../lib/shop";
+import { RARITY_CLASS, SHOP, type ShopEntry } from "../lib/shop";
 import { COATS, type Coat } from "./critters/pixel/coats";
+import { FH, FW, K } from "./critters/pixel/art";
+import { strip } from "./critters/pixel/render";
+import { ART_SIZE, shopArt } from "./shopArt";
 
 const spring = { type: "spring" as const, stiffness: 320, damping: 30 };
 
@@ -12,29 +15,42 @@ const spring = { type: "spring" as const, stiffness: 320, damping: 30 };
 const SHAKE_MS = 1100;
 const DONE_MS = 2000;
 
-/** 소품 그림: 이모지 한 개 */
+/** 도트 그림 한 장 (소품·뽑기 상자) */
+function PixelArt({ name }: { name: string }) {
+  return <img src={shopArt(name)} width={ART_SIZE} height={ART_SIZE} alt="" draggable={false} style={{ imageRendering: "pixelated" }} />;
+}
+
+/** 소품 그림 */
 function ItemPicture({ e }: { e: ShopEntry }) {
   return (
-    <span aria-hidden="true" className="flex size-12 shrink-0 items-center justify-center rounded-[12px] text-[26px]" style={{ background: "var(--chip)" }}>
-      {e.icon}
+    <span aria-hidden="true" className="flex size-14 shrink-0 items-center justify-center rounded-[12px]" style={{ background: "var(--chip)" }}>
+      <PixelArt name={e.name} />
     </span>
   );
 }
 
-/** 고양이 얼굴 조각. silhouette면 털색 없이 회색 그림자 (아직 못 얻은 고양이) */
+/** 사무실과 같은 도트 고양이가 앉은 모습. silhouette면 털색 없이 회색 그림자 (아직 못 얻은 고양이) */
 function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boolean }) {
-  const c = silhouette
-    ? { top: "var(--line)", chest: "var(--line)", ear: "var(--line)", eye: "transparent" }
-    : { top: coat.top, chest: coat.chest, ear: coat.ear, eye: coat.eye };
+  // 그림 한 칸(FW·K × FH·K)에서 위쪽 빈 곳(감정 표시 자리)은 잘라내고 보여준다. 그림자 모양은 흰 고양이로 통일
+  const url = strip(silhouette ? COATS[0] : coat, "look", [1], "plain");
   return (
-    <span aria-hidden="true" className="relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[12px]" style={{ background: "var(--chip)" }}>
-      <span className="absolute top-[9px] left-[12px] size-0 border-x-[6px] border-b-[9px] border-x-transparent" style={{ borderBottomColor: c.ear }} />
-      <span className="absolute top-[9px] right-[12px] size-0 border-x-[6px] border-b-[9px] border-x-transparent" style={{ borderBottomColor: c.ear }} />
-      <span className="absolute bottom-[6px] h-[26px] w-[32px] rounded-[14px]" style={{ background: c.top, boxShadow: `inset 0 -6px 0 ${c.chest}` }} />
-      <span className="absolute top-[18px] size-[6px] rounded-full" style={{ left: 16, background: c.eye }} />
-      <span className="absolute top-[18px] size-[6px] rounded-full" style={{ right: 16, background: c.eye }} />
+    <span aria-hidden="true" className="relative block size-14 shrink-0 overflow-hidden rounded-[12px]" style={{ background: "var(--chip)" }}>
+      <img
+        src={url}
+        width={FW * K}
+        height={FH * K}
+        alt=""
+        draggable={false}
+        className="absolute top-[-7px] left-[4px] max-w-none"
+        style={{ imageRendering: "pixelated", filter: silhouette ? "brightness(0) invert(0.5)" : undefined, opacity: silhouette ? 0.35 : 1 }}
+      />
     </span>
   );
+}
+
+/** 등급 표시: 등급마다 다른 색의 작은 알약 (레전더리만 은은하게 반짝인다) */
+function RarityBadge({ tier }: { tier: string }) {
+  return <span className={`rarity ${RARITY_CLASS[tier] ?? "rarity-base"}`}>{tier}</span>;
 }
 
 function ItemCard({ e, owned, churu, busy, onBuy }: { e: ShopEntry; owned: boolean; churu: number; busy: boolean; onBuy: () => void }) {
@@ -171,6 +187,9 @@ export function ShopSheet() {
   const pullDisabled = !info || animating || allCollected || short > 0;
   const revealCoat = reveal ? COATS.find((c) => `cat:${c.id}` === reveal.cat) : undefined;
   const revealWord = revealCoat?.word ?? "";
+  /** 고양이 등급: 흰 고양이는 '기본', 나머지는 뽑기 정보에서 */
+  const tierOf = (id: string) => (id === "white" ? "기본" : info?.cats.find((x) => x.id === id)?.tier ?? "");
+  const revealTier = revealCoat ? tierOf(revealCoat.id) : "";
   const list = SHOP;
 
   return (
@@ -227,11 +246,10 @@ export function ShopSheet() {
                     {!reveal || reveal.stage === "shake" ? (
                       <motion.span
                         aria-hidden="true"
-                        className="text-[30px]"
                         animate={reveal && !reduce ? { rotate: [0, -8, 8, -8, 8, 0], x: [0, -3, 3, -3, 3, 0] } : undefined}
                         transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
                       >
-                        📦
+                        <PixelArt name="뽑기 상자" />
                       </motion.span>
                     ) : revealCoat ? (
                       <motion.span initial={reduce ? false : { scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={spring}>
@@ -243,8 +261,15 @@ export function ShopSheet() {
                     <span role="status" aria-live="polite" className="text-[13.5px] font-semibold">
                       {!reveal ? "고양이 뽑기" : reveal.stage === "shake" ? "두근두근…" : reveal.isNew ? "새 고양이!" : "이미 가진 고양이"}
                     </span>
-                    <span className="text-[11.5px] text-ink-2">
-                      {reveal && reveal.stage !== "shake" ? `${revealWord} 고양이` : `한 번에 ${price.toLocaleString("ko-KR")}츄르 (같은 고양이가 나와도 값은 같아요)`}
+                    <span className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-ink-2">
+                      {reveal && reveal.stage !== "shake" ? (
+                        <>
+                          {revealTier && <RarityBadge tier={revealTier} />}
+                          <span>{revealWord} 고양이</span>
+                        </>
+                      ) : (
+                        `한 번에 ${price.toLocaleString("ko-KR")}츄르 (같은 고양이가 나와도 값은 같아요)`
+                      )}
                     </span>
                     {allCollected ? (
                       <span className="text-[11.5px]" style={{ color: "var(--block-ink)" }}>고양이를 모두 모았어요</span>
@@ -273,10 +298,11 @@ export function ShopSheet() {
                     <span className="text-[12px] font-semibold">뽑기 확률 (한 마리당)</span>
                     <ul className="m-0 grid list-none grid-cols-2 gap-x-3 gap-y-1 p-0 text-[12px] text-ink-2">
                       {info.cats.map((c) => (
-                        <li key={c.id} className="flex justify-between gap-2">
+                        <li key={c.id} className="flex items-center justify-between gap-2">
                           <span>{COATS.find((x) => x.id === c.id)?.word ?? c.id}</span>
-                          <span className="font-mono">
-                            {c.tier} {c.percent}%
+                          <span className="flex shrink-0 items-center gap-1.5">
+                            <RarityBadge tier={c.tier} />
+                            <span className="w-8 text-right font-mono">{c.percent}%</span>
                           </span>
                         </li>
                       ))}
@@ -292,12 +318,12 @@ export function ShopSheet() {
                   <ul className="m-0 grid list-none grid-cols-3 gap-2 p-0">
                     {COATS.map((c) => {
                       const got = have(c.id);
-                      const tier = c.id === "white" ? "기본" : info?.cats.find((x) => x.id === c.id)?.tier ?? "";
+                      const tier = tierOf(c.id);
                       return (
                         <li key={c.id} className="flex flex-col items-center gap-1 rounded-2xl p-2" style={{ border: "1px solid var(--line)" }}>
                           <CatPicture coat={c} silhouette={!got} />
                           <span className="text-[12px] font-semibold">{got ? `${c.word} 고양이` : "아직 없어요"}</span>
-                          {tier && <span className="text-[11px] text-ink-2">{tier}</span>}
+                          {tier && <RarityBadge tier={tier} />}
                         </li>
                       );
                     })}

@@ -26,17 +26,17 @@ export const SCENARIO_NAMES = () => Object.keys(SCENARIOS);
 export const GACHA_INFO = {
   price: 250,
   cats: [
-    { id: "grey", tier: "흔함", percent: 12 },
-    { id: "cream", tier: "흔함", percent: 12 },
-    { id: "ginger", tier: "흔함", percent: 12 },
-    { id: "bicolor", tier: "흔함", percent: 12 },
-    { id: "pink", tier: "흔함", percent: 12 },
-    { id: "silver", tier: "귀함", percent: 8 },
-    { id: "black", tier: "귀함", percent: 8 },
-    { id: "brown", tier: "귀함", percent: 8 },
-    { id: "calico", tier: "아주 귀함", percent: 5.3 },
-    { id: "tuxedo", tier: "아주 귀함", percent: 5.3 },
-    { id: "siamese", tier: "아주 귀함", percent: 5.3 },
+    { id: "grey", tier: "흔함", percent: 14 },
+    { id: "ginger", tier: "흔함", percent: 14 },
+    { id: "cream", tier: "흔함", percent: 14 },
+    { id: "bicolor", tier: "흔함", percent: 14 },
+    { id: "pink", tier: "레어", percent: 8 },
+    { id: "black", tier: "레어", percent: 8 },
+    { id: "silver", tier: "레어", percent: 8 },
+    { id: "brown", tier: "에픽", percent: 6 },
+    { id: "calico", tier: "에픽", percent: 6 },
+    { id: "tuxedo", tier: "유니크", percent: 5 },
+    { id: "siamese", tier: "레전더리", percent: 3 },
   ],
 };
 
@@ -214,9 +214,10 @@ const SCENARIOS = {
     };
   },
 
-  // 고양이 뽑기 시연 (fresh 사무실 위에): gacha = 츄르 넉넉, 새 고양이가 나옴 / gacha-dup = 같은 고양이가 나옴 / gacha-poor = 츄르 부족
+  // 고양이 뽑기 시연 (fresh 사무실 위에): gacha = 츄르 넉넉, 새 고양이가 나옴 / gacha-dup = 같은 고양이가 나옴 / gacha-legend = 레전더리(샴)가 나옴 / gacha-poor = 츄르 부족
   "gacha": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:calico" }),
   "gacha-dup": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:grey" }),
+  "gacha-legend": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:siamese" }),
   "gacha-poor": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(120, PARTIAL_OWNED), gachaNext: "cat:calico" }),
 
   // 팀이 없을 때: 홈 화면(프로젝트 목록만)

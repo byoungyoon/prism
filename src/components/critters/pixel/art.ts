@@ -3,9 +3,12 @@
 // colours them, so every coat shares the same drawings:
 //   o outline        k fur (head top, back)     w fur (cheeks, sides)    c chest / muzzle
 //   p inside of ear  l paw                      t tail                   y eye      n nose
+// (the side walk is drawn finer, straight at K× — walk.ts)
 //   . nothing
 // A frame is FW × FH dots; the cat stands on the bottom rows, the space above its head is for the
 // little signs (♪, ♥, 💢 …) in faces.ts.
+
+import { walkFrame } from "./walk";
 
 export const FW = 24;
 export const FH = 28;
@@ -135,14 +138,6 @@ const TAIL_BACK: Art[] = [
   ["oo..", "oto.", ".oto", ".oto", ".oto", ".oto"],
 ];
 
-/** standing, side, facing right (18 wide): back, belly */
-const BODY_SIDE: Art = [
-  "..ooooooooooo...",
-  ".okkkkkkkkkkko..",
-  "okkkkkkkkkkkkko.",
-  "owwkkkkkkkkkwwo.",
-  ".owwwwwwwwwwwo..",
-];
 /** four legs (a dot column each, outlined) at these x, three dots long */
 const legsAt = (xs: number[], w = 18, long = 4): Art =>
   Array.from({ length: long }, (_, y) => {
@@ -154,14 +149,18 @@ const legsAt = (xs: number[], w = 18, long = 4): Art =>
     }
     return r.join("");
   });
-/** side legs: still, back and front pairs apart, still, pairs together */
-const LEGS_SIDE: Art[] = [legsAt([2, 5, 9, 12]), legsAt([1, 6, 8, 13]), legsAt([2, 5, 9, 12]), legsAt([3, 4, 10, 11])];
-/** side tail, up and curving back */
+/** standing, side, facing right (18 wide): the stretch */
+const BODY_SIDE: Art = [
+  "..ooooooooooo...",
+  ".okkkkkkkkkkko..",
+  "okkkkkkkkkkkkko.",
+  "owwkkkkkkkkkwwo.",
+  ".owwwwwwwwwwwo..",
+];
+/** side tail, up and curving back (the stretch, lying down) */
 const TAIL_SIDE: Art[] = [
-  ["oo..", "oto.", ".oto", "..ot", "..ot"],
   [".oo.", ".oto", "..ot", "..ot", "..ot"],
   ["oo..", "oto.", ".oto", "..ot", "..ot"],
-  ["o...", "oto.", "otto", "..ot", "..ot"],
 ];
 
 /** lying on its front, side view (20 wide): the stretch and the lie-down */
@@ -202,6 +201,10 @@ export const ROWS: Row[] = ["front", "side", "back", "sit", "look", "lie", "slee
 /** each frame of each row: the parts, and where the face goes (for faces.ts) */
 export interface Frame {
   parts: Placed[];
+  /** a frame drawn straight at the fine resolution (FW·K × FH·K letters), used instead of `parts` */
+  fine?: string[][];
+  /** the side walk: the middle of its body, in fine dots (coats.ts places its markings by it) */
+  bodyY?: number;
   /** front face: eyes at these x on row eyeY, nose at `nose` (all in frame dots) */
   front?: { eyes: [number, number]; eyeY: number; nose: [number, number]; look?: -1 | 0 | 1 };
   /** side face: the eye */
@@ -246,21 +249,10 @@ const backFrame = (i: number): Frame => {
   };
 };
 
+/** walking sideways: drawn at the fine resolution (walk.ts), eight frames; both eyes show */
 const sideFrame = (i: number): Frame => {
-  const bob = i % 2;
-  const by = GROUND - 8 + bob;
-  const hx = 9;
-  const hy = by - 7;
-  return {
-    parts: [
-      { art: TAIL_SIDE[i], x: 1, y: by - 4 },
-      { art: BODY_SIDE, x: 2, y: by },
-      { art: LEGS_SIDE[i], x: 2, y: by + 5 },
-      { art: HEAD_SIDE, x: hx, y: hy },
-    ],
-    side: { eye: [hx + FACE_SIDE.eye[0], hy + FACE_SIDE.eye[1]] },
-    top: hy,
-  };
+  const w = walkFrame(i);
+  return { parts: [], fine: w.grid, bodyY: w.bodyY, front: { eyes: w.eyes, eyeY: w.eyeY, nose: w.nose }, top: w.top };
 };
 
 /** sitting down: from standing to sitting, then sitting (a breath) */
@@ -303,7 +295,7 @@ const lieFrame = (i: number): Frame => {
     const by = GROUND - 6;
     return {
       parts: [
-        { art: TAIL_SIDE[1], x: 0, y: by - 7 },
+        { art: TAIL_SIDE[0], x: 0, y: by - 7 },
         { art: BODY_SIDE, x: 1, y: by - 2, slope: 4 },
         { art: legsAt([2, 5]), x: 1, y: by + 3 },
         { art: ["oooooo", "llllllo", "oooooo"], x: 15, y: by + 3 },
@@ -317,7 +309,7 @@ const lieFrame = (i: number): Frame => {
   const hy = by - 8 + (i === 3 ? 1 : 0);
   return {
     parts: [
-      { art: TAIL_SIDE[2], x: 0, y: by - 3 },
+      { art: TAIL_SIDE[1], x: 0, y: by - 3 },
       { art: BODY_LIE, x: 1, y: by },
       { art: HEAD_SIDE, x: 9, y: hy },
     ],
@@ -359,12 +351,15 @@ const sleepFrame = (i: number): Frame => {
 
 const MAKERS: Record<Row, (i: number) => Frame> = { front: frontFrame, side: sideFrame, back: backFrame, sit: sitFrame, look: lookFrame, lie: lieFrame, sleep: sleepFrame, lift: liftFrame };
 
-/** frame `i` (0–3) of a row */
+/** frame `i` of a row (0–3; the side walk has 0–7) */
 export const frameOf = (row: Row, i: number): Frame => MAKERS[row](i);
 
 /** the frame as letters, FW × FH (later parts draw over earlier ones) */
 export function letters(f: Frame): string[][] {
   const g = Array.from({ length: FH }, () => Array<string>(FW).fill("."));
+  // a fine frame seen at one letter per drawing dot: any filled dot of each K × K block
+  const fine = f.fine;
+  if (fine) return g.map((row, y) => row.map((_, x) => [fine[y * K][x * K], fine[y * K][x * K + 1], fine[y * K + 1][x * K], fine[y * K + 1][x * K + 1]].find((c) => c !== ".") ?? "."));
   for (const p of f.parts) {
     p.art.forEach((row, dy) => {
       const cells = p.flip ? [...row].reverse() : [...row];
@@ -404,4 +399,4 @@ export function scale2x(g: string[][]): string[][] {
 }
 
 /** the frame at K × K dots per drawing dot, smoothed (see scale2x) */
-export const hires = (f: Frame): string[][] => scale2x(letters(f));
+export const hires = (f: Frame): string[][] => f.fine ?? scale2x(letters(f));

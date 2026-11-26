@@ -95,6 +95,13 @@ export function catName(a: { name: string; role: "lead" | "mgr" | "worker" }): s
   return CAT_NAMES[COATS.indexOf(coatOf(a.name, a.role))] ?? a.name;
 }
 
+/** a colour a little darker (#rrggbb → rgb()) */
+export const darken = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  const d = (v: number) => Math.round(v * 0.82);
+  return `rgb(${d(n >> 16)}, ${d((n >> 8) & 255)}, ${d(n & 255)})`;
+};
+
 /** a colour a little lighter (#rrggbb → rgb()) */
 export const lift = (hex: string) => {
   const n = parseInt(hex.slice(1), 16);
@@ -103,14 +110,40 @@ export const lift = (hex: string) => {
 };
 
 /**
- * The colour of one dot. `x, y` are in the frame; `top` is where the head starts (patterns follow
- * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face.
+ * The markings of the side walk, placed on its own drawing (walk.ts): a mask on the turned face,
+ * stripes on the forehead and down the back, patches on the rump. `x` is from the middle of the
+ * face, `ry` from the top of the head, `by` from the middle of the body (so they ride with it).
  */
-export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number): string | null {
+function sideMark(coat: Coat, ch: string, x: number, ry: number, by: number): string | null {
+  const onBody = by >= -7 && (x < -13 || (ry > 18 && x < -7));
+  if (coat.stripe) {
+    if (!onBody && "k".includes(ch) && ry >= 4 && ry <= 7 && (Math.abs(x) <= 1 || Math.abs(Math.abs(x) - 5) <= 0)) return coat.stripe;
+    if (onBody && "kw".includes(ch) && by <= 1 && (x + 64 + Math.floor(by / 3)) % 5 < 2) return coat.stripe;
+    if (ch === "t" && (ry + 64) % 5 < 2) return coat.stripe;
+  }
+  if (coat.patch && "kw".includes(ch)) {
+    if (!onBody && ch === "k" && ry <= 11 && x < -1) return coat.patch[0];
+    if (!onBody && ch === "k" && ry <= 9 && x > 2) return coat.patch[1];
+    if (onBody && ((x + 21) / 5) ** 2 + ((by + 5) / 5) ** 2 <= 1) return coat.patch[0];
+  }
+  if (coat.point) {
+    if ("kwc".includes(ch) && (x / 8.5) ** 2 + ((ry - 13) / 5.5) ** 2 <= 1) return coat.point;
+    if (ch === "k" && !onBody && ry <= 4) return coat.point;
+  }
+  return null;
+}
+
+/**
+ * The colour of one dot. `x, y` are in the frame; `top` is where the head starts (patterns follow
+ * the head, so they don't slide about as the cat bobs); `faceX` the middle of the face; `bodyY` the middle of the body, given for the side walk only.
+ */
+export function dotColor(coat: Coat, ch: string, x: number, y: number, top: number, faceX: number, bodyY?: number): string | null {
   // x, y, top and faceX are in the drawn cat's dots (K × K per drawing dot, see art.ts), so the
   // patterns below are twice as fine as the drawing: thin tabby stripes, smaller patches
   const fur = (c: string) => {
     const ry = y - top;
+    const speckle = (x * 5 + y * 3) % 23 === 0 ? lift(c) : c;
+    if (bodyY !== undefined) return sideMark(coat, ch, x - faceX, ry, y - bodyY) ?? speckle;
     if (coat.stripe && (ch === "k" || ch === "t") && ry >= 6 && ry % 6 < 2 && (x + ry) % 11 !== 0) return coat.stripe;
     if (coat.stripe && ch === "w" && ry >= 12 && ry % 6 < 2 && (x < faceX - 10 || x > faceX + 10)) return coat.stripe;
     if (coat.patch && ch === "k") {
@@ -123,7 +156,7 @@ export function dotColor(coat: Coat, ch: string, x: number, y: number, top: numb
     if (coat.point && ry >= 12 && ry <= 22 && Math.abs(x - faceX) <= (ry === 12 || ry === 22 ? 4 : 8)) return coat.point;
     if (coat.point && ry <= 6 && ch === "k") return coat.point;
     // a few lighter hairs, so the fur is not one flat colour
-    return (x * 5 + y * 3) % 23 === 0 ? lift(c) : c;
+    return speckle;
   };
   switch (ch) {
     case "o":
@@ -140,6 +173,11 @@ export function dotColor(coat: Coat, ch: string, x: number, y: number, top: numb
       return coat.paw;
     case "t":
       return fur(coat.tail);
+    // the legs on the far side: the same fur and paw, a shade darker
+    case "f":
+      return darken(coat.point ?? coat.side);
+    case "g":
+      return darken(coat.paw);
     case "y":
       return coat.line;
     case "n":

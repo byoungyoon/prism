@@ -52,6 +52,33 @@ const restPose = (key: string, turn: number): Pose => {
   return REST_POSES[Math.abs(h) % REST_POSES.length];
 };
 
+/** a cat's name on this screen: the same teammate stays the same cat even when a new card gives it a
+ *  new agent record — so it walks over, instead of one leaving and another coming in */
+const catKey = (projectId: string, a: Agent) => `${projectId}:${a.role}:${a.name}`;
+
+/** how long the sign of a change ("일 시작!") stays over a cat's head */
+const FLAG_MS = 3200;
+
+/**
+ * Where everyone is, kept while the office is off the screen (another tab), so that coming back shows
+ * the cats where they were — and one whose work changed meanwhile walks there from its old place.
+ */
+const officeMemory = {
+  /** where each cat was last shown (the room's pixels) */
+  spots: {} as Record<string, Spot>,
+  /** lounging cats' places, from the lounge's corner (they move along when the lounge moves) */
+  strolls: {} as Record<string, Spot>,
+  /** at a desk or in the lounge, as the person last saw it */
+  where: {} as Record<string, "desk" | "lounge">,
+  /** when each cat came to the lounge */
+  cameIn: {} as Record<string, number>,
+  /** the signs of a change still up, and until when */
+  flags: {} as Record<string, { text: string; until: number }>,
+  /** cats that showed up after the first drawing, and the door they came in by */
+  enterFrom: {} as Record<string, Spot>,
+  drawn: false,
+};
+
 /** most cats shown in the lounge; the rest are a "+N" */
 const LOUNGE_MAX = 10;
 
@@ -261,7 +288,13 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
   // permission requests waiting for the person, by the agent asking (that cat stays at its desk)
   const asks = useMemo(() => {
     const by: Record<string, ChatMsg[]> = {};
-    for (const { project, team } of shown) for (const m of team.chat) if (m.permission && waitsForMe(m)) (by[`${project.id}:${m.permission.agentId}`] ??= []).push(m);
+    for (const { project, team } of shown)
+      for (const m of team.chat) {
+        if (!m.permission || !waitsForMe(m)) continue;
+        const id = m.permission.agentId;
+        const a = team.agents.find((x) => x.id === id);
+        (by[a ? catKey(project.id, a) : `${project.id}:${id}`] ??= []).push(m);
+      }
     return by;
   }, [shown]);
 
@@ -272,7 +305,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const pods: { project: Project; desks: Member[]; waiting: Member[] }[] = [];
     const idle: Member[] = [];
     for (const { project, team } of shown) {
-      const member = (a: Agent): Member => ({ key: `${project.id}:${a.id}`, project, team, agent: a, task: currentCard(team, a) });
+      const member = (a: Agent): Member => ({ key: catKey(project.id, a), project, team, agent: a, task: currentCard(team, a) });
       const crew = liveCrew(team).map(member);
       // reported 작업자, and resting ones while nobody is in: in the lounge with or without the 총괄
       const reported = loungeOnlyCrew(team).map(({ agent, reported }): Member => ({ ...member(agent), reported }));
@@ -292,8 +325,9 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
   const lounging = waitingAll.slice(0, LOUNGE_MAX);
   const extra = waitingAll.length - lounging.length;
   const members = [...deskMembers, ...lounging];
+  const deskKeys = deskMembers.map((m) => m.key).join("|");
   // what the layout depends on: who is where (a permission bubble floats over the room and moves nothing)
-  const shape = members.map((m) => m.key).join("|");
+  const shape = `${deskKeys}/${members.map((m) => m.key).join("|")}`;
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
@@ -302,6 +336,8 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const el = content.current;
     if (!el) return;
     const measure = () => {
+      // hidden behind another tab: everything measures 0, which would send the cats to the corner
+      if (!el.clientWidth) return;
       const o = el.getBoundingClientRect();
       const seats: Record<string, Spot> = {};
       el.querySelectorAll<HTMLElement>("[data-seat]").forEach((s) => {
@@ -339,23 +375,35 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const le = el.querySelector("[data-lounge]");
     if (le) ro.observe(le);
     return () => ro.disconnect();
-  }, [shape, size, owned.join("|"), layoutKey]);
+  }, [shape, size, owned.join("|"), layoutKey, paused]);
 
   // lounging cats: a spot each — by the sofa, the coffee machine, a plant, or anywhere in between,
   // never on top of another cat — and now and then one gets up and wanders slowly to another
-  const [strolls, setStrolls] = useState<Record<string, Spot>>({});
+  const [strolls, setStrolls] = useState<Record<string, Spot>>(() => officeMemory.strolls);
+  useEffect(() => {
+    officeMemory.strolls = strolls;
+  }, [strolls]);
+  /** a lounging cat's place in the room's pixels */
+  const loungeSpot = (key: string): Spot | undefined => {
+    const p = strolls[key];
+    const L = room?.lounge;
+    return p && L ? { x: L.x + within(p.x, 0, L.w), y: L.y + within(p.y, 0, L.h) } : undefined;
+  };
   const loungers = lounging.map((m) => m.key);
   const loungeKey = loungers.join("|");
   useEffect(() => {
     if (!room) return;
     const L = room.lounge;
     const keys = loungeKey ? loungeKey.split("|") : [];
+    const clear = (p: Spot) => !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
+    /** a kept place (from the lounge's corner) in the room's pixels */
+    const abs = (p: Spot) => ({ x: L.x + within(p.x, 0, L.w), y: L.y + within(p.y, 0, L.h) });
     const pickFor = (movers: string[], cur: Record<string, Spot>) => {
       const next = { ...cur };
       for (const k of movers) {
-        const others = keys.filter((o) => o !== k && next[o]).map((o) => next[o]);
+        const others = keys.filter((o) => o !== k && next[o]).map((o) => abs(next[o]));
+        const was = cur[k] && abs(cur[k]);
         const free = (p: Spot) => others.every((o) => Math.hypot(o.x - p.x, o.y - p.y) > size * 1.3);
-        const clear = (p: Spot) => !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
         let best: Spot | null = null;
         for (let t = 0; t < 30; t++) {
           const mark = room.marks.length && Math.random() < 0.6 ? room.marks[Math.floor(Math.random() * room.marks.length)] : null;
@@ -364,26 +412,27 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
             : { x: L.x + Math.random() * L.w, y: L.y + Math.random() * L.h };
           // somewhere new, not where it already stands
           if (!clear(p)) continue;
-          if (free(p) && (!cur[k] || Math.hypot(cur[k].x - p.x, cur[k].y - p.y) > size)) {
+          if (free(p) && (!was || Math.hypot(was.x - p.x, was.y - p.y) > size)) {
             best = p;
             break;
           }
           best ??= p;
         }
-        next[k] = best ?? cur[k] ?? { x: L.x + L.w / 2, y: L.y + L.h / 2 };
+        next[k] = best ? { x: best.x - L.x, y: best.y - L.y } : (cur[k] ?? { x: L.w / 2, y: L.h / 2 });
       }
       return next;
     };
     // newcomers (and everyone, when the lounge moved) get a spot right away
     setStrolls((cur) => {
-      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && p.x >= L.x - 1 && p.x <= L.x + L.w + 1 && p.y >= L.y - 1 && p.y <= L.y + L.h + 1 && !room.blocks.some((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h)));
+      const kept = Object.fromEntries(Object.entries(cur).filter(([k, p]) => keys.includes(k) && clear(abs(p))));
       return pickFor(keys.filter((k) => !kept[k]), kept);
     });
     if (still || !keys.length) return;
     const t = setInterval(() => {
       if (document.hidden || pausedRef.current) return;
       // one of them (rarely two) gets up and strolls somewhere else
-      const movers = keys.filter(() => Math.random() < 0.18);
+      // (not one that is still on its way over)
+      const movers = keys.filter((k) => Date.now() - (officeMemory.cameIn[k] ?? 0) > 12_000 && Math.random() < 0.18);
       if (movers.length) setStrolls((cur) => pickFor(movers.slice(0, 2), cur));
     }, 3400);
     return () => clearInterval(t);
@@ -430,31 +479,63 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     return () => clearInterval(t);
   }, [still]);
 
+  // a cat that got work or was sent to rest says so over its head for a moment. Only a change the
+  // person can see counts: one made while the office was away shows when they come back
+  const [flags, setFlags] = useState(() => officeMemory.flags);
+  useEffect(() => {
+    officeMemory.flags = flags;
+    const ends = Object.values(flags).map((f) => f.until);
+    if (!ends.length) return;
+    const t = setTimeout(() => setFlags((c) => Object.fromEntries(Object.entries(c).filter(([, f]) => f.until > Date.now()))), Math.max(0, Math.min(...ends) - Date.now()) + 20);
+    return () => clearTimeout(t);
+  }, [flags]);
+  const placeKey = `${deskKeys}/${lounging.map((m) => m.key).join("|")}`;
+  useEffect(() => {
+    if (paused) return;
+    const changed: Record<string, { text: string; until: number }> = {};
+    const until = Date.now() + FLAG_MS;
+    for (const m of members) {
+      const now = deskMembers.includes(m) ? "desk" : "lounge";
+      const was = officeMemory.where[m.key];
+      if (was === now) continue;
+      officeMemory.where[m.key] = now;
+      // a newcomer heading for a desk got work too (the first drawing says nothing)
+      if (was || (officeMemory.drawn && now === "desk")) changed[m.key] = { text: now === "desk" ? "일 시작!" : m.reported ? "다 했어요!" : "쉬는 중", until };
+    }
+    if (!Object.keys(changed).length) return;
+    // also written at once: the office may be taken off the screen before the next drawing
+    officeMemory.flags = { ...officeMemory.flags, ...changed };
+    setFlags((c) => ({ ...c, ...changed }));
+  }, [placeKey, paused]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // where each cat was last shown: a cat whose next spot isn't measured yet (it just got up from its
   // desk, or sat down at a new one) stays put for that moment instead of leaving the layer — leaving
   // and coming back would make it pop up over there instead of walking
-  const lastSpot = useRef<Record<string, Spot>>({});
-  // a cat that shows up after the first drawing walks in from the door; the first drawing stays put
-  const enterFrom = useRef<Record<string, Spot>>({});
-  const firstDrawn = useRef(false);
-  for (const k of Object.keys(enterFrom.current)) if (!members.some((m) => m.key === k)) delete enterFrom.current[k];
+  const { spots: lastSpot, enterFrom, cameIn } = officeMemory;
+  // a cat that left the office comes in by the door next time
+  for (const k of Object.keys(lastSpot))
+    if (!members.some((m) => m.key === k)) {
+      delete lastSpot[k];
+      delete officeMemory.where[k];
+    }
+  for (const k of Object.keys(enterFrom)) if (!members.some((m) => m.key === k)) delete enterFrom[k];
   // when each cat came to the lounge (gone once it's back at a desk)
-  const cameIn = useRef<Record<string, number>>({});
-  for (const k of Object.keys(cameIn.current)) if (!lounging.some((m) => m.key === k)) delete cameIn.current[k];
-  for (const m of lounging) cameIn.current[m.key] ??= Date.now();
-  const settled = (k: string) => Date.now() - (cameIn.current[k] ?? 0) > 6000;
-  // who sat at a desk last render: a cat that stays at its desk while the layout shifts (a desk
-  // joins the row) moves with the desk, instantly —
-  // walking there would leave the cat behind, under the desk, for a moment
-  const wasAtDesk = useRef<Set<string>>(new Set());
-  const prevDesk = wasAtDesk.current;
-  const deskKeys = deskMembers.map((m) => m.key).join("|");
+  for (const k of Object.keys(cameIn)) if (!lounging.some((m) => m.key === k)) delete cameIn[k];
+  for (const m of lounging) cameIn[m.key] ??= Date.now();
+  const settled = (k: string) => Date.now() - (cameIn[k] ?? 0) > 6000;
+  // who was shown on its seat last time: a cat that stays at its desk while the layout shifts (a desk
+  // joins the row) moves with the desk, instantly — walking there would leave the cat behind, under
+  // the desk, for a moment. One only now getting its seat walks there. (Noted after the drawing, so
+  // the first drawing with a seat still counts as walking.)
+  const onSeat = useRef<Set<string>>(new Set());
+  const seatedNow = deskMembers.filter((m) => room?.seats[m.key]).map((m) => m.key).join("|");
   useEffect(() => {
-    wasAtDesk.current = new Set(deskKeys ? deskKeys.split("|") : []);
-  }, [deskKeys]);
+    onSeat.current = new Set(seatedNow ? seatedNow.split("|") : []);
+  }, [seatedNow]);
   const items: PlacedCritter[] = [];
   useEffect(() => {
-    if (items.length) firstDrawn.current = true;
+    // the first drawing is done once everyone has a place (the lounge's are picked a moment later)
+    if (items.length && items.length === members.length) officeMemory.drawn = true;
   });
   for (const m of members) {
     const seat = room?.seats[m.key];
@@ -462,10 +543,10 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     // a cat held up by a person is where the pointer has it
     const mine = held?.key === m.key ? held : undefined;
     const md = mood[m.key];
-    const spot = mine ? { x: mine.x, y: mine.y } : (desk ? seat && { x: seat.x, y: seat.y } : strolls[m.key]) ?? lastSpot.current[m.key];
+    const spot = mine ? { x: mine.x, y: mine.y } : (desk ? seat && { x: seat.x, y: seat.y } : loungeSpot(m.key)) ?? lastSpot[m.key];
     if (!spot) continue;
-    if (!lastSpot.current[m.key] && firstDrawn.current && room) enterFrom.current[m.key] ??= room.door;
-    lastSpot.current[m.key] = spot;
+    if (!lastSpot[m.key] && officeMemory.drawn && room) enterFrom[m.key] ??= room.door;
+    lastSpot[m.key] = spot;
     const st = critterState(m.agent, m.task);
     items.push({
       id: m.key,
@@ -474,7 +555,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       colorKey: m.agent.role === "lead" ? m.project.name : undefined,
       x: spot.x,
       y: spot.y,
-      from: enterFrom.current[m.key],
+      from: enterFrom[m.key],
       // a cat on a break naps now and then instead of hopping about
       // (a held cat looks limp and teary: "fail")
       state: mine ? "fail" : desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
@@ -484,7 +565,9 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
       speed: desk || mine || md?.fast || !settled(m.key) ? undefined : narrow ? 38 : 52,
       fidget: desk && !asks[m.key]?.length,
-      snap: !!mine || (desk && prevDesk.has(m.key)),
+      snap: desk && !!seat && onSeat.current.has(m.key),
+      drag: !!mine,
+      flag: mine || asks[m.key]?.length ? undefined : flags[m.key]?.text,
       // a rebel wriggles in the hand
       struggle: !!mine && !mine.compliant,
       say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : (md?.say ?? chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
@@ -534,7 +617,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const m = members.find((x) => x.key === key);
     if (!m || !room || asks[key]?.length) return false; // a cat asking for permission waits for its answer
     const desk = deskMembers.includes(m);
-    const spot = desk ? room.seats[key] : (strolls[key] ?? lastSpot.current[key]);
+    const spot = desk ? room.seats[key] : (loungeSpot(key) ?? lastSpot[key]);
     if (!desk && !spot) return false;
     const p = local(e);
     // a cat's character follows its coat; a little one in five times it does the opposite
@@ -591,11 +674,11 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       // a docile cat stays where it is put: it sits or lies down there for a while
       const x = within(g.x, b.x, b.x + b.w);
       const y = within(g.y, b.y, b.y + b.h);
-      setStrolls((c) => ({ ...c, [g.key]: { x, y } }));
+      setStrolls((c) => ({ ...c, [g.key]: { x: x - b.x, y: y - b.y } }));
       feel(g.key, { pose: Math.random() < 0.5 ? "sit" : "coffee" }, 9000);
     } else {
       // a rebel hisses and runs back to where it was
-      setStrolls((c) => ({ ...c, [g.key]: g.origin }));
+      setStrolls((c) => ({ ...c, [g.key]: { x: g.origin.x - b.x, y: g.origin.y - b.y } }));
       feel(g.key, { say: "하악!", fast: true }, 2200);
     }
   };
@@ -725,7 +808,8 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
           </div>
         </div>
         <div className="of-cats">
-          <CritterLayer id="office" items={items} size={size} speed={narrow ? 110 : 160} width={room?.w} door={room?.door} />
+          {/* off the screen while another tab is open: put back, each cat goes on from where it was seen */}
+          {!paused && <CritterLayer id="office" remember items={items} size={size} speed={narrow ? 95 : 135} width={room?.w} door={room?.door} />}
         </div>
         {askSpots.map(({ key, m, at }) => (
           <AskBubble key={`ask-${key}`} m={m} msgs={asks[key]} at={at} width={room!.w} half={halves[key]} />

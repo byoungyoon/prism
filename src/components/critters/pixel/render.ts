@@ -38,7 +38,7 @@ function paint(g: CanvasRenderingContext2D, coat: Coat, row: Row, i: number, fee
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const ch = grid[y][x];
-      let c = dotColor(coat, ch, x, y, f.top * K, faceX * K);
+      let c = dotColor(coat, ch, x, y, f.top * K, faceX * K, f.bodyY);
       if (!c) continue;
       // fur on the top silhouette catches the light: a lift along the top edge (lying and curled poses)
       if ("kwt".includes(ch) && c.startsWith("#") && !filled(x, y - 1)) c = lift(c);

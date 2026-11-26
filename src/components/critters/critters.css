@@ -281,6 +281,18 @@
   text-overflow: ellipsis;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
+/* a change just happened ("일 시작!", "쉬는 중"): the sign pops up over its head */
+.cr-say.cr-flag {
+  background: var(--amber);
+  border-color: transparent;
+  color: #2b2118;
+  font-weight: 700;
+  animation: cr-flag 0.35s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes cr-flag {
+  0% { transform: translateY(6px) scale(0.7); }
+  100% { transform: none; }
+}
 .cr-name {
   margin-top: -2px;
   font-size: 9.5px;
@@ -372,7 +384,8 @@
     animation: none !important;
   }
   .cr-in,
-  .cr-leaving {
+  .cr-leaving,
+  .cr-flag {
     animation: none !important;
   }
   .cr-mover {
@@ -412,6 +425,14 @@
   animation-name: px-run-4;
   animation-timing-function: steps(4);
 }
+.px-run-8 {
+  animation-name: px-run-8;
+  animation-timing-function: steps(8);
+}
+@keyframes px-run-8 {
+  from { background-position-x: 0%; }
+  to { background-position-x: 114.2857%; }
+}
 @keyframes px-run-2 {
   from { background-position-x: 0%; }
   to { background-position-x: 200%; }
@@ -427,7 +448,8 @@
 }
 /* (stronger than the state rules above, which give .cr-body a breathing animation) */
 .px-cat .px-sprite.px-run-2,
-.px-cat .px-sprite.px-run-4 {
+.px-cat .px-sprite.px-run-4,
+.px-cat .px-sprite.px-run-8 {
   animation-delay: 0s;
   animation-iteration-count: infinite;
 }
@@ -438,6 +460,10 @@
 .px-cat .px-sprite.px-run-4 {
   animation-name: px-run-4;
   animation-timing-function: steps(4);
+}
+.px-cat .px-sprite.px-run-8 {
+  animation-name: px-run-8;
+  animation-timing-function: steps(8);
 }
 .cr-paused .px-sprite {
   animation-play-state: paused !important;

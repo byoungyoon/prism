@@ -358,7 +358,7 @@ export interface Prefs {
   owned: string[];
 }
 
-/** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). percent는 소수 첫째 자리 (5.3 등) */
+/** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). tier는 흔함·레어·에픽·유니크·레전더리, percent는 소수 첫째 자리까지 */
 export interface GachaCatInfo {
   id: string;
   tier: string;
