@@ -55,9 +55,20 @@ jobs:
         if: matrix.pc == 'clean'
         shell: pwsh
         run: |
+          # really uninstall them: with only the folders hidden, winget still thinks they are there
+          $roots = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          foreach ($e in Get-ItemProperty $roots -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^(Git|Git version .*|Node\.js.*)$' }) {
+            if ($e.PSChildName -match '^\{.*\}$') { $p = Start-Process msiexec -ArgumentList '/x', $e.PSChildName, '/qn', '/norestart' -PassThru -Wait }
+            else { $p = Start-Process ($e.UninstallString.Trim('"')) -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES' -PassThru -Wait }
+            "uninstalled $($e.DisplayName) exit=$($p.ExitCode)"
+          }
+          Start-Sleep 10
+          # copies that were never "installed" (tool cache, other toolchains) only need to disappear
           foreach ($d in "$env:ProgramFiles\nodejs", "$env:ProgramFiles\Git", "C:\hostedtoolcache\windows\node", "C:\mingw64", "C:\npm\prefix") {
             if (Test-Path $d) { try { Rename-Item $d "$d.hidden" -ErrorAction Stop; "hidden $d" } catch { "could not hide ${d}: $_" } }
           }
+          Remove-Item Env:npm_config_prefix -ErrorAction SilentlyContinue
+          [Environment]::SetEnvironmentVariable('npm_config_prefix', $null, 'Machine')
           $win = $env:SystemRoot
           [Environment]::SetEnvironmentVariable('Path', "$win\system32;$win;$win\System32\Wbem;$win\System32\WindowsPowerShell\v1.0\", 'Machine')
           [Environment]::SetEnvironmentVariable('Path', "$env:LOCALAPPDATA\Microsoft\WindowsApps", 'User')
@@ -111,13 +122,25 @@ jobs:
           "---- marks"; Get-Content "$env:OUT\marks.txt" -ErrorAction SilentlyContinue
           "---- windows that appeared"; Get-Content "$env:OUT\windows.tsv" -ErrorAction SilentlyContinue | Where-Object { $_ -match "`tnew`t" }
           "---- processes that started"; Get-Content "$env:OUT\processes.tsv" -ErrorAction SilentlyContinue
-          # give the hidden folders back so the job can clean up after itself
-          foreach ($d in "$env:ProgramFiles\nodejs", "$env:ProgramFiles\Git", "C:\hostedtoolcache\windows\node", "C:\mingw64", "C:\npm\prefix") {
-            if (Test-Path "$d.hidden") { Rename-Item "$d.hidden" $d -ErrorAction SilentlyContinue }
-          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: installed-${{ matrix.pc }}
           path: ${{ runner.temp }}/out
           retention-days: 7
+
+  # Git is on winget's books but its files are gone (or Prism can't find them)
+  stale-record:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: what winget does, with and without --force
+        shell: pwsh
+        run: |
+          Rename-Item "$env:ProgramFiles\Git" "Git.hidden"
+          $common = 'install', '--id', 'Git.Git', '-e', '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements'
+          winget @common
+          "plain: exit=$LASTEXITCODE git.exe=$(Test-Path "$env:ProgramFiles\Git\cmd\git.exe")"
+          winget @common --force
+          "force: exit=$LASTEXITCODE git.exe=$(Test-Path "$env:ProgramFiles\Git\cmd\git.exe")"
+          exit 0
