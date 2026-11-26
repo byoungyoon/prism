@@ -346,7 +346,40 @@ export interface Prefs {
   restart?: "update" | "quit" | null;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** desktop notification when a request starts waiting for the user */
+  askAlert: boolean;
+  /** desktop notification when work finishes, fails or gets stuck */
+  workAlert: boolean;
+  /** 안전한 일(읽기·빌드·내 브랜치 커밋)은 묻지 않고 허락 */
+  autoAllowSafe: boolean;
+  /** 츄르 잔액 (상점에서 쓰는 돈) */
+  churu: number;
+  /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
+  owned: string[];
 }
+
+/** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). percent는 소수 첫째 자리 (5.3 등) */
+export interface GachaCatInfo {
+  id: string;
+  tier: string;
+  percent: number;
+}
+
+/** 고양이 뽑기 정보 (Rust gacha_info) */
+export interface GachaInfo {
+  price: number;
+  cats: GachaCatInfo[];
+}
+
+/** 뽑기 1회 결과 (Rust gacha_pull). cat은 "cat:<털색 id>" */
+export interface GachaPulled {
+  cat: string;
+  isNew: boolean;
+  prefs: Prefs;
+}
+
+/** desktop alerts, switched separately: a permission request | work finished, failed or stuck */
+export type AlertKind = "ask" | "work";
 
 /** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
 export type QuitKind = "window" | "quit";
@@ -383,12 +416,25 @@ export const api = {
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
   setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
+  setAlert: (kind: AlertKind, on: boolean) => call<Prefs>("prefs_set_alert", { kind, on }),
+  /** desktop only: a clickable notification about a team (skipped when that kind is off, or when `watching` and the window is in front) */
+  teamAlert: (projectId: string, kind: AlertKind, title: string, body: string, watching: boolean) => call<void>("team_alert", { projectId, kind, title, body, watching }),
+  /** desktop only: the user clicked such a notification */
+  onAlertOpen: (fn: (projectId: string) => void): Promise<UnlistenFn> => on<string>("alert-open", fn),
+  setAutoAllowSafe: (on: boolean) => call<Prefs>("prefs_set_auto_allow_safe", { on }),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
+  /** buy a shop item (소품 only; the price is Rust's): returns the updated prefs, or rejects with a plain Korean reason */
+  buyItem: (id: string) => call<Prefs>("shop_buy", { id }),
+  /** 고양이 뽑기 가격과 고양이별 등급·확률 (화면 확률표) */
+  gachaInfo: () => call<GachaInfo>("gacha_info"),
+  /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */
+  gachaPull: () => call<GachaPulled>("gacha_pull"),
+  onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
 
   // agent CLIs
   cliStatus: () => call<CliStatus[]>("cli_status"),

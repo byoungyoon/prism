@@ -43,15 +43,48 @@ export const COATS: Coat[] = [
   { id: "tuxedo", word: "턱시도", line: "#141215", top: "#262428", side: "#2e2c31", chest: "#ffffff", ear: "#6e555b", paw: "#ffffff", tail: "#262428", eye: "#e0b44a", nose: "#e9a1ab" },
 ];
 
+/** the coats a team can show: only the ones bought in the shop (white is free) */
+let OWNED: Coat[] = [COATS[0]];
+
+/** 상점에서 산 털색 (Prefs.owned의 "cat:<id>"). 팀원 털색은 이 안에서만 고른다. */
+export function setOwnedCoats(ids: string[]) {
+  const pool = COATS.filter((c) => ids.includes(`cat:${c.id}`));
+  OWNED = pool.length ? pool : [COATS[0]];
+}
+
 /** W1, W2… each a different coat in turn; other names a steady pick. 총괄 and 팀장 start elsewhere. */
 export function coatOf(name: string, role: "lead" | "mgr" | "worker"): Coat {
+  const pool = OWNED;
   const n = /(\d+)\s*$/.exec(name);
   const base = role === "lead" ? 2 : role === "mgr" ? 5 : 0;
-  if (n) return COATS[(base + Number(n[1]) - 1 + COATS.length * 4) % COATS.length];
+  if (n) return pool[(base + Number(n[1]) - 1 + pool.length * 4) % pool.length];
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) | 0;
-  return COATS[(base + Math.abs(h)) % COATS.length];
+  return pool[(base + Math.abs(h)) % pool.length];
 }
+
+/**
+ * 성격: 순응형(docile)은 들어 올려도 축 늘어져 있다가 놓은 자리에 앉거나 눕고, 반항형(wild)은
+ * 버둥대며 "하악!" 하고 놓으면 원래 자리로 도망간다. 털색마다 정해 두고, 약 20%는 반대로 행동한다.
+ */
+export type Temper = "docile" | "wild";
+export const TEMPER: Record<string, Temper> = {
+  white: "docile",
+  grey: "docile",
+  cream: "docile",
+  ginger: "wild",
+  bicolor: "docile",
+  silver: "wild",
+  black: "wild",
+  calico: "docile",
+  brown: "docile",
+  siamese: "wild",
+  pink: "docile",
+  tuxedo: "wild",
+};
+/** 성격과 반대로 행동할 확률 */
+export const TEMPER_FLIP = 0.2;
+export const temperOf = (coat: Coat): Temper => TEMPER[coat.id] ?? "docile";
 
 /** 코트 색과 어울리는 한국어 고양이 이름 (COATS와 같은 순서) */
 const CAT_NAMES = ["두부", "안개", "모모", "치즈", "보리", "은비", "까망이", "나비", "호두", "라떼", "솜이", "턱시"];

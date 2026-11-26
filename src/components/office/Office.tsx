@@ -3,7 +3,7 @@
 // A cat at work sits at its own desk tapping away; a cat with nothing to do strolls about the lounge
 // (sofa, coffee machine, plants) or naps there. A permission request pops up over the asking cat's
 // head, with 허락 / 거절 right in the bubble (the same answer the chat's cards send).
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as RMouse, type PointerEvent as RPointer } from "react";
 import { useApp, useOfficeTeams, waitsForMe } from "../../store";
 import type { Agent, ChatMsg, Project, Task, TeamSnapshot } from "../../lib/api";
 import { plainAction } from "../../lib/plainAction";
@@ -12,7 +12,7 @@ import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
-import { catName } from "../critters/pixel/coats";
+import { catName, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
@@ -54,6 +54,73 @@ const restPose = (key: string, turn: number): Pose => {
 
 /** most cats shown in the lounge; the rest are a "+N" */
 const LOUNGE_MAX = 10;
+
+/** the furniture's places (fractions of the lounge's size) are kept in this browser */
+const LAYOUT_KEY = "prism.lounge.layout";
+function loadLayout(): Record<string, Spot> {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null");
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+/** a press that moves less than this is a click, not a drag */
+const DRAG_PX = 6;
+/** a piece of furniture is never dragged up under the lounge's name tag */
+const LABEL_PAD = 30;
+const within = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** how a lounging cat is for a while: a line it says, a pose it takes, or hurrying off */
+interface Mood {
+  say?: string;
+  pose?: Pose;
+  fast?: boolean;
+}
+/** a cat held up by the scruff, and where it is now (in the room's pixels) */
+interface Lift {
+  key: string;
+  x: number;
+  y: number;
+  compliant: boolean;
+}
+interface CatGesture {
+  key: string;
+  desk: boolean;
+  pid: number;
+  sx: number;
+  sy: number;
+  /** the press's offset from the cat's feet, so it does not jump to the pointer */
+  ox: number;
+  oy: number;
+  x: number;
+  y: number;
+  on: boolean;
+  compliant: boolean;
+  origin: Spot;
+  box: Box;
+  move: (e: PointerEvent) => void;
+  up: (e: PointerEvent) => void;
+}
+interface PieceGesture {
+  name: string;
+  pid: number;
+  sx: number;
+  sy: number;
+  dx: number;
+  dy: number;
+  w: number;
+  h: number;
+  on: boolean;
+  el: HTMLElement;
+  move: (e: PointerEvent) => void;
+  up: (e: PointerEvent) => void;
+}
+function stopGesture(g: { pid: number; move: (e: PointerEvent) => void; up: (e: PointerEvent) => void }) {
+  window.removeEventListener("pointermove", g.move);
+  window.removeEventListener("pointerup", g.up);
+  window.removeEventListener("pointercancel", g.up);
+}
 
 function Desk({ m, onOpen }: { m: Member; onOpen: () => void }) {
   const role = m.agent.role;
@@ -151,15 +218,45 @@ function AskBubble({ m, msgs, at, width, half: want }: { m: Member; msgs: ChatMs
   );
 }
 
-export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
+export function Office({ paused = false }: { onTeam?: (projectId: string) => void; paused?: boolean } = {}) {
+  // hidden behind another tab: keep the state, stop the wandering and chatter timers
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
   // the furniture's pixel pictures (drawn once, kept in a <style>)
   ensurePixelOffice();
   const shown = useOfficeTeams();
+  // the lounge's furniture: only what the person bought in the shop is drawn ("item:<이름>")
+  const owned = useApp((s) => s.owned);
+  const has = (name: string) => owned.includes(`item:${name}`);
   const openIn = useApp((s) => s.openIn);
   const narrow = useNarrow();
   const still = useReducedMotion();
   const size = narrow ? 46 : 58;
   const content = useRef<HTMLDivElement>(null);
+
+  // the lounge's furniture can be dragged about; the places are kept (localStorage)
+  const loungeRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<Record<string, Spot>>(loadLayout);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch {
+      // no storage: the places just aren't kept
+    }
+  }, [layout]);
+  const layoutKey = JSON.stringify(layout);
+  /** a piece of furniture moved by hand has its own place; the rest keep their place in the CSS */
+  const pieceAt = (name: string): CSSProperties | undefined => {
+    const p = layout[name];
+    return p ? { left: `${p.x * 100}%`, top: `${p.y * 100}%`, right: "auto", bottom: "auto", transform: "translate(-50%, -50%)" } : undefined;
+  };
+  // how the lounging cats are for a while (a line, a pose, hurrying off), and a cat held up right now
+  const [mood, setMood] = useState<Record<string, Mood>>({});
+  const [held, setHeld] = useState<Lift | null>(null);
+  const catG = useRef<CatGesture | null>(null);
+  const pieceG = useRef<PieceGesture | null>(null);
+  // a press on a cat (or over its desk) must not also open that desk when released
+  const swallow = useRef(false);
 
   // permission requests waiting for the person, by the agent asking (that cat stays at its desk)
   const asks = useMemo(() => {
@@ -242,7 +339,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     const le = el.querySelector("[data-lounge]");
     if (le) ro.observe(le);
     return () => ro.disconnect();
-  }, [shape, size]);
+  }, [shape, size, owned.join("|"), layoutKey]);
 
   // lounging cats: a spot each — by the sofa, the coffee machine, a plant, or anywhere in between,
   // never on top of another cat — and now and then one gets up and wanders slowly to another
@@ -284,7 +381,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     });
     if (still || !keys.length) return;
     const t = setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || pausedRef.current) return;
       // one of them (rarely two) gets up and strolls somewhere else
       const movers = keys.filter(() => Math.random() < 0.18);
       if (movers.length) setStrolls((cur) => pickFor(movers.slice(0, 2), cur));
@@ -302,7 +399,7 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     if (still) return;
     let clear: ReturnType<typeof setTimeout> | undefined;
     const t = setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || pausedRef.current) return;
       const { members: ms, deskMembers: ds, asks: ak } = talkRef.current;
       const quiet = ms.filter((m) => !ak[m.key]?.length);
       if (!quiet.length) return;
@@ -362,7 +459,10 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
   for (const m of members) {
     const seat = room?.seats[m.key];
     const desk = deskMembers.includes(m);
-    const spot = (desk ? seat && { x: seat.x, y: seat.y } : strolls[m.key]) ?? lastSpot.current[m.key];
+    // a cat held up by a person is where the pointer has it
+    const mine = held?.key === m.key ? held : undefined;
+    const md = mood[m.key];
+    const spot = mine ? { x: mine.x, y: mine.y } : (desk ? seat && { x: seat.x, y: seat.y } : strolls[m.key]) ?? lastSpot.current[m.key];
     if (!spot) continue;
     if (!lastSpot.current[m.key] && firstDrawn.current && room) enterFrom.current[m.key] ??= room.door;
     lastSpot.current[m.key] = spot;
@@ -376,15 +476,18 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
       y: spot.y,
       from: enterFrom.current[m.key],
       // a cat on a break naps now and then instead of hopping about
-      state: desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
+      // (a held cat looks limp and teary: "fail")
+      state: mine ? "fail" : desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
       // the lounge isn't all coffee: each cat has its own way of resting (it changes now and then)
-      pose: desk ? undefined : restPose(m.key, restTurn),
+      pose: mine ? "lift" : desk ? undefined : (md?.pose ?? restPose(m.key, restTurn)),
       // a lounging cat ambles; one at its desk fidgets now and then (not while asking)
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
-      speed: desk || !settled(m.key) ? undefined : narrow ? 38 : 52,
+      speed: desk || mine || md?.fast || !settled(m.key) ? undefined : narrow ? 38 : 52,
       fidget: desk && !asks[m.key]?.length,
-      snap: desk && prevDesk.has(m.key),
-      say: asks[m.key]?.length ? "" : (chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
+      snap: !!mine || (desk && prevDesk.has(m.key)),
+      // a rebel wriggles in the hand
+      struggle: !!mine && !mine.compliant,
+      say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : (md?.say ?? chatter[m.key] ?? (m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
     });
   }
 
@@ -397,8 +500,181 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
     : [];
   const halves = askHalves(askSpots, room?.w ?? 0);
 
+  /** the Mood of one cat for a while (later moods of the same cat win over the timer) */
+  const feel = (key: string, m: Mood, ms: number) => {
+    const mine = { ...m };
+    setMood((c) => ({ ...c, [key]: mine }));
+    setTimeout(
+      () =>
+        setMood((c) => {
+          if (c[key] !== mine) return c;
+          const n = { ...c };
+          delete n[key];
+          return n;
+        }),
+      ms,
+    );
+  };
+  /** a point in the room (the content's pixels), from a pointer event */
+  const local = (e: { clientX: number; clientY: number }) => {
+    const o = content.current!.getBoundingClientRect();
+    return { x: e.clientX - o.left, y: e.clientY - o.top };
+  };
+  /** the cat under the pointer: a little inside its box, so the desk around it still gets its clicks */
+  const catAt = (x: number, y: number): string | null => {
+    const cats = content.current ? Array.from(content.current.querySelectorAll<HTMLElement>("[data-critter]")) : [];
+    for (const c of cats) {
+      if (c.classList.contains("cr-leaving")) continue;
+      const r = (c.querySelector(".critter") ?? c).getBoundingClientRect();
+      if (x >= r.left + r.width * 0.2 && x <= r.right - r.width * 0.2 && y >= r.top + r.height * 0.1 && y <= r.bottom - r.height * 0.1) return c.dataset.critter ?? null;
+    }
+    return null;
+  };
+  const startCat = (e: { clientX: number; clientY: number; pointerId: number }, key: string): boolean => {
+    const m = members.find((x) => x.key === key);
+    if (!m || !room || asks[key]?.length) return false; // a cat asking for permission waits for its answer
+    const desk = deskMembers.includes(m);
+    const spot = desk ? room.seats[key] : (strolls[key] ?? lastSpot.current[key]);
+    if (!desk && !spot) return false;
+    const p = local(e);
+    // a cat's character follows its coat; a little one in five times it does the opposite
+    const coat = coatOf(m.agent.role === "lead" ? m.project.name : m.agent.name, m.agent.role);
+    const compliant = (temperOf(coat) === "docile") !== (Math.random() < TEMPER_FLIP);
+    const g: CatGesture = {
+      key,
+      desk,
+      pid: e.pointerId,
+      sx: e.clientX,
+      sy: e.clientY,
+      ox: spot ? p.x - spot.x : 0,
+      oy: spot ? p.y - spot.y : 0,
+      x: spot?.x ?? p.x,
+      y: spot?.y ?? p.y,
+      on: false,
+      compliant,
+      origin: spot ?? p,
+      box: room.lounge,
+      move: onCatMove,
+      up: onCatUp,
+    };
+    catG.current = g;
+    window.addEventListener("pointermove", g.move);
+    window.addEventListener("pointerup", g.up);
+    window.addEventListener("pointercancel", g.up);
+    return true;
+  };
+  const onCatMove = (e: PointerEvent) => {
+    const g = catG.current;
+    if (!g || e.pointerId !== g.pid || g.desk) return;
+    if (!g.on) {
+      if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) < DRAG_PX) return;
+      g.on = true;
+    }
+    const p = local(e);
+    g.x = p.x - g.ox;
+    g.y = p.y - g.oy;
+    setHeld({ key: g.key, x: g.x, y: g.y, compliant: g.compliant });
+  };
+  const onCatUp = (e: PointerEvent) => {
+    const g = catG.current;
+    if (!g || e.pointerId !== g.pid) return;
+    stopGesture(g);
+    catG.current = null;
+    if (!g.on) {
+      // a press on a cat at work: it is bothered by it, for a moment
+      if (g.desk) feel(g.key, { say: "귀찮아요" }, 1600);
+      return;
+    }
+    setHeld(null);
+    const b = g.box;
+    if (g.compliant) {
+      // a docile cat stays where it is put: it sits or lies down there for a while
+      const x = within(g.x, b.x, b.x + b.w);
+      const y = within(g.y, b.y, b.y + b.h);
+      setStrolls((c) => ({ ...c, [g.key]: { x, y } }));
+      feel(g.key, { pose: Math.random() < 0.5 ? "sit" : "coffee" }, 9000);
+    } else {
+      // a rebel hisses and runs back to where it was
+      setStrolls((c) => ({ ...c, [g.key]: g.origin }));
+      feel(g.key, { say: "하악!", fast: true }, 2200);
+    }
+  };
+  const startPiece = (e: { clientX: number; clientY: number; pointerId: number }, piece: HTMLElement) => {
+    const el = loungeRef.current;
+    if (!el) return;
+    const r = piece.getBoundingClientRect();
+    const g: PieceGesture = {
+      name: piece.dataset.piece ?? "",
+      pid: e.pointerId,
+      sx: e.clientX,
+      sy: e.clientY,
+      dx: e.clientX - (r.left + r.width / 2),
+      dy: e.clientY - (r.top + r.height / 2),
+      w: r.width,
+      h: r.height,
+      on: false,
+      el,
+      move: onPieceMove,
+      up: onPieceUp,
+    };
+    pieceG.current = g;
+    window.addEventListener("pointermove", g.move);
+    window.addEventListener("pointerup", g.up);
+    window.addEventListener("pointercancel", g.up);
+  };
+  const onPieceMove = (e: PointerEvent) => {
+    const g = pieceG.current;
+    if (!g || e.pointerId !== g.pid) return;
+    if (!g.on) {
+      if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) < DRAG_PX) return;
+      g.on = true;
+    }
+    const el = g.el;
+    const r = el.getBoundingClientRect();
+    const W = el.clientWidth;
+    const H = el.clientHeight;
+    if (!W || !H) return;
+    // kept inside the lounge: the piece's centre stays far enough from every edge to show whole
+    const cx = e.clientX - g.dx - r.left - el.clientLeft;
+    const cy = e.clientY - g.dy - r.top - el.clientTop;
+    const x = within(cx, g.w / 2 + 6, W - g.w / 2 - 6) / W;
+    const y = within(cy, LABEL_PAD + g.h / 2, H - g.h / 2 - 6) / H;
+    setLayout((c) => ({ ...c, [g.name]: { x, y } }));
+  };
+  const onPieceUp = (e: PointerEvent) => {
+    const g = pieceG.current;
+    if (!g || e.pointerId !== g.pid) return;
+    stopGesture(g);
+    pieceG.current = null;
+  };
+  /** a press in the room: on a cat (lift it, or be bothered at its desk), else on a piece of the lounge */
+  const onRoomDown = (e: RPointer) => {
+    if (e.button !== 0) return;
+    swallow.current = false;
+    const cat = catAt(e.clientX, e.clientY);
+    if (cat) {
+      if (startCat(e, cat)) {
+        swallow.current = true;
+        e.preventDefault();
+      }
+      return;
+    }
+    const piece = (e.target as HTMLElement).closest<HTMLElement>("[data-piece]");
+    if (piece && loungeRef.current?.contains(piece)) {
+      startPiece(e, piece);
+      e.preventDefault();
+    }
+  };
+  /** the click that ends a press on a cat is not a click on the desk under it */
+  const onRoomClick = (e: RMouse) => {
+    if (!swallow.current) return;
+    swallow.current = false;
+    e.stopPropagation();
+    e.preventDefault();
+  };
+
   return (
-    <div className="of-room" aria-label="사무실: 팀원들이 일하는 모습">
+    <div className="of-room" aria-label="사무실: 팀원들이 일하는 모습" onPointerDown={onRoomDown} onClickCapture={onRoomClick}>
       <div ref={content} className="of-content">
         <div className="of-wall" aria-hidden="true">
           <span className="of-window px-window" />
@@ -426,25 +702,26 @@ export function Office(_props: { onTeam?: (projectId: string) => void } = {}) {
             ))}
             {!pods.length && <span className="of-empty">{shown.length ? "지금 일하는 팀이 없어요. 일을 맡기면 여기 책상에 앉아요." : "출근한 팀이 없어요"}</span>}
           </div>
-          <div className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
+          <div ref={loungeRef} className={`of-lounge${lounging.length ? "" : " of-lounge-quiet"}`} data-lounge aria-hidden="true">
             <span className="of-lounge-name">휴게실{waitingAll.length ? ` · ${waitingAll.length}명` : ""}</span>
             {extra > 0 && <span className="of-lounge-more">+{extra}</span>}
-            <span className="of-frame px-frame" />
-            <span className="of-bookcase px-bookcase" data-block />
-            <span className="of-lamp px-lamp" data-block />
-            <span className="of-sunspot px-sunspot" data-spot data-on />
-            <span className="of-rug px-rug" data-spot />
-            <span className="of-rug2 px-rug2" />
-            <span className="of-sofa px-sofa" data-spot />
-            <span className="of-cushion px-cushion" />
-            <span className="of-catbox px-catbox" data-spot data-on />
-            <span className="of-scratcher px-scratcher" data-spot data-on />
-            <span className="of-yarn px-yarn" />
-            <span className="of-bowls px-bowls" data-spot />
-            <span className="of-coffee px-coffee" data-spot />
-            <span className="of-tower px-tower" data-spot />
-            <span className="of-plant of-plant-1 px-plant" data-block />
-            <span className="of-plant of-plant-2 px-plant" data-block />
+            {/* the bare room (floor and walls) is all there is until something is bought */}
+            {has("액자") && <span className="of-frame px-frame" data-piece="액자" style={pieceAt("액자")} />}
+            {has("책장") && <span className="of-bookcase px-bookcase" data-block data-piece="책장" style={pieceAt("책장")} />}
+            {has("스탠드") && <span className="of-lamp px-lamp" data-block data-piece="스탠드" style={pieceAt("스탠드")} />}
+            {has("햇살 자리") && <span className="of-sunspot px-sunspot" data-spot data-on data-piece="햇살 자리" style={pieceAt("햇살 자리")} />}
+            {has("러그") && <span className="of-rug px-rug" data-spot data-piece="러그" style={pieceAt("러그")} />}
+            {has("러그·쿠션") && <span className="of-rug2 px-rug2" data-piece="러그·쿠션" style={pieceAt("러그·쿠션")} />}
+            {has("소파") && <span className="of-sofa px-sofa" data-spot data-piece="소파" style={pieceAt("소파")} />}
+            {has("러그·쿠션") && <span className="of-cushion px-cushion" data-piece="쿠션" style={pieceAt("쿠션")} />}
+            {has("숨숨집") && <span className="of-catbox px-catbox" data-spot data-on data-piece="숨숨집" style={pieceAt("숨숨집")} />}
+            {has("스크래처") && <span className="of-scratcher px-scratcher" data-spot data-on data-piece="스크래처" style={pieceAt("스크래처")} />}
+            {has("털실") && <span className="of-yarn px-yarn" data-piece="털실" style={pieceAt("털실")} />}
+            {has("밥그릇") && <span className="of-bowls px-bowls" data-spot data-piece="밥그릇" style={pieceAt("밥그릇")} />}
+            {has("정수기") && <span className="of-coffee px-coffee" data-spot data-piece="정수기" style={pieceAt("정수기")} />}
+            {has("캣타워") && <span className="of-tower px-tower" data-spot data-piece="캣타워" style={pieceAt("캣타워")} />}
+            {has("화분") && <span className="of-plant of-plant-1 px-plant" data-block data-piece="화분 1" style={pieceAt("화분 1")} />}
+            {has("화분") && <span className="of-plant of-plant-2 px-plant" data-block data-piece="화분 2" style={pieceAt("화분 2")} />}
           </div>
         </div>
         <div className="of-cats">

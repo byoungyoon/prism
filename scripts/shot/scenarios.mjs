@@ -22,6 +22,36 @@ export function buildScenario(name) {
 
 export const SCENARIO_NAMES = () => Object.keys(SCENARIOS);
 
+/** 고양이 뽑기 정보 (Rust gacha_info 와 같다). 흰 고양이는 뽑기 대상이 아니다. */
+export const GACHA_INFO = {
+  price: 250,
+  cats: [
+    { id: "grey", tier: "흔함", percent: 12 },
+    { id: "cream", tier: "흔함", percent: 12 },
+    { id: "ginger", tier: "흔함", percent: 12 },
+    { id: "bicolor", tier: "흔함", percent: 12 },
+    { id: "pink", tier: "흔함", percent: 12 },
+    { id: "silver", tier: "귀함", percent: 8 },
+    { id: "black", tier: "귀함", percent: 8 },
+    { id: "brown", tier: "귀함", percent: 8 },
+    { id: "calico", tier: "아주 귀함", percent: 5.3 },
+    { id: "tuxedo", tier: "아주 귀함", percent: 5.3 },
+    { id: "siamese", tier: "아주 귀함", percent: 5.3 },
+  ],
+};
+
+/** 뽑기 시연용: 고양이 탭에 일부만 가진 상태 (흰·회색·치즈·고등어·은색 고등어) */
+const PARTIAL_OWNED = ["cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:silver"];
+
+/** 상점 물건 전부 (src/lib/shop.ts 의 id와 같아야 한다). demo는 전부 보유 상태로 찍는다. */
+const ALL_OWNED = [
+  "cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:bicolor", "cat:silver", "cat:black", "cat:calico", "cat:brown", "cat:siamese", "cat:pink", "cat:tuxedo",
+  "item:소파", "item:책장", "item:액자", "item:스탠드", "item:햇살 자리", "item:숨숨집", "item:스크래처", "item:털실", "item:밥그릇", "item:러그", "item:러그·쿠션", "item:화분", "item:정수기", "item:캣타워",
+];
+
+/** 저장(prefs_get) 응답: 츄르 잔액과 산 물건. 시나리오가 따로 안 주면 새로 시작한 상태 (잔액 0, 흰 고양이만). */
+const prefs = (churu = 0, owned = ["cat:white"]) => ({ providers: ["claude"], onboarded: true, lastTeams: [], autoResume: false, confirmQuit: true, askAlert: true, workAlert: true, autoAllowSafe: true, churu, owned });
+
 // ── 조립 도우미 ─────────────────────────────────────────
 
 const agent = (now, id, name, role, status, taskId, extra = {}) => ({
@@ -138,6 +168,7 @@ const SCENARIOS = {
     ];
     const designTasks = [task(now, "D-1", "배너 그리기", "dw1", "running", "dlead"), task(now, "D-2", "아이콘 정리", "dw2", "done", "dlead")];
     return {
+      prefs: prefs(99999, ALL_OWNED), // 츄르 넉넉히, 물건 전부 보유 (꾸민 휴게실)
       projects: [project(now, "demo", "데모팀"), project(now, "design", "디자인팀"), project(now, "bank", "bank")],
       teams: {
         demo: team(now, "demo", "데모팀", demoAgents, demoTasks, demoChat),
@@ -171,8 +202,26 @@ const SCENARIOS = {
     return { projects, teams, focus: "p0", edit: null };
   },
 
+  // 새로 시작한 상태: 고양이 1종(흰색), 츄르 0, 소품 없는 빈 휴게실. 상점 캡처에도 쓴다.
+  fresh: (now) => {
+    const agents = [agent(now, "lead", "총괄", "lead", "wait", null), agent(now, "w1", "W1", "worker", "wait", null, { restSince: now - 120_000 }), agent(now, "w2", "W2", "worker", "wait", null, { restSince: now - 300_000 })];
+    return {
+      prefs: prefs(0, ["cat:white"]),
+      projects: [project(now, "demo", "데모팀")],
+      teams: { demo: team(now, "demo", "데모팀", agents, []) },
+      focus: "demo",
+      edit: null,
+    };
+  },
+
+  // 고양이 뽑기 시연 (fresh 사무실 위에): gacha = 츄르 넉넉, 새 고양이가 나옴 / gacha-dup = 같은 고양이가 나옴 / gacha-poor = 츄르 부족
+  "gacha": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:calico" }),
+  "gacha-dup": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:grey" }),
+  "gacha-poor": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(120, PARTIAL_OWNED), gachaNext: "cat:calico" }),
+
   // 팀이 없을 때: 홈 화면(프로젝트 목록만)
   empty: (now) => ({
+    prefs: prefs(),
     projects: [project(now, "bank", "bank"), project(now, "portfolio-site", "portfolio-site")],
     teams: {},
     focus: null,

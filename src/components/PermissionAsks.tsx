@@ -1,5 +1,6 @@
 // The permission requests the user has to decide, shown right above a chat's input box so they can
 // answer without leaving the chat. Same answers as the report feed (allow / always / deny).
+import { useEffect, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp, waitsForMe } from "../store";
 import type { ChatMsg, Project, TeamSnapshot } from "../lib/api";
@@ -15,12 +16,27 @@ const askingFor =(team: TeamSnapshot): ChatMsg[] => team.chat.filter((m) => m.pe
 export function PermissionAsks({ groups, multi = false }: { groups: Group[]; multi?: boolean }) {
   const answerPermission = useApp((s) => s.answerPermission);
   const rows = groups.flatMap((g) => askingFor(g.team).map((m) => ({ ...g, m })));
+  const box = useRef<HTMLElement>(null);
+  // a clicked notification: scroll that team's first request into view
+  const askFocus = useApp((s) => s.askFocus);
+  const focusKey = askFocus && rows.some((r) => r.project.id === askFocus.projectId) ? `${askFocus.projectId}:${askFocus.at}` : "";
+  useEffect(() => {
+    if (!focusKey) return;
+    // after the screen's entrance animation has laid the list out
+    const t = setTimeout(() => {
+      const focus = useApp.getState().askFocus;
+      const row = focus && box.current?.querySelector(`[data-critter-anchor^="${CSS.escape(`ask:${focus.projectId}:`)}"]`);
+      row?.scrollIntoView({ block: "nearest" });
+      useApp.setState({ askFocus: null });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [focusKey]);
   if (!rows.length) return null;
 
   const answerAll = () => rows.forEach((r) => void answerPermission(r.m.id, "allow", r.project.id));
 
   return (
-    <section aria-label="허락 요청" className="flex max-h-[40vh] min-w-0 shrink-0 flex-col gap-2 overflow-y-auto overscroll-contain rounded-[14px] p-2.5" style={{ background: "rgba(232,161,90,0.12)", border: "1px solid var(--amber)" }}>
+    <section ref={box} aria-label="허락 요청" className="flex max-h-[40vh] min-w-0 shrink-0 flex-col gap-2 overflow-y-auto overscroll-contain rounded-[14px] p-2.5" style={{ background: "rgba(232,161,90,0.12)", border: "1px solid var(--amber)" }}>
       <div className="flex items-center gap-2 px-0.5">
         <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
         <h3 className="m-0 min-w-0 flex-auto text-[12.5px] font-semibold">허락이 필요해요 · {rows.length}건</h3>

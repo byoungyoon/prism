@@ -1,4 +1,5 @@
 mod accounts;
+mod alerts;
 mod batch;
 mod clis;
 mod launch;
@@ -114,6 +115,8 @@ pub fn run() {
             app.manage(clis::CliState::load(&handle));
             app.manage(remote::Remote::load(&handle));
             remote::restore(handle.clone());
+            alerts::listen(&handle);
+            alerts::prime(&handle);
 
             let (listener, port) = tauri::async_runtime::block_on(server::bind());
             let token = uuid::Uuid::new_v4().simple().to_string();
@@ -190,7 +193,13 @@ pub fn run() {
             projects::prefs_set,
             projects::prefs_set_auto_resume,
             projects::prefs_set_confirm_quit,
+            projects::prefs_set_auto_allow_safe,
             projects::prefs_clear_restart,
+            alerts::team_alert,
+            alerts::prefs_set_alert,
+            projects::shop_buy,
+            projects::gacha_pull,
+            projects::gacha_info,
             app_prepare_restart,
             app_quit_confirm,
             projects::project_set_team,

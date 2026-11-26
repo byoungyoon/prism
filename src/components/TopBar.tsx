@@ -6,6 +6,7 @@ import { initialOf } from "./AccountSheet";
 import { isRemote } from "../lib/transport";
 import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
 import { KnowledgeSheet } from "./KnowledgeSheet";
+import { ShopSheet } from "./ShopSheet";
 import { RemoteCard } from "./RemoteCard";
 import { useShallow } from "zustand/react/shallow";
 
@@ -37,24 +38,55 @@ function Bar({ left, w = 48 }: { left: number; w?: number }) {
   );
 }
 
+/** How long the bar says "확인 중" before it admits the fetch failed. */
+const USAGE_WAIT_MS = 20_000;
+
+/** Pick up what the engine has (it refreshes every 5 minutes), in case an update never reached us. */
+const readUsage = () => api.usage().then((usage) => useApp.setState({ usage })).catch(() => {});
+
 /** Remaining subscription usage: Claude in the bar, every provider in the popover. */
 function UsageMeter() {
   const usage = useApp((s) => s.usage);
   const [open, setOpen] = useState(false);
+  const [waiting, setWaiting] = useState<"first" | "retry" | null>("first");
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setTimeout(() => setWaiting(null), USAGE_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [waiting]);
+  useEffect(() => {
+    const t = setInterval(() => void readUsage(), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const refresh = () => {
+    void api
+      .refreshUsage()
+      .catch(() => {})
+      .then(readUsage)
+      .finally(() => setWaiting(null));
+  };
   const order = ["claude", "codex", "antigravity"];
   const list = [...usage].sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
   const main = list.find((u) => u.windows.length) ;
   const shown = (main?.windows ?? []).slice(0, 2);
+  // the first fetch is over once Claude has answered; others may arrive before it
+  const pending = !main && (waiting === "retry" || (waiting === "first" && !list.some((u) => u.provider === "claude")));
+  const failed = !main && !pending;
+  const retry = () => {
+    setWaiting("retry");
+    refresh();
+  };
 
   return (
     <div className="relative">
       <button
         onClick={() => {
           setOpen((o) => !o);
-          void api.refreshUsage().catch(() => {});
+          if (failed) retry();
+          else refresh();
         }}
         aria-expanded={open}
-        aria-label="구독 남은 사용량"
+        aria-label={failed ? "구독 사용량을 못 가져왔어요. 다시 시도" : "구독 남은 사용량"}
         className="glass flex min-h-9 max-w-full items-center gap-x-3 rounded-full px-3.5 max-[820px]:gap-x-2 max-[820px]:px-3"
       >
         {shown.length ? (
@@ -71,8 +103,15 @@ function UsageMeter() {
               );
             })}
           </>
-        ) : (
+        ) : pending ? (
           <span className="text-xs text-ink-2">구독 사용량 확인 중…</span>
+        ) : (
+          <span className="flex items-center gap-1 text-xs whitespace-nowrap text-ink-2">
+            <span aria-hidden="true" style={{ color: "var(--block)" }}>⚠</span>
+            <span className="max-[820px]:hidden">사용량을 못 가져왔어요</span>
+            <span className="min-[821px]:hidden">사용량 실패</span>
+            <span className="font-semibold underline">(다시 시도)</span>
+          </span>
         )}
       </button>
       <AnimatePresence>
@@ -91,7 +130,7 @@ function UsageMeter() {
             style={{ background: "color-mix(in srgb, var(--bg2) 96%, transparent)", border: "1px solid var(--glass-border)", boxShadow: "var(--shadow)" }}
           >
             <span className="text-[13px] font-semibold">구독 남은 사용량</span>
-            {list.length === 0 && <span className="text-xs text-ink-2">확인 중…</span>}
+            {list.length === 0 && <span className="text-xs text-ink-2">{pending ? "확인 중…" : "사용량을 못 가져왔어요"}</span>}
             {list.map((u) => (
               <div key={u.provider} className="flex flex-col gap-1.5">
                 <span className="flex items-baseline gap-2 text-[12.5px] font-semibold">
@@ -112,6 +151,11 @@ function UsageMeter() {
                 })}
               </div>
             ))}
+            {failed && (
+              <button onClick={retry} className="min-h-8 cursor-pointer rounded-lg border-0 text-[12.5px] font-medium" style={{ background: "var(--chip)" }}>
+                다시 시도
+              </button>
+            )}
             <span className="text-[10.5px] text-ink-2">5분마다 갱신 · 누를 때마다 새로 확인해요</span>
           </motion.div>
         )}
@@ -187,6 +231,27 @@ function KnowledgeButton() {
   );
 }
 
+/** 츄르 잔액 버튼: 누르면 상점이 열린다 */
+function ChurruButton() {
+  const churu = useApp((s) => s.churu);
+  return (
+    <>
+      <button
+        onClick={() => useApp.getState().openShop(true)}
+        aria-label={`츄르 상점 (잔액 ${churu}개)`}
+        title="츄르로 고양이 털색과 휴게실 물건을 사요"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        style={{ border: "1px solid var(--line)" }}
+      >
+        <span aria-hidden="true">🐟</span>
+        <span className="font-mono">{churu.toLocaleString("ko-KR")}</span>
+        <span className="max-[820px]:hidden">츄르</span>
+      </button>
+      <ShopSheet />
+    </>
+  );
+}
+
 /** Clock in another team: its 총괄 joins the stack on the left. */
 function AddTeam() {
   const go = useApp((s) => s.go);
@@ -234,6 +299,7 @@ export function TopBar() {
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
+      <ChurruButton />
       <KnowledgeButton />
       {!isRemote && <PhoneAccess />}
       <UsageMeter />

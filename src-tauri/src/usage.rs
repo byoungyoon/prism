@@ -3,8 +3,11 @@
 //!   Codex       GET chatgpt.com/backend-api/wham/usage  (token from $CODEX_HOME/auth.json)
 //! Tokens are only read locally and sent to the provider's own endpoint; never refreshed or stored.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -51,6 +54,61 @@ fn http() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().unwrap_or_default()
 }
 
+/// `Command::output` with a time limit: a keychain prompt or a stuck CLI must not stall usage forever.
+/// None when it can't start or doesn't finish in time (it is killed). Only stdout is collected.
+fn output_within(cmd: &mut Command, limit: Duration) -> Option<Output> {
+    let deadline = Instant::now() + limit;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut pipe = child.stdout.take()?;
+    // read on the side: a process it leaves behind can hold the pipe open after it exits
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = vec![];
+        let _ = pipe.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let Ok(stdout) = rx.recv_timeout(limit) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Output { status, stdout, stderr: vec![] }),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// Run every provider's fetch at once, handing each result to `publish` as soon as it's ready.
+/// One that hasn't answered within `limit` (or crashed) is reported as failed.
+pub fn fetch_each(jobs: Vec<(&'static str, Box<dyn FnOnce() -> Usage + Send>)>, limit: Duration, mut publish: impl FnMut(Usage)) {
+    let deadline = Instant::now() + limit;
+    let (tx, rx) = mpsc::channel();
+    let mut waiting: Vec<&str> = vec![];
+    for (provider, job) in jobs {
+        waiting.push(provider);
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+        });
+    }
+    drop(tx);
+    while !waiting.is_empty() {
+        let Ok(u) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) else { break };
+        waiting.retain(|p| *p != u.provider);
+        publish(u);
+    }
+    for provider in waiting {
+        publish(note(provider, "사용량을 못 가져왔어요 (응답이 없어요)"));
+    }
+}
+
 // ── Claude ────────────────────────────────────────────
 
 /// Keychain service for a config dir: "Claude Code-credentials" or "…-<sha256(dir)[..8]>".
@@ -86,8 +144,9 @@ fn claude_credentials(config_dir: Option<&str>) -> Option<Value> {
             }
         }
         for service in services {
-            let out = crate::sys::command("/usr/bin/security").args(["find-generic-password", "-s", &service, "-a", &keychain_account(), "-w"]).output();
-            if let Ok(out) = out {
+            let mut cmd = crate::sys::command("/usr/bin/security");
+            cmd.args(["find-generic-password", "-s", &service, "-a", &keychain_account(), "-w"]);
+            if let Some(out) = output_within(&mut cmd, Duration::from_secs(10)) {
                 if out.status.success() {
                     if let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) {
                         return Some(v);
@@ -202,7 +261,7 @@ pub fn antigravity() -> Usage {
     }
     let mut cmd = crate::sys::command("agy");
     cmd.args(["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"]).env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
-    let Ok(out) = cmd.output() else { return note("antigravity", "Antigravity를 실행하지 못했어요") };
+    let Some(out) = output_within(&mut cmd, Duration::from_secs(30)) else { return note("antigravity", "Antigravity가 응답하지 않아요") };
     let text = String::from_utf8_lossy(&out.stdout);
     let Some(v) = text.lines().filter(|l| l.trim_start().starts_with('{')).filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v.get("status").is_some()) else {
         return note("antigravity", "Google 계정으로 로그인해 주세요");
@@ -240,6 +299,42 @@ pub fn antigravity() -> Usage {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    #[test]
+    fn stuck_command_is_cut_off() {
+        let limit = Duration::from_millis(500);
+        let start = Instant::now();
+        assert!(super::output_within(Command::new("/bin/sh").args(["-c", "exec sleep 20"]), limit).is_none());
+        // exits at once but leaves a child holding stdout open
+        assert!(super::output_within(Command::new("/bin/sh").args(["-c", "sleep 3 & echo hi"]), limit).is_none());
+        assert!(start.elapsed() < Duration::from_secs(3));
+        let out = super::output_within(Command::new("/bin/sh").args(["-c", "echo hi"]), Duration::from_secs(5)).unwrap();
+        assert_eq!(out.stdout, b"hi\n");
+    }
+
+    #[test]
+    fn slow_or_crashed_provider_does_not_hold_back_the_others() {
+        let mut got = vec![];
+        super::fetch_each(
+            vec![
+                ("claude", Box::new(|| super::note("claude", "ok"))),
+                ("codex", Box::new(|| panic!("boom"))),
+                ("antigravity", Box::new(|| {
+                    std::thread::sleep(Duration::from_secs(5));
+                    super::note("antigravity", "late")
+                })),
+            ],
+            Duration::from_millis(300),
+            |u| got.push((u.provider, u.note.unwrap())),
+        );
+        assert_eq!(got[0], ("claude".to_string(), "ok".to_string()));
+        assert_eq!(got.len(), 3);
+        assert!(got[1..].iter().all(|(_, n)| n.contains("못 가져왔어요")));
+    }
+
     /// live check against the real endpoints: `cargo test usage_live -- --ignored --nocapture`
     #[test]
     #[ignore]

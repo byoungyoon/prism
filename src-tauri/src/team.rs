@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::projects::{now_ms, Project, Projects};
 use crate::pty::Pty;
@@ -200,13 +199,15 @@ fn needs_user(tool: &str, detail: &str, project: &str) -> bool {
 }
 
 /// Requests that are safe to allow without asking anyone (neither the 총괄 nor the user), so a team's
-/// everyday work doesn't burn the 총괄's turns. `needs_user` always wins first. Covers: the editing
+/// everyday work doesn't burn the 총괄's turns. `needs_user` wins first for every tool but Bash, which has
+/// its own stricter allowlist plus a secrets check on the files it names (so a search *for* the word
+/// "token" or a commit message saying "deploy" doesn't count). Covers: the editing
 /// engines' MCP tools (their folders are already fenced by the engine's own read/write roots), reading
 /// files inside the member's folder / the project / /tmp, and Bash that only reads, checks, builds or
 /// tidies files inside the member's folder (see `is_safe_bash`).
 /// `workspace`: the member's own folder; `project`: the project's folder.
 fn auto_allow(tool: &str, input: &Value, detail: &str, workspace: &str, project: &str) -> bool {
-    if needs_user(tool, detail, project) {
+    if tool != "Bash" && needs_user(tool, detail, project) {
         return false;
     }
     if tool.starts_with("mcp__figcraft__") || tool.starts_with("mcp__deckcraft__") {
@@ -227,7 +228,8 @@ const TMP_ROOTS: [&str; 2] = ["/tmp", "/private/tmp"];
 /// none of them looks like a key, token or .env (`needs_user`).
 fn read_tool_ok(tool: &str, input: &Value, workspace: &str, project: &str) -> bool {
     let records = std::env::var("HOME").map(|h| format!("{h}/.claude/projects")).unwrap_or_default(); // past conversations
-    let roots = [workspace, project, TMP_ROOTS[0], TMP_ROOTS[1], records.as_str()];
+    let registry = cargo_registry();
+    let roots = [workspace, project, TMP_ROOTS[0], TMP_ROOTS[1], records.as_str(), registry.as_str()];
     let get = |k: &str| input.get(k).and_then(Value::as_str);
     let mut paths: Vec<String> = ["file_path", "notebook_path", "path"].iter().filter_map(|k| get(k)).map(String::from).collect();
     // Glob's pattern may itself start from an absolute folder ("/etc/**")
@@ -240,6 +242,11 @@ fn read_tool_ok(tool: &str, input: &Value, workspace: &str, project: &str) -> bo
         return false;
     }
     paths.iter().all(|p| !needs_user(tool, p, project) && path_within(p, workspace, &roots))
+}
+
+/// Downloaded Rust library sources: public code that members read to check an API.
+fn cargo_registry() -> String {
+    std::env::var("HOME").map(|h| format!("{h}/.cargo/registry")).unwrap_or_default()
 }
 
 /// The folder part of a glob, up to the first wildcard ("/tmp/a/**/*.rs" → "/tmp/a").
@@ -277,178 +284,414 @@ fn real_location(full: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 }
 
-/// A path word typed in a shell line: plain characters only (no quoting tricks, wildcards or expansion),
-/// and inside the member's folder or /tmp.
-fn shell_path_ok(word: &str, workspace: &str) -> bool {
+/// A path word of a shell line (quotes already removed): no wildcards or expansion, and inside one of `roots`.
+fn shell_path_ok_in(word: &str, workspace: &str, roots: &[&str]) -> bool {
     if word.is_empty() || word.contains(['\\', '\'', '"', '*', '?', '[', ']', '{', '}', '!', '`', '#', '<']) {
         return false;
     }
-    path_within(word, workspace, &[workspace, TMP_ROOTS[0], TMP_ROOTS[1]])
+    path_within(word, workspace, roots)
+}
+
+/// The same, inside the member's folder or /tmp.
+fn shell_path_ok(word: &str, workspace: &str) -> bool {
+    shell_path_ok_in(word, workspace, &[workspace, TMP_ROOTS[0], TMP_ROOTS[1]])
 }
 
 /// Shell commands that only read, check, build, or tidy files in the member's own folder, so they're
-/// allowed without asking anyone. Strict: a line split on `&&` `||` `;` `|` and newlines passes only if
-/// every piece is on the list. Anything that writes a file (other than to /tmp or /dev/null), substitutes
-/// a command, backgrounds, pushes, or is `needs_user` still asks. `workspace` is the folder `cd` may
-/// move into; `project` is where a local `node_modules/.bin` may live.
+/// allowed without asking anyone. Strict: a line chained with `&&` `||` `;` `|` and newlines passes only
+/// if every piece is on the list. Anything that writes outside the folder (or /tmp, /dev/null),
+/// substitutes a command, backgrounds, installs, deletes, moves, pushes or touches secrets still asks.
+/// `workspace` is the member's folder; `project` is where `node_modules/.bin` and attachments may live.
 fn is_safe_bash(detail: &str, workspace: &str, project: &str) -> bool {
-    if needs_user("Bash", detail, workspace) {
-        return false;
-    }
-    let Some((line, bodies)) = take_heredocs(detail) else { return false };
-    let Some(parts) = split_shell(&line, workspace) else { return false };
-    // `cd /tmp/x && …`: the rest of the line runs in that folder, so its paths are judged from there
-    if let Some((first, rest)) = parts.split_first() {
-        if let Some(dir) = leading_cd_tmp(first, workspace) {
-            return !rest.is_empty() && rest.iter().all(|p| is_safe_simple(p, &dir, project, &bodies));
-        }
-    }
-    !parts.is_empty() && parts.iter().all(|p| is_safe_simple(p, workspace, project, &bodies))
-}
-
-/// A line's first piece that is just `cd <folder>` where the folder is really inside /tmp: its real path.
-/// Only at the start of a line, so the later pieces know where they run.
-fn leading_cd_tmp(part: &str, workspace: &str) -> Option<String> {
-    let words: Vec<&str> = part.split_whitespace().collect();
-    let [cd, target] = words.as_slice() else { return None };
-    let target = target.trim_matches(|c| c == '"' || c == '\'');
-    if *cd != "cd" || target.is_empty() || target.contains(['$', '~', '\\']) {
-        return None;
-    }
-    let p = std::path::Path::new(target);
-    let full = if p.is_absolute() { p.to_path_buf() } else { std::path::Path::new(workspace).join(p) };
-    let real = std::fs::canonicalize(&full).ok().filter(|r| r.is_dir())?;
-    let in_tmp = TMP_ROOTS.iter().any(|t| std::fs::canonicalize(t).is_ok_and(|root| real.starts_with(root)));
-    in_tmp.then(|| real.to_string_lossy().into_owned())
-}
-
-/// Pulls `<<'TAG'` here-documents out of the line: their text is data for the command, not commands.
-/// Each is replaced by a `__HEREDOC_n__` word and returned in order. `None` = a form this check won't
-/// vouch for: no closing line, two on one line, `<<<`, or an unquoted tag whose text could expand (`$`, backtick).
-fn take_heredocs(line: &str) -> Option<(String, Vec<String>)> {
-    let lines: Vec<&str> = line.split('\n').collect();
-    let (mut out, mut bodies) = (Vec::new(), Vec::new());
-    let mut i = 0;
-    while i < lines.len() {
-        let l = lines[i];
-        i += 1;
-        let Some(at) = l.find("<<") else {
-            out.push(l.to_string());
-            continue;
-        };
-        let rest = &l[at + 2..];
-        if rest.starts_with('<') || l[..at].ends_with('<') {
-            return None;
-        }
-        let (dash, rest) = rest.strip_prefix('-').map_or((false, rest), |r| (true, r));
-        let rest = rest.trim_start();
-        let (quoted, tag, after) = match rest.chars().next() {
-            Some(q @ ('\'' | '"')) => {
-                let end = rest[1..].find(q)?;
-                (true, &rest[1..1 + end], &rest[2 + end..])
+    let Some(cmds) = parse_shell(detail) else { return false };
+    // a leading `cd`: into /tmp the rest runs there; into a place to look at, the rest may only look
+    if let Some((first, rest)) = cmds.split_first() {
+        if let [cd, target] = first.words.as_slice() {
+            if cd.text == "cd" && !target.dynamic && first.writes.is_empty() {
+                if let Some(dir) = leading_cd_tmp(&target.text, workspace) {
+                    return !rest.is_empty() && rest.iter().all(|c| is_safe_step(c, &dir, project));
+                }
+                if !is_inside(&[&target.text], workspace) {
+                    return leading_cd_look(&target.text, workspace, project)
+                        .is_some_and(|dir| !rest.is_empty() && rest.iter().all(|c| is_look_only(c) && is_safe_step(c, &dir, project)));
+                }
             }
-            _ => {
-                let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-                (false, &rest[..end], &rest[end..])
-            }
-        };
-        if tag.is_empty() || after.contains("<<") {
-            return None;
         }
-        let mut body = Vec::new();
-        loop {
-            let b = *lines.get(i)?;
-            i += 1;
-            if (if dash { b.trim() } else { b }) == tag {
-                break;
-            }
-            body.push(b);
-        }
-        let body = body.join("\n");
-        if !quoted && (body.contains('$') || body.contains('`')) {
-            return None;
-        }
-        out.push(format!("{}__HEREDOC_{}__{}", &l[..at], bodies.len(), after));
-        bodies.push(body);
     }
-    Some((out.join("\n"), bodies))
+    !cmds.is_empty() && cmds.iter().all(|c| is_safe_step(c, workspace, project))
 }
 
 /// A path a command may write to: inside the member's folder or /tmp, and not where tools and keys live
 /// (`.git` hooks, `.claude`, `.prism`, `.ssh`…).
 fn write_path_ok(word: &str, workspace: &str) -> bool {
     const PROTECTED: [&str; 7] = [".git", ".claude", ".prism", ".ssh", ".husky", ".gnupg", ".aws"];
-    shell_path_ok(word, workspace) && !word.split('/').any(|c| PROTECTED.contains(&c))
+    // the member's own folder is itself under `.prism/worktrees`: only what's below it counts
+    let below = word.strip_prefix(workspace).filter(|r| r.is_empty() || r.starts_with('/')).unwrap_or(word);
+    shell_path_ok(word, workspace) && !below.split('/').any(|c| PROTECTED.contains(&c))
 }
 
-/// Splits a shell line into simple commands and drops the redirections it has checked.
-/// `None` = something this check won't vouch for: `$(…)`, backticks, subshells, `&`, or a redirection
-/// other than `2>&1`-style fd dups, `>/dev/null`, and files inside the member's folder or /tmp.
-fn split_shell(line: &str, workspace: &str) -> Option<Vec<String>> {
+/// One piece of the line: where it redirects to, and the command itself.
+fn is_safe_step(cmd: &Simple, workspace: &str, project: &str) -> bool {
+    cmd.writes.iter().all(|w| w.text == "/dev/null" || (!w.dynamic && !names_secret(&w.text) && write_path_ok(&w.text, workspace)))
+        && is_safe_simple(cmd, workspace, project)
+}
+
+/// A command that can't change anything wherever it runs.
+fn is_look_only(cmd: &Simple) -> bool {
+    const LOOK: [&str; 14] = ["ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "find", "sed", "sort", "uniq", "cut", "echo"];
+    cmd.writes.iter().all(|w| w.text == "/dev/null")
+        && cmd.words.split_first().is_some_and(|(first, rest)| {
+            LOOK.contains(&first.text.as_str()) || (first.text == "git" && is_read_only_git(&rest.iter().map(|w| w.text.as_str()).collect::<Vec<_>>()))
+        })
+}
+
+/// `cd <folder>` where the folder is really inside /tmp: its real path.
+/// Only at the start of a line, so the later pieces know where they run.
+fn leading_cd_tmp(target: &str, workspace: &str) -> Option<String> {
+    real_dir_in(target, workspace, &TMP_ROOTS)
+}
+
+/// `cd <folder>` into somewhere members only read: the project, its attachments, or Rust library sources.
+fn leading_cd_look(target: &str, workspace: &str, project: &str) -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let target = match target.strip_prefix("~/") {
+        Some(rest) if !home.is_empty() => format!("{home}/{rest}"),
+        _ => target.to_string(),
+    };
+    let registry = cargo_registry();
+    real_dir_in(&target, workspace, &[project, registry.as_str()]).filter(|d| !names_secret(d) && !d.split('/').any(|c| c == ".git"))
+}
+
+/// The real (symlink-resolved) path of the folder `target`, if it's inside one of `roots`.
+fn real_dir_in(target: &str, base: &str, roots: &[&str]) -> Option<String> {
+    if target.is_empty() || target.contains(['$', '~', '\\']) {
+        return None;
+    }
+    let p = std::path::Path::new(target);
+    let full = if p.is_absolute() { p.to_path_buf() } else { std::path::Path::new(base).join(p) };
+    let real = std::fs::canonicalize(&full).ok().filter(|r| r.is_dir())?;
+    let inside = roots.iter().filter(|r| !r.is_empty()).any(|t| std::fs::canonicalize(t).is_ok_and(|root| real.starts_with(root)));
+    inside.then(|| real.to_string_lossy().into_owned())
+}
+
+/// A word as the shell would pass it on (quotes removed).
+#[derive(Default, Clone)]
+struct Word {
+    text: String,
+    /// holds `$VAR` or `{a,b}`: what the command really gets isn't known here
+    dynamic: bool,
+}
+
+/// One command of a chain.
+#[derive(Default)]
+struct Simple {
+    words: Vec<Word>,
+    /// files it redirects into
+    writes: Vec<Word>,
+    /// here-document text: only the command's input
+    heredoc: Option<String>,
+}
+
+#[derive(Default)]
+struct ShellParser {
+    cmds: Vec<Simple>,
+    cur: Simple,
+    word: Option<Word>,
+    /// the next word is a redirect target
+    redirect: bool,
+    /// a here-document whose text starts on the next line: (tag, `<<-`, quoted tag)
+    pending: Option<(String, bool, bool)>,
+}
+
+impl ShellParser {
+    fn push(&mut self, c: char) {
+        self.word.get_or_insert_with(Word::default).text.push(c);
+    }
+
+    fn end_word(&mut self) {
+        if let Some(w) = self.word.take() {
+            if std::mem::take(&mut self.redirect) {
+                self.cur.writes.push(w);
+            } else {
+                self.cur.words.push(w);
+            }
+        }
+    }
+
+    fn end_cmd(&mut self) -> Option<()> {
+        self.end_word();
+        if self.redirect {
+            return None;
+        }
+        let cmd = std::mem::take(&mut self.cur);
+        if !cmd.words.is_empty() {
+            self.cmds.push(cmd);
+        } else if !cmd.writes.is_empty() || cmd.heredoc.is_some() {
+            return None;
+        }
+        Some(())
+    }
+}
+
+/// The lines from `j` up to the one that is just `tag`: (text, index just after the tag line).
+fn heredoc_body(chars: &[char], mut j: usize, tag: &str, dash: bool) -> Option<(String, usize)> {
+    let mut body: Vec<String> = Vec::new();
+    while j < chars.len() {
+        let end = chars[j..].iter().position(|c| *c == '\n').map_or(chars.len(), |n| j + n);
+        let line: String = chars[j..end].iter().collect();
+        j = (end + 1).min(chars.len());
+        if (if dash { line.trim() } else { line.as_str() }) == tag {
+            return Some((body.join("\n"), j));
+        }
+        body.push(line);
+    }
+    None
+}
+
+/// The tag after `<<` / `<<-` starting at `j`: (tag, `<<-`, quoted, index just after it).
+fn heredoc_tag(chars: &[char], mut j: usize) -> Option<(String, bool, bool, usize)> {
+    let dash = chars.get(j) == Some(&'-');
+    j += usize::from(dash);
+    while matches!(chars.get(j), Some(' ' | '\t')) {
+        j += 1;
+    }
+    let quote = chars.get(j).copied().filter(|c| matches!(c, '\'' | '"'));
+    j += usize::from(quote.is_some());
+    let mut tag = String::new();
+    while let Some(&c) = chars.get(j).filter(|c| c.is_ascii_alphanumeric() || **c == '_') {
+        tag.push(c);
+        j += 1;
+    }
+    if let Some(q) = quote {
+        if chars.get(j) != Some(&q) {
+            return None;
+        }
+        j += 1;
+    }
+    let ends = chars.get(j).is_none_or(|c| c.is_whitespace() || ";|&<>)".contains(*c));
+    (!tag.is_empty() && ends).then_some((tag, dash, quote.is_some(), j))
+}
+
+/// The one command substitution that is only text: `$(cat <<'TAG' … TAG )`, as used for long commit
+/// messages. `j` is at the `$`. Returns the text and the index just after the `)`.
+fn cat_heredoc(chars: &[char], j: usize) -> Option<(String, usize)> {
+    let head: String = chars.get(j..)?.iter().take(8).collect();
+    if head != "$(cat <<" {
+        return None;
+    }
+    let (tag, dash, quoted, mut k) = heredoc_tag(chars, j + 8)?;
+    if !quoted || chars.get(k) != Some(&'\n') {
+        return None;
+    }
+    let (body, end) = heredoc_body(chars, k + 1, &tag, dash)?;
+    k = end;
+    while chars.get(k).is_some_and(|c| c.is_whitespace()) {
+        k += 1;
+    }
+    (chars.get(k) == Some(&')')).then_some((body, k + 1))
+}
+
+/// Splits a shell line into simple commands, reading quotes the way the shell does.
+/// `None` = something this check won't vouch for: `$(…)` (but see `cat_heredoc`), backticks, subshells,
+/// `&`, `$'…'`, `<<<`, an unclosed quote, or a here-document that is unfinished or could expand.
+fn parse_shell(line: &str) -> Option<Vec<Simple>> {
     let chars: Vec<char> = line.chars().collect();
-    let mut parts = Vec::new();
-    let mut cur = String::new();
+    let mut p = ShellParser::default();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        i += 1;
         match c {
-            '\n' | ';' | '|' => {
-                parts.push(std::mem::take(&mut cur));
-                i += 1;
+            ' ' | '\t' | '\r' => p.end_word(),
+            '\n' => {
+                p.end_word();
+                if let Some((tag, dash, quoted)) = p.pending.take() {
+                    let (body, end) = heredoc_body(&chars, i, &tag, dash)?;
+                    if !quoted && (body.contains('$') || body.contains('`')) {
+                        return None;
+                    }
+                    // it belongs to the last command that asked for it
+                    let owner = if p.cur.heredoc.is_some() { &mut p.cur } else { p.cmds.iter_mut().rev().find(|c| c.heredoc.is_some())? };
+                    owner.heredoc = Some(body);
+                    i = end;
+                }
+                p.end_cmd()?;
             }
-            '&' if chars.get(i + 1) == Some(&'&') => {
-                parts.push(std::mem::take(&mut cur));
-                i += 2;
+            ';' => p.end_cmd()?,
+            '|' => {
+                p.end_cmd()?;
+                i += usize::from(next == Some('|'));
+            }
+            '&' if next == Some('&') => {
+                p.end_cmd()?;
+                i += 1;
             }
             // `&>` — the `>` is handled on the next pass
-            '&' if chars.get(i + 1) == Some(&'>') => i += 1,
+            '&' if next == Some('>') => p.end_word(),
             '&' | '(' | ')' | '`' => return None,
-            '>' => {
-                // the fd number in front of `>` (the 2 in 2>&1) belongs to the redirection
-                let fd_digit = cur.ends_with(|ch: char| ch.is_ascii_digit()) && cur.chars().rev().nth(1).is_none_or(char::is_whitespace);
-                if fd_digit {
-                    cur.pop();
+            '#' if p.word.is_none() => {
+                while chars.get(i).is_some_and(|c| *c != '\n') {
+                    i += 1;
                 }
-                let mut j = i + 1;
-                if chars.get(j) == Some(&'>') {
-                    j += 1;
+            }
+            '\\' => {
+                let n = next?;
+                i += 1;
+                if n != '\n' {
+                    p.push(n);
                 }
-                while matches!(chars.get(j), Some(' ') | Some('\t')) {
-                    j += 1;
+            }
+            '\'' => {
+                let len = chars[i..].iter().position(|c| *c == '\'')?;
+                let w = p.word.get_or_insert_with(Word::default);
+                w.text.extend(&chars[i..i + len]);
+                i += len + 1;
+            }
+            '"' => {
+                p.word.get_or_insert_with(Word::default);
+                loop {
+                    let d = *chars.get(i)?;
+                    i += 1;
+                    match d {
+                        '"' => break,
+                        '`' => return None,
+                        '\\' if chars.get(i).is_some_and(|n| "$`\"\\\n".contains(*n)) => {
+                            if chars[i] != '\n' {
+                                p.push(chars[i]);
+                            }
+                            i += 1;
+                        }
+                        '$' if chars.get(i) == Some(&'(') => {
+                            let (body, end) = cat_heredoc(&chars, i - 1)?;
+                            p.word.get_or_insert_with(Word::default).text.push_str(&body);
+                            i = end;
+                        }
+                        _ => {
+                            p.push(d);
+                            if d == '$' && chars.get(i).is_some_and(|n| n.is_alphanumeric() || *n == '_' || *n == '{') {
+                                p.word.get_or_insert_with(Word::default).dynamic = true;
+                            }
+                        }
+                    }
                 }
-                let (ok, end) = if chars.get(j) == Some(&'&') {
-                    let (fd, e) = read_word(&chars, j + 1);
-                    (!fd.is_empty() && fd.chars().all(|d| d.is_ascii_digit()), e)
-                } else {
-                    let (path, e) = read_word(&chars, j);
-                    (path == "/dev/null" || write_path_ok(&path, workspace), e)
-                };
-                if !ok {
+            }
+            '$' => {
+                if matches!(next, Some('\'' | '"')) {
                     return None;
                 }
+                p.push('$');
+                if next.is_some_and(|n| n.is_alphanumeric() || "_{@*#?!-$".contains(n)) {
+                    p.word.get_or_insert_with(Word::default).dynamic = true;
+                }
+            }
+            '<' if next == Some('<') => {
+                if chars.get(i + 1) == Some(&'<') || p.pending.is_some() || p.cur.heredoc.is_some() {
+                    return None;
+                }
+                p.end_word();
+                let (tag, dash, quoted, end) = heredoc_tag(&chars, i + 1)?;
+                p.pending = Some((tag, dash, quoted));
+                p.cur.heredoc = Some(String::new());
                 i = end;
             }
-            _ => {
-                cur.push(c);
-                i += 1;
+            // reading from a file: the file name stays among the words
+            '<' => p.end_word(),
+            '>' => {
+                // the fd number in front of `>` (the 2 in 2>&1) belongs to the redirection
+                if p.word.as_ref().is_some_and(|w| w.text.len() == 1 && w.text.chars().all(|d| d.is_ascii_digit())) {
+                    p.word = None;
+                }
+                p.end_word();
+                if p.redirect {
+                    return None;
+                }
+                i += usize::from(next == Some('>'));
+                while matches!(chars.get(i), Some(' ' | '\t')) {
+                    i += 1;
+                }
+                if chars.get(i) == Some(&'&') {
+                    // `>&1`: another stream, not a file
+                    let mut j = i + 1;
+                    while chars.get(j).is_some_and(char::is_ascii_digit) {
+                        j += 1;
+                    }
+                    if j == i + 1 || chars.get(j).is_some_and(|c| !c.is_whitespace() && !";|&<>".contains(*c)) {
+                        return None;
+                    }
+                    i = j;
+                } else {
+                    p.redirect = true;
+                }
             }
+            '{' | ',' | '.' => {
+                p.push(c);
+                let w = p.word.get_or_insert_with(Word::default);
+                // unquoted `{a,b}` / `{1..3}` expands into several words
+                if w.text.rfind('{').is_some_and(|at| w.text[at..].contains(',') || w.text[at..].contains("..")) {
+                    let closes = chars[i..].iter().take_while(|c| !c.is_whitespace()).any(|c| *c == '}');
+                    w.dynamic |= closes;
+                }
+            }
+            _ => p.push(c),
         }
     }
-    parts.push(cur);
-    Some(parts)
+    if p.pending.is_some() {
+        return None;
+    }
+    p.end_cmd()?;
+    Some(p.cmds)
 }
 
-/// The word starting at `j`, and the index just after it.
-fn read_word(chars: &[char], mut j: usize) -> (String, usize) {
-    let mut w = String::new();
-    while let Some(&c) = chars.get(j) {
-        if c.is_whitespace() || "&|;<>()".contains(c) {
-            break;
+/// A file name that looks like a key, password or .env.
+fn names_secret(word: &str) -> bool {
+    const NAMES: [&str; 11] = ["id_rsa", "id_ed25519", "credential", "password", "secret", "token", ".ssh", ".aws/", ".gnupg", "keychain", ".netrc"];
+    let w = word.to_lowercase();
+    NAMES.iter().any(|n| w.contains(n))
+        || w.match_indices(".env").any(|(at, _)| !w[at + 4..].starts_with(|c: char| c.is_alphanumeric()) && !w[..at].ends_with("process") && !w[..at].ends_with("meta"))
+}
+
+/// The arguments that name files (not search words, scripts or messages): any of them a secret?
+fn touches_secret(cmd: &str, args: &[&Word]) -> bool {
+    let texts: Vec<&str> = args.iter().map(|w| w.text.as_str()).collect();
+    // `at` holds options whose next word isn't a file
+    let but_values_of = |at: &[&str]| texts.iter().enumerate().any(|(i, a)| !(i > 0 && at.contains(&texts[i - 1])) && !at.iter().any(|f| a.strip_prefix(f).is_some_and(|r| r.starts_with('='))) && names_secret(a));
+    match cmd {
+        // nothing is read: only a variable could pull a secret in
+        "echo" | "printf" => args.iter().any(|w| w.dynamic && names_secret(&w.text)),
+        "grep" | "rg" => {
+            let explicit = texts.iter().any(|a| matches!(*a, "-e" | "--regexp" | "--files") || a.starts_with("--regexp="));
+            let mut pattern_seen = explicit;
+            let mut skip = false;
+            texts.iter().any(|a| {
+                if std::mem::take(&mut skip) {
+                    return false;
+                }
+                if matches!(*a, "-e" | "--regexp" | "-A" | "-B" | "-C" | "-m") {
+                    skip = true;
+                    return false;
+                }
+                if a.starts_with("--regexp=") {
+                    return false;
+                }
+                if !a.starts_with('-') && !pattern_seen {
+                    pattern_seen = true;
+                    return false;
+                }
+                names_secret(a)
+            })
         }
-        w.push(c);
-        j += 1;
+        "sed" | "awk" => {
+            let explicit = cmd == "sed" && texts.iter().any(|a| a.starts_with('-') && a.ends_with('e'));
+            let script = (!explicit).then(|| texts.iter().enumerate().find(|(i, a)| !a.starts_with('-') && !(*i > 0 && matches!(texts[i - 1], "-F" | "-v"))).map(|(i, _)| i)).flatten();
+            texts.iter().enumerate().any(|(i, a)| Some(i) != script && !(i > 0 && explicit && texts[i - 1].starts_with('-') && texts[i - 1].ends_with('e')) && names_secret(a))
+        }
+        "git" if texts.first() == Some(&"commit") => texts.windows(2).any(|w| matches!(w[0], "-F" | "--file") && names_secret(w[1])),
+        "git" => but_values_of(&["--grep", "-S", "-G", "--author"]),
+        // test names and script options, not files
+        "cargo" | "npm" | "pnpm" | "npx" | "tsc" | "vite" => false,
+        _ => texts.iter().any(|a| names_secret(a)),
     }
-    (w, j)
 }
 
 /// `--flag` or `--flag=value` among `args`.
@@ -457,33 +700,33 @@ fn has_flag(args: &[&str], flags: &[&str]) -> bool {
 }
 
 /// One simple command (no chaining left in it) on the safe list.
-fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String]) -> bool {
-    // a here-document is only the command's input; its text is `bodies[n]`
-    let mut heredoc: Option<&str> = None;
-    let mut words: Vec<&str> = part
-        .split_whitespace()
-        .filter(|w| match w.strip_prefix("__HEREDOC_").and_then(|r| r.strip_suffix("__")).and_then(|n| n.parse::<usize>().ok()) {
-            Some(n) => {
-                heredoc = bodies.get(n).map(String::as_str);
-                false
-            }
-            None => true,
-        })
-        .collect();
+fn is_safe_simple(cmd: &Simple, workspace: &str, project: &str) -> bool {
+    let heredoc = cmd.heredoc.as_deref();
+    let mut words: Vec<&Word> = cmd.words.iter().collect();
     // `CARGO_TARGET_DIR=<the team's shared build folder> cargo …`: the only variable allowed in front
     let cache = crate::launch::build_cache_dir(project).to_string_lossy().into_owned();
-    loop {
-        let Some(value) = words.first().and_then(|w| w.strip_prefix("CARGO_TARGET_DIR=")).map(str::to_string) else { break };
-        if !path_within(&value, workspace, &[cache.as_str()]) {
+    while let Some(value) = words.first().and_then(|w| w.text.strip_prefix("CARGO_TARGET_DIR=")) {
+        if !path_within(value, workspace, &[cache.as_str()]) {
             return false;
         }
         words.remove(0);
     }
-    let Some((&first, args)) = words.split_first() else { return false };
+    let Some((first, rest)) = words.split_first() else { return false };
+    let first = first.text.as_str();
+    let args: Vec<&str> = rest.iter().map(|w| w.text.as_str()).collect();
+    let args = args.as_slice();
     // the project's own tsc / vite (`node_modules/.bin/tsc`, `./node_modules/.bin/vite`, or by full path)
     let local = first.rsplit_once("node_modules/.bin/").map(|(_, b)| b).filter(|b| matches!(*b, "tsc" | "vite") && path_within(first, workspace, &[workspace, project]));
-    let cmd = local.unwrap_or(first);
-    match cmd {
+    let name = local.unwrap_or(first);
+    // `$VAR` could turn into any option, so only commands that can't change anything may take one
+    const ANY_ARGS: [&str; 11] = ["ls", "cat", "head", "tail", "wc", "grep", "echo", "printf", "stat", "basename", "dirname"];
+    if words.iter().any(|w| w.dynamic) && !ANY_ARGS.contains(&name) {
+        return false;
+    }
+    if touches_secret(name, rest) {
+        return false;
+    }
+    match name {
         "ls" | "pwd" | "cat" | "head" | "tail" | "wc" | "grep" | "echo" | "which" | "cut" | "tr" | "printf" | "diff" | "stat" | "file" | "du" | "basename" | "dirname"
         | "realpath" | "nl" | "rev" | "fold" | "paste" | "comm" | "column" | "shasum" | "md5" | "true" | "false" => true,
         "jq" => !args.iter().any(|a| a.contains("ENV") || a.contains("env")),
@@ -492,7 +735,7 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
         "tee" => args.iter().filter(|a| **a != "-a").all(|a| !a.starts_with('-') && write_path_ok(a, workspace)),
         "sips" => is_safe_sips(args, workspace),
         "python3" | "python" => is_read_only_python(args, heredoc, workspace),
-        "rg" => !has_flag(args, &["--pre"]),
+        "rg" => !has_flag(args, &["--pre", "--hostname-bin"]),
         "find" => !args.iter().any(|a| matches!(*a, "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fls" | "-fprint" | "-fprint0" | "-fprintf")),
         "sed" => is_read_only_sed(args),
         "awk" => is_read_only_awk(args),
@@ -500,45 +743,103 @@ fn is_safe_simple(part: &str, workspace: &str, project: &str, bodies: &[String])
         "uniq" => args.iter().filter(|a| !a.starts_with('-')).count() <= 1,
         "sleep" => args.len() == 1 && args[0].chars().all(|c| c.is_ascii_digit() || c == '.') && args[0].chars().any(|c| c.is_ascii_digit()),
         "date" => args.iter().all(|a| a.starts_with('+') || (a.starts_with('-') && !matches!(*a, "-s" | "--set") && !a.starts_with("--set="))),
-        "git" => is_safe_git(args, workspace),
-        "tsc" => !has_flag(args, &["--outDir", "--outFile", "--out", "--declarationDir", "--tsBuildInfoFile", "--generateTrace"]),
-        "vite" => args.first() == Some(&"build") && !has_flag(args, &["--outDir"]),
+        "git" => is_safe_git(args, workspace, project),
+        "tsc" => is_safe_tsc(args),
+        "vite" => is_safe_vite(args),
+        // only a tsc / vite that's already installed: otherwise npx downloads one
+        "npx" => {
+            let args = match args.first() {
+                Some(&"--no-install") | Some(&"--no") => &args[1..],
+                _ => args,
+            };
+            match args.split_first() {
+                Some((&"tsc", rest)) => has_local_bin("tsc", workspace, project) && is_safe_tsc(rest),
+                Some((&"vite", rest)) => has_local_bin("vite", workspace, project) && is_safe_vite(rest),
+                _ => false,
+            }
+        }
         "cargo" => is_safe_cargo(args, workspace),
         // the project's own scripts; `install` and anything that fetches or publishes stays with the 총괄
-        "pnpm" | "npm" => match args.first() {
-            Some(&"build") | Some(&"test") | Some(&"lint") | Some(&"shot") => true,
-            Some(&"exec") => match args.get(1) {
-                Some(&"tsc") => args.contains(&"--noEmit"),
-                Some(&"vite") => args.get(2) == Some(&"build") && !has_flag(args, &["--outDir"]),
-                Some(&"vitest") => !has_flag(args, &["--outputFile", "--coverage.reportsDirectory"]),
-                _ => false,
-            },
-            _ => false,
-        },
+        "pnpm" | "npm" => is_safe_package_script(args, workspace),
         // the screenshot tool only; any other script or `node -e` stays with the 총괄
         "node" => matches!(args.first(), Some(&"scripts/shot.mjs") | Some(&"./scripts/shot.mjs")) && is_safe_shot_args(&args[1..], workspace),
         "ln" => is_node_modules_link(args, workspace, project),
+        // deleting asks; the one exception removes just the borrowed `node_modules` link
         "rm" => is_node_modules_unlink(args, workspace),
-        "mkdir" => !args.is_empty() && args.iter().all(|a| *a == "-p" || (!a.starts_with('-') && write_path_ok(a, workspace))) && args.contains(&"-p"),
-        "cp" => file_move_ok(args, "rRapfnvHLP", workspace),
-        "mv" => file_move_ok(args, "fnv", workspace),
-        "cd" => is_inside(args, workspace),
+        "mkdir" => is_safe_mkdir(args, workspace, project),
+        "cp" => is_safe_cp(args, workspace, project),
+        // not into `.git` / `.claude`: later relative writes would land there
+        "cd" => is_inside(args, workspace) && !args.iter().any(|a| a.split('/').any(|c| c == ".git" || c == ".claude")),
         _ => false,
     }
+}
+
+fn is_safe_tsc(args: &[&str]) -> bool {
+    !has_flag(args, &["--outDir", "--outFile", "--out", "--declarationDir", "--tsBuildInfoFile", "--generateTrace"])
+}
+
+fn is_safe_vite(args: &[&str]) -> bool {
+    args.first() == Some(&"build") && !has_flag(args, &["--outDir"])
+}
+
+/// `node_modules/.bin/<name>` exists in the folder the command runs in, or above it up to the project.
+fn has_local_bin(name: &str, workspace: &str, project: &str) -> bool {
+    let here = std::path::Path::new(workspace);
+    here.ancestors().take_while(|d| d.starts_with(project)).chain([std::path::Path::new(project)].into_iter().filter(|_| here.starts_with(project)))
+        .any(|d| d.join("node_modules").join(".bin").join(name).exists())
+}
+
+/// `npm` / `pnpm`: build, test, lint and the screenshot script, with or without `run`.
+fn is_safe_package_script(args: &[&str], workspace: &str) -> bool {
+    // options for npm itself come before a bare `--`; none of them may move where it runs
+    let own: Vec<&str> = args.iter().copied().take_while(|a| *a != "--").collect();
+    if has_flag(&own, &["--prefix", "--dir", "-C", "--script-shell", "--userconfig", "-g", "--global"]) {
+        return false;
+    }
+    let args = match args.first() {
+        Some(&"run") => &args[1..],
+        Some(&"exec") => {
+            return match args.get(1) {
+                Some(&"tsc") => args.contains(&"--noEmit") && is_safe_tsc(&args[2..]),
+                Some(&"vite") => is_safe_vite(&args[2..]),
+                Some(&"vitest") => !has_flag(args, &["--outputFile", "--coverage.reportsDirectory"]),
+                _ => false,
+            };
+        }
+        _ => args,
+    };
+    match args.first() {
+        Some(&"build") | Some(&"test") | Some(&"lint") => !has_flag(args, &["--outDir", "--outputFile"]),
+        Some(&"shot") => is_safe_shot_args(&args[1..], workspace),
+        _ => false,
+    }
+}
+
+/// A place `mkdir` / `cp` may create things: the member's folder, /tmp, or the project's attachments.
+fn make_path_ok(word: &str, workspace: &str, project: &str) -> bool {
+    let attachments = format!("{project}/.prism/attachments");
+    write_path_ok(word, workspace) || (shell_path_ok_in(word, workspace, &[attachments.as_str()]) && !word.split('/').any(|c| c == ".git" || c == ".claude"))
+}
+
+fn is_safe_mkdir(args: &[&str], workspace: &str, project: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    !paths.is_empty() && flags.iter().all(|f| matches!(*f, "-p" | "-v" | "-pv")) && paths.iter().all(|p| make_path_ok(p, workspace, project))
+}
+
+/// `cp`: short copy flags only; copies from the folder, /tmp or attachments into one of those.
+fn is_safe_cp(args: &[&str], workspace: &str, project: &str) -> bool {
+    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    let Some((target, sources)) = paths.split_last() else { return false };
+    flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| "rRapfnvHLP".contains(c)))
+        && !sources.is_empty()
+        && sources.iter().all(|p| make_path_ok(p, workspace, project))
+        && make_path_ok(target, workspace, project)
 }
 
 /// `node scripts/shot.mjs` options: `--out <folder>` must stay inside the folder or /tmp.
 fn is_safe_shot_args(args: &[&str], workspace: &str) -> bool {
     args.iter().enumerate().all(|(i, a)| !matches!(*a, "--out") || args.get(i + 1).is_some_and(|o| write_path_ok(o, workspace)))
         && !args.iter().any(|a| a.starts_with("--out="))
-}
-
-/// `cp` / `mv`: short flags from `allowed` only, at least a source and a target, all inside the folder or /tmp.
-fn file_move_ok(args: &[&str], allowed: &str, workspace: &str) -> bool {
-    let (flags, paths): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
-    flags.iter().all(|f| f.len() > 1 && !f.starts_with("--") && f[1..].chars().all(|c| allowed.contains(c)))
-        && paths.len() >= 2
-        && paths.iter().all(|p| write_path_ok(p, workspace))
 }
 
 /// `node_modules` (or `./node_modules`): the one link name the worktree sharing and clearing touch.
@@ -583,7 +884,7 @@ fn is_read_only_python(args: &[&str], heredoc: Option<&str>, workspace: &str) ->
     }
     let files: Vec<&&str> = args.iter().filter(|a| !a.starts_with('-')).collect();
     match (files.as_slice(), heredoc) {
-        ([], Some(code)) => python_reads_only(code),
+        ([], Some(code)) => !needs_user("Bash", code, workspace) && python_reads_only(code),
         ([f], None) if f.ends_with(".py") && shell_path_ok(f, workspace) => {
             let full = std::path::Path::new(workspace).join(f);
             let size_ok = std::fs::metadata(&full).is_ok_and(|m| m.len() <= 100_000);
@@ -675,14 +976,21 @@ fn is_safe_cargo(args: &[&str], workspace: &str) -> bool {
         && own.iter().all(|a| a.strip_prefix("--manifest-path=").is_none_or(|p| shell_path_ok(p, workspace)))
 }
 
-/// Git inside the member's own folder: look (status/diff/log/show/rev-parse/branch list), and keep its
-/// own work (add, commit). Never another folder (`-C`, `--git-dir`), never the network. `merge` is not here:
-/// merging goes to the 총괄 every time.
-fn is_safe_git(args: &[&str], workspace: &str) -> bool {
+/// Git: look anywhere it already is (or `-C` inside the folder or project), and keep the member's own
+/// work (add, commit). Never `--git-dir`, never the network, never switching branches. `merge` is not
+/// here: merging goes to the 총괄 every time.
+fn is_safe_git(args: &[&str], workspace: &str, project: &str) -> bool {
+    let args = match args.first() {
+        Some(&"--no-pager") => &args[1..],
+        _ => args,
+    };
+    if args.first() == Some(&"-C") {
+        return args.get(1).is_some_and(|d| shell_path_ok_in(d, workspace, &[workspace, project])) && is_read_only_git(&args[2..]);
+    }
     let Some((&sub, rest)) = args.split_first() else { return false };
     match sub {
         "add" => {
-            const FLAGS: [&str; 10] = ["-A", "--all", "-u", "--update", "-v", "--verbose", "-n", "--dry-run", "-f", "--force"];
+            const FLAGS: [&str; 8] = ["-A", "--all", "-u", "--update", "-v", "--verbose", "-n", "--dry-run"];
             rest.iter().all(|a| *a == "--" || if a.starts_with('-') { FLAGS.contains(a) } else { shell_path_ok(a, workspace) })
         }
         // the message words can be anything; what it does is only to record the work in the local history
@@ -697,6 +1005,10 @@ fn is_read_only_awk(args: &[&str]) -> bool {
         return false;
     }
     let text = args.join(" ");
+    // `print > "file"` / `print | "cmd"`
+    if text.contains("print") && (text.contains(">\"") || text.contains("|\"")) {
+        return false;
+    }
     !["system", "getline", "close", "fflush", "ENVIRON", "@", "| ", "|\"", "> ", ">>"].iter().any(|b| text.contains(b))
 }
 
@@ -714,27 +1026,111 @@ fn is_plain_sort(args: &[&str]) -> bool {
     })
 }
 
-/// `sed` that prints (stdout only): no in-place edit, no -f script file, and no w/W (write) or e (run) in the script.
+/// `sed` that prints (stdout only): no in-place edit, no -f script file, and every script made of
+/// commands that can't write a file or run anything.
 fn is_read_only_sed(args: &[&str]) -> bool {
-    let flags: Vec<&str> = args.iter().copied().filter(|a| a.starts_with('-') && !a.starts_with("--")).collect();
-    let in_place = args.iter().any(|a| a.starts_with("--in-place") || a.starts_with("--file")) || flags.iter().any(|a| a.contains('i') || a.contains('f'));
-    let mut scripts: Vec<&str> = args.windows(2).filter(|w| w[0] == "-e" || w[0] == "--expression").map(|w| w[1]).collect();
-    scripts.extend(args.iter().filter_map(|a| a.strip_prefix("--expression=")));
-    if scripts.is_empty() {
-        scripts.extend(args.iter().find(|a| !a.starts_with('-')).copied());
+    let (mut scripts, mut operands, mut explicit) = (Vec::new(), Vec::new(), false);
+    let mut it = args.iter().copied();
+    while let Some(a) = it.next() {
+        if let Some(s) = a.strip_prefix("--expression=") {
+            scripts.push(s);
+            explicit = true;
+        } else if matches!(a, "--quiet" | "--silent" | "--regexp-extended") {
+        } else if a == "--expression" || (a.starts_with('-') && !a.starts_with("--") && a.len() > 1) {
+            let letters = if a == "--expression" { "e" } else { &a[1..] };
+            // -n -E -r -s -u, and `e` only last, taking the next word as a script
+            let (body, takes) = letters.strip_suffix('e').map_or((letters, false), |b| (b, true));
+            if !body.chars().all(|c| "nErsu".contains(c)) {
+                return false;
+            }
+            if takes {
+                let Some(s) = it.next() else { return false };
+                scripts.push(s);
+                explicit = true;
+            }
+        } else if a.starts_with("--") {
+            return false;
+        } else {
+            operands.push(a);
+        }
     }
-    !in_place && !scripts.iter().any(|s| s.contains(['w', 'W', 'e']))
+    if !explicit {
+        scripts.extend(operands.first().copied());
+    }
+    !scripts.is_empty() && scripts.iter().all(|s| sed_script_reads(s))
+}
+
+/// A sed script of addresses followed by printing / deleting / quitting / `s` / `y` commands only.
+fn sed_script_reads(script: &str) -> bool {
+    let c: Vec<char> = script.chars().collect();
+    let mut i = 0;
+    // skips a `delim`-ended section, with escapes
+    let section = |i: &mut usize, delim: char| -> bool {
+        while let Some(&ch) = c.get(*i) {
+            *i += 1;
+            if ch == '\\' {
+                *i += 1;
+            } else if ch == delim {
+                return true;
+            }
+        }
+        false
+    };
+    while i < c.len() {
+        let ch = c[i];
+        i += 1;
+        match ch {
+            ' ' | '\t' | '\n' | ';' | '{' | '}' | ',' | '!' | '$' | '+' | '~' | '0'..='9' => {}
+            '/' => {
+                if !section(&mut i, '/') {
+                    return false;
+                }
+                while matches!(c.get(i), Some('I' | 'M')) {
+                    i += 1;
+                }
+            }
+            's' | 'y' => {
+                let Some(&delim) = c.get(i).filter(|d| !d.is_alphanumeric() && !d.is_whitespace() && **d != '\\') else { return false };
+                i += 1;
+                if !section(&mut i, delim) || !section(&mut i, delim) {
+                    return false;
+                }
+                while c.get(i).is_some_and(|f| "gpiImM0123456789".contains(*f)) {
+                    i += 1;
+                }
+                if c.get(i).is_some_and(|n| !" \t\n;}".contains(*n)) {
+                    return false;
+                }
+            }
+            'p' | 'P' | '=' | 'd' | 'D' | 'q' | 'Q' | 'l' | 'n' | 'N' | 'g' | 'G' | 'h' | 'H' | 'x' => {
+                while c.get(i).is_some_and(|n| *n == ' ' || n.is_ascii_digit()) {
+                    i += 1;
+                }
+                if c.get(i).is_some_and(|n| !"\t\n;}".contains(*n)) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Read-only git: status/diff/log/show/rev-parse, and `branch` only to list.
 fn is_read_only_git(args: &[&str]) -> bool {
     let Some((&sub, rest)) = args.split_first() else { return false };
-    if rest.iter().any(|a| a.starts_with("--output")) {
+    if rest.iter().any(|a| a.starts_with("--output") || *a == "--ext-diff") {
         return false;
     }
     match sub {
         "status" | "diff" | "log" | "show" | "rev-parse" | "blame" | "ls-files" | "ls-tree" | "shortlog" | "describe" | "show-ref" | "cat-file" | "diff-tree" | "name-rev" => true,
-        "branch" => rest.iter().all(|a| matches!(*a, "-a" | "-r" | "-v" | "-vv" | "-l" | "--all" | "--remotes" | "--list" | "--verbose" | "--show-current")),
+        "branch" => {
+            // a bare word would create a branch, unless it's the pattern of a listing
+            let listing = rest.iter().any(|a| matches!(*a, "-l" | "--list"));
+            rest.iter().all(|a| {
+                matches!(*a, "-a" | "-r" | "-v" | "-vv" | "-l" | "--all" | "--remotes" | "--list" | "--verbose" | "--show-current" | "--merged" | "--no-merged" | "--no-color") || (listing && !a.starts_with('-'))
+            })
+        }
         _ => false,
     }
 }
@@ -777,8 +1173,12 @@ mod auto_allow_tests {
 
     fn tool_ok(tool: &str, input: Value) -> bool {
         let (project, ws) = dirs();
+        tool_ok_in(tool, input, &ws, &project)
+    }
+
+    fn tool_ok_in(tool: &str, input: Value, ws: &str, project: &str) -> bool {
         let detail = ["command", "file_path", "url"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)).map(String::from).unwrap_or_else(|| input.to_string());
-        auto_allow(tool, &input, &detail, &ws, &project)
+        auto_allow(tool, &input, &detail, ws, project)
     }
 
     #[test]
@@ -838,7 +1238,7 @@ mod auto_allow_tests {
             "mkdir -p /tmp/prism-t40/a",
             "cp notes.txt notes.bak",
             "cp -r src /tmp/prism-t40-copy",
-            "mv draft.txt final.txt",
+            "mkdir out",
             "git add .",
             "git add -A",
             "git add src/team.rs src/lib.rs",
@@ -951,10 +1351,8 @@ mod auto_allow_tests {
             "/usr/bin/tsc",
             "/tmp/evil/node_modules/.bin/tsc",
             "../node_modules/.bin/tsc",
-            "npx vite build",
             // file tidying beyond the folder
             "mkdir /x",
-            "mkdir out",
             "mkdir -p /etc/x",
             "mkdir -p ../x",
             "mkdir -p escape/x",
@@ -965,6 +1363,7 @@ mod auto_allow_tests {
             "cp notes.txt",
             "cp notes.txt escape/x",
             "cp -r ~/Documents .",
+            "mv draft.txt final.txt",
             "mv notes.txt /etc/",
             "mv ../a b",
             "mv a",
@@ -1061,7 +1460,7 @@ mod auto_allow_tests {
             "echo hi > .git/hooks/pre-commit",
             "echo hi > .claude/settings.json",
             "echo hi > escape/x",
-            "echo hi > \"notes.txt\"",
+            "echo hi > \"../notes.txt\"",
             "cat > /etc/x <<'EOF'\nhi\nEOF",
             "cat > ../x <<'EOF'\nhi\nEOF",
             "cat > .git/config <<'EOF'\nhi\nEOF",
@@ -1149,6 +1548,199 @@ mod auto_allow_tests {
         assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.claude/settings.json") })));
         assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.claude/.credentials.json") })));
         assert!(!tool_ok("Read", json!({ "file_path": format!("{home}/.ssh/config") })));
+    }
+
+    #[test]
+    fn card_table_safe_commands_pass() {
+        let (project, ws) = dirs();
+        for d in [format!("{project}/node_modules/.bin"), format!("{project}/.prism/attachments"), format!("{ws}/src-tauri")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for bin in ["tsc", "vite"] {
+            std::fs::write(format!("{project}/node_modules/.bin/{bin}"), "").unwrap();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let att = format!("{project}/.prism/attachments");
+        let table: Vec<String> = [
+            // reading, with the quoting people really use
+            "cat src/team.rs",
+            "head -50 src/team.rs",
+            "tail -n 20 src/team.rs",
+            "sed -n '100,200p' src/team.rs",
+            "sed -n '/fn name/,/^}/p' src/team.rs",
+            "sed -n '1,5p;10,12p' src/team.rs",
+            "sed -n -e 1p -e '$p' src/team.rs",
+            "sed -E 's/(a|b)+/x/g' notes.txt",
+            "ls -la; ls src",
+            "grep -rnE \"permission|allow\" src",
+            "grep -n \"fn main() {\" src/main.rs",
+            "grep -n 'a;b > c && d' src/main.rs",
+            "grep -rn \"->\" src | head",
+            "grep -n token src/lib.rs",
+            "grep -rn -e password src",
+            "rg -n 'deploy|git push|curl ' src",
+            "find . \\( -name '*.rs' -o -name '*.ts' \\) -not -path './node_modules/*'",
+            "grep -rn foo src 2>/dev/null || true",
+            "ls ~/.cargo/registry/src",
+            "cat ~/.cargo/registry/src/index.crates.io-abc/tauri-2.0.0/src/lib.rs | sed -n '1,80p'",
+            "# 찾아보기 (it's fine)\nls src",
+            "ls src \\\n  | head",
+            "wc -l src/*.rs",
+            "git diff HEAD~1 -- src/team.rs",
+            "git log --oneline --grep=deploy",
+            "git status --short",
+            "git show HEAD:src/team.rs | sed -n '1,20p'",
+            "git branch -a",
+            "git branch --list 'prism/*'",
+            "git --no-pager log -3",
+            // building and testing in the folder
+            "npx tsc --noEmit",
+            "npx --no-install tsc --noEmit",
+            "npx vite build",
+            "npx tsc --noEmit && npx vite build 2>&1 | tail -20",
+            "npm run build",
+            "npm run test",
+            "npm run test -- token",
+            "npm test",
+            "pnpm run build",
+            "cd src-tauri && cargo test 2>&1 | grep -E \"^(error|warning)|test result\"",
+            "cargo test token",
+            "cargo build",
+            "cargo check",
+            "node scripts/shot.mjs --screen settings",
+            // keeping its own work
+            "git add src && git commit -m \"T-96: 안전한 허락 (자동); push | rm 설명\"",
+            "git commit -m 'deploy 버튼 > 고침' -m \"Co-Authored-By: A <a@b.c>\"",
+            "git add -A && git commit -m \"$(cat <<'EOF'\n제목 (T-96)\n\n- it's \"quoted\" `code` $(x); rm -rf /\nEOF\n)\"",
+            "mkdir shots",
+        ]
+        .iter()
+        .map(|c| c.to_string())
+        .chain([
+            format!("mkdir -p {att}/t-96"),
+            format!("mkdir -p {ws}/out"),
+            format!("cp shots/a.png {att}/a.png"),
+            format!("cp {att}/a.png src/a.png"),
+            format!("cd {project} && git log --oneline -3"),
+            format!("cd {project} && grep -rn foo src | head"),
+            format!("git -C {project} status"),
+        ])
+        .collect();
+        for cmd in &table {
+            assert!(is_safe_bash(cmd, &ws, &project), "should pass: {cmd}");
+            // the whole gate, as a permission request goes through it
+            assert!(tool_ok_in("Bash", json!({ "command": cmd }), &ws, &project), "should be auto allowed: {cmd}");
+        }
+        if !home.is_empty() {
+            assert!(tool_ok("Read", json!({ "file_path": format!("{home}/.cargo/registry/src/x/lib.rs") })));
+        }
+    }
+
+    #[test]
+    fn card_table_risky_commands_and_risky_chains_still_ask() {
+        let (project, ws) = dirs();
+        std::fs::create_dir_all(format!("{project}/.prism/attachments")).unwrap();
+        let att = format!("{project}/.prism/attachments");
+        let table: Vec<String> = [
+            // installing
+            "npm install",
+            "npm i left-pad",
+            "npm ci",
+            "pnpm install",
+            "pnpm run deploy",
+            "npm run postinstall",
+            "npm --prefix /tmp/x run build",
+            "cargo add serde",
+            "npx cowsay hi",
+            "npx -y tsc",
+            "npx --yes vite build",
+            // deleting, moving, processes, root, network
+            "rm a.txt",
+            "mv a.txt b.txt",
+            "pkill -f vite",
+            "kill 123",
+            "sudo ls",
+            "git push",
+            "curl http://localhost:1420",
+            // one bad piece spoils the chain
+            "ls && npm install",
+            "cat a; rm a",
+            "grep x a | xargs rm",
+            "ls || curl https://x.y",
+            "ls\nkill 1",
+            "cargo test && git push",
+            // writing outside
+            "echo x > ../x",
+            "ls >> /etc/x",
+            "grep a b > \"$HOME/x\"",
+            "cat a > .env",
+            // quoting must not hide anything
+            "find . '-delete'",
+            "find . -del\"\"ete",
+            "find . \\-exec rm {} +",
+            "find . {-delete,-print}",
+            "find . $FLAGS",
+            "sort '-o' out.txt in.txt",
+            "sed -n \"1,${N}p\" a",
+            "sed -ne p -e 'w out.txt' a",
+            "sed '1e rm -rf x' a",
+            "sed 's/a/b/w out' a",
+            "echo \"<<'A'\"\nrm -rf x\nA",
+            "echo '<<A'\nrm -rf x\nA",
+            "ls # <<'A'\nrm -rf x\nA",
+            "ls # it's\nrm -rf x\n# '",
+            "echo \"$(rm -rf x)\"",
+            "echo \"`rm -rf x`\"",
+            "git commit -m \"$(rm -rf x)\"",
+            "git commit -m \"$(cat <<EOF\n$(rm -rf x)\nEOF\n)\"",
+            "git commit -m \"$(cat <<'EOF'\nhi\nEOF\nrm -rf x)\"",
+            "cat <(rm -rf x)",
+            "echo $'a' ; ls",
+            "grep 'unclosed",
+            "ls >",
+            "> notes.txt",
+            // secrets
+            "cat .e\"\"nv",
+            "grep -r x .env",
+            "rg --files ~/.ssh",
+            "head -3 ~/.aws/credentials",
+            "echo $GITHUB_TOKEN",
+            "git show HEAD:.env",
+            // git that changes more than its own work
+            "git branch new-one",
+            "git branch -D old",
+            "git checkout main",
+            "git add -f .",
+            "git -C /etc status",
+        ]
+        .iter()
+        .map(|c| c.to_string())
+        .chain([
+            format!("cp {att}/a.png /etc/a.png"),
+            format!("cp /etc/hosts {att}/hosts"),
+            format!("rm {att}/a.png"),
+            format!("echo hi > {att}/a.txt"),
+            format!("mkdir -p {project}/src/new"),
+            format!("cp notes.txt {project}/src/notes.txt"),
+            format!("cd {project} && cargo build"),
+            format!("cd {project} && echo hi > a.txt"),
+            "cd .git && echo x > config".to_string(),
+            "cd src/.git && echo x > config".to_string(),
+        ])
+        .collect();
+        for cmd in &table {
+            assert!(!is_safe_bash(cmd, &ws, &project), "should ask: {cmd}");
+        }
+    }
+
+    #[test]
+    fn npx_without_an_installed_tool_asks_because_it_would_download() {
+        let project = std::env::temp_dir().join(format!("prism-t96-npx-{}", std::process::id()));
+        std::fs::create_dir_all(&project).unwrap();
+        let dir = project.to_string_lossy().into_owned();
+        assert!(!is_safe_bash("npx tsc --noEmit", &dir, &dir));
+        assert!(!is_safe_bash("npx vite build", &dir, &dir));
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]
@@ -2296,10 +2888,6 @@ impl TeamManager {
         Ok(())
     }
 
-    fn notify(&self, title: &str, body: &str) {
-        let _ = self.app.notification().builder().title(title).body(body).show();
-    }
-
     // ── lifecycle ─────────────────────────────────────
 
     /// What batches (묶음 지시) need to judge whether a team has finished; None if the team is gone.
@@ -3028,6 +3616,12 @@ impl TeamManager {
                     let b = crate::tokens::Bucket { input, output, cache_read, cache_write };
                     self.tokens.lock().unwrap().add(pid, aid, &a.name, a.task_id.as_deref(), &model, b, context);
                 }
+                // 츄르: input + output + cache_write (cache_read는 뺀다). 업데이트 전 토큰은 소급하지 않는다.
+                if let Some(p) = self.app.try_state::<Projects>() {
+                    if let Some(s) = p.add_churu_tokens(input.saturating_add(output).saturating_add(cache_write)) {
+                        let _ = self.app.emit("prefs", s);
+                    }
+                }
                 return; // the turn's end (next) shows it
             }
             Event::Exit(_) => {}
@@ -3755,6 +4349,9 @@ impl TeamManager {
             .map(String::from)
             .unwrap_or_else(|| short(&input.to_string(), 160));
 
+        // settings: "안전한 일은 자동 허락"
+        let auto = self.app.try_state::<Projects>().is_none_or(|p| p.auto_allow_safe());
+
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return PermWait::Now("") };
         if team.always_allow.contains(&perm_key(&tool, &detail)) {
@@ -3762,7 +4359,7 @@ impl TeamManager {
         }
         // engine tools, reading in the agent's folder, check/build/local-git commands: nobody needs to be asked
         let workspace = team.agent(aid).map(|a| a.cwd.clone()).unwrap_or_else(|| team.cwd.clone());
-        if auto_allow(&tool, &input, &detail, &workspace, &team.project.path) {
+        if auto && auto_allow(&tool, &input, &detail, &workspace, &team.project.path) {
             // quietly noted in the progress log (not in the chat)
             let name = team.name_of(aid);
             team.log(format!("자동 허락: {name} · {tool} {}", short(&detail, 60)), None);
@@ -3809,7 +4406,6 @@ impl TeamManager {
             }
             None => {
                 team.log(format!("{name}이(가) 허락을 기다린다: {tool} {}", short(&detail, 50)), Some("block"));
-                self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
             }
         }
         self.emit(team);
@@ -3860,10 +4456,9 @@ impl TeamManager {
             return;
         }
         p.decider = None;
-        let (aid, tool, detail) = (p.agent_id.clone(), p.tool.clone(), p.detail.clone());
+        let aid = p.agent_id.clone();
         let name = team.name_of(&aid);
         team.log(format!("{name}의 허락 요청을 사용자에게 넘겼다 ({why})."), Some("block"));
-        self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
         self.emit(team);
     }
 
@@ -4240,13 +4835,11 @@ impl TeamManager {
                     path.push(p.clone());
                     cur = team.agent(&p).and_then(|a| a.parent_id.clone());
                 }
-                let names = path.iter().map(|p| team.name_of(p)).collect::<Vec<_>>().join(" → ");
                 let mut options = v("options");
                 options.truncate(3);
                 team.set_status(aid, "block");
                 team.say("escalation", question.clone(), Some(Escalation { agent_id: aid.into(), task_id: me.task_id.clone(), path, options, answer: None }));
                 team.log(format!("{}이(가) 막혔다: {}", me.name, short(&question, 50)), Some("block"));
-                self.notify(&format!("[{}] 막힘 · {names}", team.project.name), &question);
                 "사용자에게 질문했어요. 답은 '[Prism 답변]'으로 옵니다. 지금은 멈추고 기다리세요.".into()
             }
             _ => return Err(format!("알 수 없는 도구: {tool}")),
@@ -4651,11 +5244,17 @@ pub fn usage_get(teams: Teams<'_>) -> Vec<Usage> {
 pub fn refresh_usage(app: &AppHandle) {
     let accounts = app.state::<crate::accounts::Accounts>();
     let (claude_dir, codex_dir) = (accounts.active_dir("claude"), accounts.active_dir("codex"));
-    let a = std::thread::spawn(move || crate::usage::claude(claude_dir.as_deref()));
-    let b = std::thread::spawn(move || crate::usage::codex(codex_dir.as_deref()));
-    let c = std::thread::spawn(crate::usage::antigravity);
-    let list: Vec<Usage> = [a, b, c].into_iter().filter_map(|h| h.join().ok()).collect();
-    app.state::<Arc<TeamManager>>().set_usage(list);
+    let teams = app.state::<Arc<TeamManager>>();
+    crate::usage::fetch_each(
+        vec![
+            ("claude", Box::new(move || crate::usage::claude(claude_dir.as_deref()))),
+            ("codex", Box::new(move || crate::usage::codex(codex_dir.as_deref()))),
+            ("antigravity", Box::new(crate::usage::antigravity)),
+        ],
+        // above the slowest healthy path (keychain 10s ×2 + request 10s)
+        std::time::Duration::from_secs(45),
+        |u| teams.set_usage(vec![u]),
+    );
 }
 
 #[tauri::command]

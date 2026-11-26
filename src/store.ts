@@ -2,10 +2,21 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { isRemote, onResync } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
+import { useEngineEdit } from "./engines/editing";
 import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
-import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
-import { catName } from "./components/critters/pixel/coats";
+import { workNews } from "./lib/workNews";
+import { api, LOGIN_REQUIRED, type AlertKind, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
+import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
+import { DEFAULT_OWNED } from "./lib/shop";
+import type { GachaPulled, Prefs } from "./lib/api";
+
+/**
+ * 뽑기 연출 중에는 잔액·보유 물건·사무실 털색 반영을 미룬다 (결과가 연출보다 먼저 새지 않게).
+ * 연출이 끝나면 `releaseGacha`가 밀린 값을 한 번에 반영한다.
+ */
+let holding = false;
+let held: Prefs | null = null;
 
 export type View =
   | { name: "home" }
@@ -50,11 +61,34 @@ interface AppState {
   startFailures: { id: string; name: string; reason: string }[];
   /** a group clock-in is running */
   clockingIn: boolean;
+  /** 츄르 잔액 and the things bought so far ("cat:<id>" · "item:<이름>") */
+  churu: number;
+  owned: string[];
+  /** the 상점 sheet is open */
+  shopOpen: boolean;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** desktop notification when a request waits for the user */
+  askAlert: boolean;
+  /** desktop notification when work finishes, fails or gets stuck */
+  workAlert: boolean;
+  /** a notification was clicked: show this team (and its 허락 칸, if it has requests) */
+  askFocus: { projectId: string; at: number } | null;
+  /** let teammates do safe things without asking */
+  autoAllowSafe: boolean;
 
+  openShop(on: boolean): void;
+  /** buy one shop item (소품); resolves to null on success, or a plain Korean reason to show */
+  buyItem(id: string): Promise<string | null>;
+  /**
+   * 고양이 뽑기 1회 요청. 결과는 바로 돌아오지만 잔액·보유 반영은 `releaseGacha()` 전까지 미룬다.
+   * 실패(잔액 부족 등)면 반영할 것이 없으니 바로 풀리고 이유를 돌려준다.
+   */
+  startGacha(): Promise<{ ok: true; res: GachaPulled } | { ok: false; reason: string }>;
+  /** 뽑기 연출이 끝났을 때 (또는 상점을 닫았을 때) 미뤄 둔 잔액·보유 반영을 한 번에 한다 */
+  releaseGacha(): void;
   toggleDark(): void;
   toggleLeft(): void;
   toggleRight(): void;
@@ -84,6 +118,10 @@ interface AppState {
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
   setConfirmQuit(on: boolean): Promise<void>;
+  setAlert(kind: AlertKind, on: boolean): Promise<void>;
+  /** open the team a clicked notification was about */
+  showAlertTeam(projectId: string): void;
+  setAutoAllowSafe(on: boolean): Promise<void>;
   dismissFailures(): void;
   setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
@@ -147,6 +185,23 @@ export const useApp = create<AppState>((set, get) => {
   let batchesListed = false;
   // the automatic clock-in happens once per launch
   let autoResumed = false;
+  /** the shop's money and purchases, from prefs (read at start, then on every change) */
+  const applyPrefs = (p: Prefs) => {
+    if (holding) {
+      held = p;
+      return;
+    }
+    const owned = p.owned ?? DEFAULT_OWNED;
+    setOwnedCoats(owned);
+    // a new coat renames and repaints teammates: every screen showing them draws again
+    set((s) => ({ churu: p.churu ?? 0, owned, ...(owned.join() === s.owned.join() ? {} : { teams: { ...s.teams } }) }));
+  };
+  const releaseGacha = () => {
+    holding = false;
+    const p = held;
+    held = null;
+    if (p) applyPrefs(p);
+  };
   const upsertBatch = (b: Batch) => set((s) => ({ batches: [...s.batches.filter((x) => x.id !== b.id), b] }));
 
   return {
@@ -171,6 +226,37 @@ export const useApp = create<AppState>((set, get) => {
     clockingIn: false,
     critters: savedCritters(),
     confirmQuit: true,
+    askAlert: true,
+    workAlert: true,
+    askFocus: null,
+    autoAllowSafe: true,
+    churu: 0,
+    owned: [...DEFAULT_OWNED],
+    shopOpen: false,
+
+    openShop: (shopOpen) => set({ shopOpen }),
+    startGacha: async () => {
+      holding = true;
+      try {
+        const res = await api.gachaPull();
+        // 연출 중이면 미룬다. 이미 풀렸다면(상점을 닫은 뒤 도착) 바로 반영한다
+        if (holding) held = res.prefs;
+        else applyPrefs(res.prefs);
+        return { ok: true, res };
+      } catch (e) {
+        releaseGacha();
+        return { ok: false, reason: msg(e) };
+      }
+    },
+    releaseGacha,
+    buyItem: async (id) => {
+      try {
+        applyPrefs(await api.buyItem(id));
+        return null;
+      } catch (e) {
+        return msg(e);
+      }
+    },
 
     toggleDark: () => set((s) => ({ dark: !s.dark })),
     toggleLeft: () => set((s) => ({ left: !s.left })),
@@ -182,8 +268,13 @@ export const useApp = create<AppState>((set, get) => {
 
     init: async () => {
       await api.onSnapshot((snap) => {
-        announceAsks(snap, get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀");
+        const prev = get().teams[snap.projectId];
         set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
+        const name = get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀";
+        const watching = isWatching(get(), snap.projectId);
+        announceAsks(snap, name, watching);
+        // a team seen for the first time has nothing "new": its past isn't announced
+        if (prev) announceWork(prev, snap, name, watching);
       });
       await api.onBatch((b) => {
         const prev = get().batches.find((x) => x.id === b.id);
@@ -193,6 +284,9 @@ export const useApp = create<AppState>((set, get) => {
         if (nowDone && !wasDone && (prev || batchesListed)) void notifyUser("종합 결과가 나왔어요", b.text.slice(0, 60));
         upsertBatch(b);
       });
+      await api.onPrefs(applyPrefs);
+      if (!isRemote) await api.onAlertOpen((id) => get().showAlertTeam(id));
+      void api.prefs().then(applyPrefs).catch(() => {});
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       const reload = async () => {
@@ -219,7 +313,7 @@ export const useApp = create<AppState>((set, get) => {
         const prefs = await api.prefs().catch(() => null);
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
-          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit });
+          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit, askAlert: prefs.askAlert, workAlert: prefs.workAlert, autoAllowSafe: prefs.autoAllowSafe });
           // restarted for an update: everyone comes back, whatever the setting says
           const updated = prefs.restart === "update";
           if ((prefs.autoResume || updated) && !autoResumed) {
@@ -341,6 +435,30 @@ export const useApp = create<AppState>((set, get) => {
         set({ confirmQuit: !on, error: msg(e) });
       }
     },
+    setAlert: async (kind, on) => {
+      const patch = (v: boolean) => (kind === "ask" ? { askAlert: v } : { workAlert: v });
+      set(patch(on));
+      try {
+        await api.setAlert(kind, on);
+      } catch (e) {
+        set({ ...patch(!on), error: msg(e) });
+      }
+    },
+    showAlertTeam: (projectId) => {
+      if (!get().projects.some((p) => p.id === projectId)) return;
+      // an open editor is only tucked away: closing it would lose unsaved edits
+      useEngineEdit.getState().tuck();
+      if (get().projectId !== projectId) get().switchTeam(projectId);
+      set({ view: { name: "main" }, left: true, shopOpen: false, accountSheet: null, askFocus: { projectId, at: Date.now() } });
+    },
+    setAutoAllowSafe: async (on) => {
+      set({ autoAllowSafe: on });
+      try {
+        await api.setAutoAllowSafe(on);
+      } catch (e) {
+        set({ autoAllowSafe: !on, error: msg(e) });
+      }
+    },
     dismissFailures: () => set({ startFailures: [] }),
     setCritters: (on) => {
       set({ critters: on });
@@ -395,8 +513,32 @@ export const waitsForMe = (m: { escalation: { answer: string | null } | null; pe
 /** permission requests already announced by a system notification, as "projectId:msgId" */
 const announced = new Set<string>();
 
-/** Notify once per new request that starts waiting for the user (only when the window is in the background). */
-const announceAsks = (snap: TeamSnapshot, projectName: string) => {
+/** Is this team on screen? (Whether the window is in front is checked where the alert is sent.) */
+const isWatching = (s: AppState, projectId: string) => {
+  if (s.view.name !== "main" || useEngineEdit.getState().covering()) return false;
+  // several teams share one chat, which lists all of their requests
+  return s.projectId === projectId || isLive(s.teams[projectId]);
+};
+
+/**
+ * One alert about a team: the desktop app sends a clickable system notification, a phone browser
+ * its own (in the background only). Alerts are sent from here and nowhere else.
+ */
+const alertTeam = (projectId: string, kind: AlertKind, title: string, body: string, watching: boolean) => {
+  if (isRemote) void notifyUser(title, body);
+  else void api.teamAlert(projectId, kind, title, body, watching).catch(() => {});
+};
+
+const andMore = (n: number) => (n > 1 ? ` 외 ${n - 1}건` : "");
+
+/** Notify when cards reporting to the 총괄 finish, are wrapped up or fail, and when someone gets stuck. */
+const announceWork = (prev: TeamSnapshot, snap: TeamSnapshot, projectName: string, watching: boolean) => {
+  const news = workNews(prev, snap, catName);
+  if (news.length) alertTeam(snap.projectId, "work", "팀 소식", `${projectName} · ${news[0]}${andMore(news.length)}`, watching);
+};
+
+/** Notify once per new request that starts waiting for the user. */
+const announceAsks = (snap: TeamSnapshot, projectName: string, watching: boolean) => {
   const asks = snap.chat.filter((m) => m.permission && waitsForMe(m));
   const keyOf = (id: number) => `${snap.projectId}:${id}`;
   const waiting = new Set(asks.map((m) => keyOf(m.id)));
@@ -407,8 +549,7 @@ const announceAsks = (snap: TeamSnapshot, projectName: string) => {
   const first = fresh[0].permission!;
   const ag = snap.agents.find((a) => a.id === first.agentId);
   const who = ag ? catName(ag) : "팀원";
-  const body = fresh.length > 1 ? `허락이 필요한 일 ${fresh.length}건` : `${who} · ${plainAction(first.tool, first.detail)}`;
-  void notifyUser(`${projectName} · 허락이 필요해요`, body);
+  alertTeam(snap.projectId, "ask", "허락이 필요해요", `${projectName} · ${who} · ${plainAction(first.tool, first.detail)}${andMore(fresh.length)}`, watching);
 };
 
 /** Teams the 관제탑 shows together: every team at work, plus the open one. */

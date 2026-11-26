@@ -85,6 +85,12 @@ function MainView() {
   const { left, right } = useApp(useShallow((s) => ({ left: s.left, right: s.right })));
   const narrow = useNarrow();
   const [tab, setTab] = useState<(typeof PHONE_TABS)[number]["id"]>("chat");
+  // a clicked notification: the 허락 칸 sits in the chat tab
+  const askFocus = useApp((s) => s.askFocus);
+  useEffect(() => {
+    // only a fresh click: an old one (nothing to scroll to) mustn't move the tab later
+    if (askFocus && Date.now() - askFocus.at < 3000) setTab("chat");
+  }, [askFocus]);
   const pending = useShownTeams().reduce(
     (n, { team }) => n + team.chat.filter(waitsForMe).length,
     0,
@@ -194,7 +200,8 @@ export default function App() {
   const hasTeam = useApp((s) => !!(s.projectId && s.teams[s.projectId]));
   // an outside editor (figcraft…) open on a team's file: it takes the main area while the main view shows
   const editTarget = useEngineEdit((s) => s.target);
-  const editing = !!editTarget && view.name === "main";
+  const tucked = useEngineEdit((s) => s.tucked);
+  const editing = !!editTarget && !tucked && view.name === "main";
 
   useVisibleHeight();
 
@@ -234,6 +241,12 @@ export default function App() {
       </AnimatePresence>
       {/* kept mounted while a file is open, so the editor's unsaved edits survive a trip to another screen */}
       {editTarget && <EngineStage target={editTarget} hidden={!editing} />}
+
+      {editTarget && tucked && view.name === "main" && (
+        <button onClick={() => useEngineEdit.setState({ tucked: false })} className="glass mx-auto mb-2 min-h-8 max-w-[calc(100%-24px)] shrink-0 truncate rounded-full px-4 text-[12.5px] font-semibold" style={{ border: "1.5px solid var(--amber)" }}>
+          열어 둔 파일 편집으로 돌아가기
+        </button>
+      )}
 
       <AccountSheet />
       <Onboarding />

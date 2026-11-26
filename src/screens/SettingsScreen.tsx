@@ -5,6 +5,7 @@ import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, t
 import { EffortPicker, ModelPicker } from "../components/ModelPicker";
 import { Bot, Briefcase, ChevronLeft, Tower } from "../components/icons";
 import { useShallow } from "zustand/react/shallow";
+import { isRemote } from "../lib/transport";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
@@ -254,6 +255,11 @@ export function SettingsScreen() {
   const setAutoResume = useApp((s) => s.setAutoResume);
   const confirmQuit = useApp((s) => s.confirmQuit);
   const setConfirmQuit = useApp((s) => s.setConfirmQuit);
+  const askAlert = useApp((s) => s.askAlert);
+  const workAlert = useApp((s) => s.workAlert);
+  const setAlert = useApp((s) => s.setAlert);
+  const autoAllowSafe = useApp((s) => s.autoAllowSafe);
+  const setAutoAllowSafe = useApp((s) => s.setAutoAllowSafe);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -404,6 +410,12 @@ export function SettingsScreen() {
           </Card>
         </div>
 
+        <Card title="안전한 일은 자동 허락" aside={<Switch on={autoAllowSafe} onChange={(on) => void setAutoAllowSafe(on)} label="안전한 일은 자동 허락" />}>
+          <span className="text-[12px] leading-relaxed text-ink-2">
+            파일 읽기·찾기, 빌드와 테스트, 자기 브랜치에 저장(커밋)처럼 위험하지 않은 일은 팀원이 묻지 않고 해요. 설치, 파일 지우기·옮기기, 작업 폴더 밖에 쓰기, 인터넷 연결과 올리기(push)는 계속 물어봐요. 모든 팀에 적용되고, 끄면 안전한 일도 허락을 구해요.
+          </span>
+        </Card>
+
         <Card title="앱을 켜면 지난번 팀 자동 출근" aside={<Switch on={autoResume} onChange={(on) => void setAutoResume(on)} label="앱을 켜면 지난번에 일하던 팀 자동 출근" />}>
           <span className="text-[12px] leading-relaxed text-ink-2">
             앱을 끌 때 출근해 있던 팀들이 앱을 켜면 알아서 다시 출근해요. 모든 팀에 적용되는 설정이고, 팀은 하던 일을 이어서 해요.
@@ -415,6 +427,22 @@ export function SettingsScreen() {
             팀원이 일하는 중에 창을 닫거나(Cmd+W) 앱을 끄면(Cmd+Q) 먼저 물어봐요. 끄면 묻지 않고 바로 꺼요. 일하는 팀원이 없을 때와 업데이트로 다시 켤 때는 묻지 않아요.
           </span>
         </Card>
+
+        {/* the desktop app's own settings: a phone browser has no say over this computer's notifications */}
+        {!isRemote && (
+          <>
+            <Card title="허락이 필요할 때 알림" aside={<Switch on={askAlert} onChange={(on) => void setAlert("ask", on)} label="허락이 필요할 때 알림" />}>
+              <span className="text-[12px] leading-relaxed text-ink-2">
+                팀원이 내 허락을 기다리면 컴퓨터 알림으로 알려줘요. 알림을 누르면 그 팀의 허락 칸이 열려요. 그 팀을 보고 있을 때는 알리지 않아요. 알림이 안 오면 컴퓨터의 시스템 설정 &rarr; 알림에서 Prism을 허용해 주세요.
+              </span>
+            </Card>
+            <Card title="일이 끝나면 알림" aside={<Switch on={workAlert} onChange={(on) => void setAlert("work", on)} label="일이 끝나면 알림" />}>
+              <span className="text-[12px] leading-relaxed text-ink-2">
+                총괄에게 일이 끝났다는 보고가 오거나 마무리(합치기)되면 알려줘요. 일이 실패하거나 막혔을 때도 알려줘요. 알림을 누르면 그 팀이 열려요. 그 팀을 보고 있을 때는 알리지 않아요.
+              </span>
+            </Card>
+          </>
+        )}
 
         <WorkCopies projectId={project.id} />
 
