@@ -12,7 +12,7 @@ export function useTranscript(projectId: string | null, agentId: string) {
     if (!projectId) return;
     let alive = true;
     let off: (() => void) | undefined;
-    void api.transcript(projectId, agentId).then((list) => alive && setEntries(list));
+    void api.transcript(projectId, agentId).then((list) => alive && setEntries(list.slice(-400))); // a long one drawn whole gets heavy
     void api
       .onEntry((e) => {
         if (e.projectId === projectId && e.agentId === agentId) setEntries((x) => [...x.slice(-399), e.entry]);
