@@ -3815,7 +3815,6 @@ impl TeamManager {
             }
             None => {
                 team.log(format!("{name}이(가) 허락을 기다린다: {tool} {}", short(&detail, 50)), Some("block"));
-                self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
             }
         }
         self.emit(team);
@@ -3866,10 +3865,9 @@ impl TeamManager {
             return;
         }
         p.decider = None;
-        let (aid, tool, detail) = (p.agent_id.clone(), p.tool.clone(), p.detail.clone());
+        let aid = p.agent_id.clone();
         let name = team.name_of(&aid);
         team.log(format!("{name}의 허락 요청을 사용자에게 넘겼다 ({why})."), Some("block"));
-        self.notify(&format!("[{}] {name} 허락 요청", team.project.name), &format!("{tool}: {}", short(&detail, 80)));
         self.emit(team);
     }
 

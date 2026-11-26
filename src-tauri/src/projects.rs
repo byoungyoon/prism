@@ -117,6 +117,12 @@ pub struct Settings {
     /// ask before closing the window or quitting while members are at work
     #[serde(default = "yes")]
     pub confirm_quit: bool,
+    /// 사용자 허락이 필요하면 데스크톱 알림을 띄운다
+    #[serde(default = "yes")]
+    pub ask_alert: bool,
+    /// 처음 한 번의 안내 알림(macOS가 알림 허용을 묻게 하는 것)을 보냈는가
+    #[serde(default)]
+    pub ask_alert_primed: bool,
     /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
     #[serde(default)]
     pub churu: u64,
@@ -147,6 +153,8 @@ impl Default for Settings {
             auto_resume: true,
             restart: None,
             confirm_quit: true,
+            ask_alert: true,
+            ask_alert_primed: false,
             churu: 0,
             owned: default_owned(),
             churu_rest: 0,
@@ -214,6 +222,29 @@ impl Projects {
     /// Ask before closing or quitting while members are at work (the "정말 끌까요?" question).
     pub fn confirm_quit(&self) -> bool {
         self.prefs.lock().unwrap().confirm_quit
+    }
+
+    pub fn ask_alert(&self) -> bool {
+        self.prefs.lock().unwrap().ask_alert
+    }
+
+    pub fn set_ask_alert(&self, on: bool) -> Settings {
+        self.prefs.lock().unwrap().ask_alert = on;
+        self.save_prefs();
+        self.prefs.lock().unwrap().clone()
+    }
+
+    /// True once: the alert is on and its introduction hasn't been sent yet (marked as sent here).
+    pub fn take_ask_alert_priming(&self) -> bool {
+        {
+            let mut p = self.prefs.lock().unwrap();
+            if !p.ask_alert || p.ask_alert_primed {
+                return false;
+            }
+            p.ask_alert_primed = true;
+        }
+        self.save_prefs();
+        true
     }
 
     /// Remember which teams are clocked in (for "지난번 팀 다시 출근").

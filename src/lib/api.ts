@@ -346,6 +346,8 @@ export interface Prefs {
   restart?: "update" | "quit" | null;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** desktop notification when a request starts waiting for the user */
+  askAlert: boolean;
   /** 츄르 잔액 (상점에서 쓰는 돈) */
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
@@ -387,6 +389,11 @@ export const api = {
   prefs: () => call<Prefs>("prefs_get"),
   setAutoResume: (on: boolean) => call<Prefs>("prefs_set_auto_resume", { on }),
   setConfirmQuit: (on: boolean) => call<Prefs>("prefs_set_confirm_quit", { on }),
+  setAskAlert: (on: boolean) => call<Prefs>("prefs_set_ask_alert", { on }),
+  /** desktop only: notify that a team is waiting for permission (skipped when off, or when `watching` and the window is in front) */
+  askAlert: (projectId: string, title: string, body: string, watching: boolean) => call<void>("ask_alert", { projectId, title, body, watching }),
+  /** desktop only: the user clicked such a notification */
+  onAskOpen: (fn: (projectId: string) => void): Promise<UnlistenFn> => on<string>("ask-open", fn),
   /** let the held-back window close (or quit) go through after the user pressed 끄기 */
   quitConfirm: (kind: QuitKind) => call<void>("app_quit_confirm", { kind }),
   clearRestart: () => call<Prefs>("prefs_clear_restart"),

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import { isRemote, onResync } from "./lib/transport";
 import { notifyUser } from "./lib/notify";
+import { useEngineEdit } from "./engines/editing";
 import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
@@ -61,6 +62,10 @@ interface AppState {
   critters: boolean;
   /** ask before closing the window or quitting while members are at work */
   confirmQuit: boolean;
+  /** desktop notification when a request waits for the user */
+  askAlert: boolean;
+  /** a notification was clicked: bring this team's 허락 칸 into view */
+  askFocus: { projectId: string; at: number } | null;
 
   openShop(on: boolean): void;
   /** buy one shop item; resolves to null on success, or a plain Korean reason to show */
@@ -94,6 +99,9 @@ interface AppState {
   clockInLast(): Promise<number>;
   setAutoResume(on: boolean): Promise<void>;
   setConfirmQuit(on: boolean): Promise<void>;
+  setAskAlert(on: boolean): Promise<void>;
+  /** show a team's waiting permission requests (a clicked notification) */
+  showAsks(projectId: string): void;
   dismissFailures(): void;
   setCritters(on: boolean): void;
   /** `projectId` targets a given team; defaults to the current one */
@@ -187,6 +195,8 @@ export const useApp = create<AppState>((set, get) => {
     clockingIn: false,
     critters: savedCritters(),
     confirmQuit: true,
+    askAlert: true,
+    askFocus: null,
     churu: 0,
     owned: [...DEFAULT_OWNED],
     shopOpen: false,
@@ -213,8 +223,8 @@ export const useApp = create<AppState>((set, get) => {
 
     init: async () => {
       await api.onSnapshot((snap) => {
-        announceAsks(snap, get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀");
         set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
+        announceAsks(snap, get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀", isWatching(get(), snap.projectId));
       });
       await api.onBatch((b) => {
         const prev = get().batches.find((x) => x.id === b.id);
@@ -225,6 +235,7 @@ export const useApp = create<AppState>((set, get) => {
         upsertBatch(b);
       });
       await api.onPrefs(applyPrefs);
+      if (!isRemote) await api.onAskOpen((id) => get().showAsks(id));
       void api.prefs().then(applyPrefs).catch(() => {});
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
@@ -252,7 +263,7 @@ export const useApp = create<AppState>((set, get) => {
         const prefs = await api.prefs().catch(() => null);
         if (prefs) {
           const known = prefs.lastTeams.filter((id) => projects.some((p) => p.id === id));
-          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit });
+          set({ lastTeams: known, autoResume: prefs.autoResume, confirmQuit: prefs.confirmQuit, askAlert: prefs.askAlert });
           // restarted for an update: everyone comes back, whatever the setting says
           const updated = prefs.restart === "update";
           if ((prefs.autoResume || updated) && !autoResumed) {
@@ -374,6 +385,21 @@ export const useApp = create<AppState>((set, get) => {
         set({ confirmQuit: !on, error: msg(e) });
       }
     },
+    setAskAlert: async (on) => {
+      set({ askAlert: on });
+      try {
+        await api.setAskAlert(on);
+      } catch (e) {
+        set({ askAlert: !on, error: msg(e) });
+      }
+    },
+    showAsks: (projectId) => {
+      if (!get().projects.some((p) => p.id === projectId)) return;
+      // an open editor is only tucked away: closing it would lose unsaved edits
+      useEngineEdit.getState().tuck();
+      if (get().projectId !== projectId) get().switchTeam(projectId);
+      set({ view: { name: "main" }, left: true, shopOpen: false, accountSheet: null, askFocus: { projectId, at: Date.now() } });
+    },
     dismissFailures: () => set({ startFailures: [] }),
     setCritters: (on) => {
       set({ critters: on });
@@ -428,8 +454,18 @@ export const waitsForMe = (m: { escalation: { answer: string | null } | null; pe
 /** permission requests already announced by a system notification, as "projectId:msgId" */
 const announced = new Set<string>();
 
-/** Notify once per new request that starts waiting for the user (only when the window is in the background). */
-const announceAsks = (snap: TeamSnapshot, projectName: string) => {
+/** Is this team's 허락 칸 on screen? (Whether the window is in front is checked where the alert is sent.) */
+const isWatching = (s: AppState, projectId: string) => {
+  if (s.view.name !== "main" || useEngineEdit.getState().covering()) return false;
+  // several teams share one chat, which lists all of their requests
+  return s.projectId === projectId || isLive(s.teams[projectId]);
+};
+
+/**
+ * Notify once per new request that starts waiting for the user. This is the only place that does:
+ * the desktop app sends a clickable system notification, a phone browser its own (in the background only).
+ */
+const announceAsks = (snap: TeamSnapshot, projectName: string, watching: boolean) => {
   const asks = snap.chat.filter((m) => m.permission && waitsForMe(m));
   const keyOf = (id: number) => `${snap.projectId}:${id}`;
   const waiting = new Set(asks.map((m) => keyOf(m.id)));
@@ -440,8 +476,11 @@ const announceAsks = (snap: TeamSnapshot, projectName: string) => {
   const first = fresh[0].permission!;
   const ag = snap.agents.find((a) => a.id === first.agentId);
   const who = ag ? catName(ag) : "팀원";
-  const body = fresh.length > 1 ? `허락이 필요한 일 ${fresh.length}건` : `${who} · ${plainAction(first.tool, first.detail)}`;
-  void notifyUser(`${projectName} · 허락이 필요해요`, body);
+  const more = fresh.length > 1 ? ` 외 ${fresh.length - 1}건` : "";
+  const title = "허락이 필요해요";
+  const body = `${projectName} · ${who} · ${plainAction(first.tool, first.detail)}${more}`;
+  if (isRemote) void notifyUser(title, body);
+  else void api.askAlert(snap.projectId, title, body, watching).catch(() => {});
 };
 
 /** Teams the 관제탑 shows together: every team at work, plus the open one. */

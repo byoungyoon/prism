@@ -5,6 +5,7 @@ import { api, type ModelInfo, type PresetName, type Provider, type RoleConfig, t
 import { EffortPicker, ModelPicker } from "../components/ModelPicker";
 import { Bot, Briefcase, ChevronLeft, Tower } from "../components/icons";
 import { useShallow } from "zustand/react/shallow";
+import { isRemote } from "../lib/transport";
 
 const spring = { type: "spring" as const, stiffness: 300, damping: 30 };
 
@@ -254,6 +255,8 @@ export function SettingsScreen() {
   const setAutoResume = useApp((s) => s.setAutoResume);
   const confirmQuit = useApp((s) => s.confirmQuit);
   const setConfirmQuit = useApp((s) => s.setConfirmQuit);
+  const askAlert = useApp((s) => s.askAlert);
+  const setAskAlert = useApp((s) => s.setAskAlert);
   const critters = useApp((s) => s.critters);
   const setCritters = useApp((s) => s.setCritters);
   const saved = project?.team;
@@ -415,6 +418,15 @@ export function SettingsScreen() {
             팀원이 일하는 중에 창을 닫거나(Cmd+W) 앱을 끄면(Cmd+Q) 먼저 물어봐요. 끄면 묻지 않고 바로 꺼요. 일하는 팀원이 없을 때와 업데이트로 다시 켤 때는 묻지 않아요.
           </span>
         </Card>
+
+        {/* the desktop app's own setting: a phone browser has no say over this computer's notifications */}
+        {!isRemote && (
+          <Card title="허락이 필요할 때 알림" aside={<Switch on={askAlert} onChange={(on) => void setAskAlert(on)} label="허락이 필요할 때 알림" />}>
+            <span className="text-[12px] leading-relaxed text-ink-2">
+              팀원이 내 허락을 기다리면 컴퓨터 알림으로 알려줘요. 알림을 누르면 그 팀의 허락 칸이 열려요. 그 팀을 보고 있을 때는 알리지 않아요. 알림이 안 오면 컴퓨터의 시스템 설정 &rarr; 알림에서 Prism을 허용해 주세요.
+            </span>
+          </Card>
+        )}
 
         <WorkCopies projectId={project.id} />
 
