@@ -22,6 +22,27 @@ export function buildScenario(name) {
 
 export const SCENARIO_NAMES = () => Object.keys(SCENARIOS);
 
+/** 고양이 뽑기 정보 (Rust gacha_info 와 같다). 흰 고양이는 뽑기 대상이 아니다. */
+export const GACHA_INFO = {
+  price: 250,
+  cats: [
+    { id: "grey", tier: "흔함", percent: 12 },
+    { id: "cream", tier: "흔함", percent: 12 },
+    { id: "ginger", tier: "흔함", percent: 12 },
+    { id: "bicolor", tier: "흔함", percent: 12 },
+    { id: "pink", tier: "흔함", percent: 12 },
+    { id: "silver", tier: "귀함", percent: 8 },
+    { id: "black", tier: "귀함", percent: 8 },
+    { id: "brown", tier: "귀함", percent: 8 },
+    { id: "calico", tier: "아주 귀함", percent: 5.3 },
+    { id: "tuxedo", tier: "아주 귀함", percent: 5.3 },
+    { id: "siamese", tier: "아주 귀함", percent: 5.3 },
+  ],
+};
+
+/** 뽑기 시연용: 고양이 탭에 일부만 가진 상태 (흰·회색·치즈·고등어·은색 고등어) */
+const PARTIAL_OWNED = ["cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:silver"];
+
 /** 상점 물건 전부 (src/lib/shop.ts 의 id와 같아야 한다). demo는 전부 보유 상태로 찍는다. */
 const ALL_OWNED = [
   "cat:white", "cat:grey", "cat:cream", "cat:ginger", "cat:bicolor", "cat:silver", "cat:black", "cat:calico", "cat:brown", "cat:siamese", "cat:pink", "cat:tuxedo",
@@ -192,6 +213,11 @@ const SCENARIOS = {
       edit: null,
     };
   },
+
+  // 고양이 뽑기 시연 (fresh 사무실 위에): gacha = 츄르 넉넉, 새 고양이가 나옴 / gacha-dup = 같은 고양이가 나옴 / gacha-poor = 츄르 부족
+  "gacha": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:calico" }),
+  "gacha-dup": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(1000, PARTIAL_OWNED), gachaNext: "cat:grey" }),
+  "gacha-poor": (now) => ({ ...SCENARIOS.fresh(now), prefs: prefs(120, PARTIAL_OWNED), gachaNext: "cat:calico" }),
 
   // 팀이 없을 때: 홈 화면(프로젝트 목록만)
   empty: (now) => ({

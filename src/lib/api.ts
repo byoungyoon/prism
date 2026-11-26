@@ -352,6 +352,26 @@ export interface Prefs {
   owned: string[];
 }
 
+/** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). percent는 소수 첫째 자리 (5.3 등) */
+export interface GachaCatInfo {
+  id: string;
+  tier: string;
+  percent: number;
+}
+
+/** 고양이 뽑기 정보 (Rust gacha_info) */
+export interface GachaInfo {
+  price: number;
+  cats: GachaCatInfo[];
+}
+
+/** 뽑기 1회 결과 (Rust gacha_pull). cat은 "cat:<털색 id>" */
+export interface GachaPulled {
+  cat: string;
+  isNew: boolean;
+  prefs: Prefs;
+}
+
 /** The backend holds back a window close or quit: "window" (Cmd+W, the red button) | "quit" (Cmd+Q). */
 export type QuitKind = "window" | "quit";
 /** Sent when a close or quit would stop `working` members. */
@@ -393,8 +413,12 @@ export const api = {
   /** save every team and member's session (marked "restarted") right before the app restarts itself */
   prepareRestart: (reason: "update" | "quit" = "update") => call<void>("app_prepare_restart", { reason }),
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
-  /** buy a shop item; returns the updated prefs, or rejects with a plain Korean reason */
-  buyItem: (id: string, price: number) => call<Prefs>("shop_buy", { id, price }),
+  /** buy a shop item (소품 only; the price is Rust's): returns the updated prefs, or rejects with a plain Korean reason */
+  buyItem: (id: string) => call<Prefs>("shop_buy", { id }),
+  /** 고양이 뽑기 가격과 고양이별 등급·확률 (화면 확률표) */
+  gachaInfo: () => call<GachaInfo>("gacha_info"),
+  /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */
+  gachaPull: () => call<GachaPulled>("gacha_pull"),
   onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
 
   // agent CLIs

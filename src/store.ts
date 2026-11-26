@@ -7,7 +7,14 @@ import { inOffice } from "./lib/crew";
 import { api, LOGIN_REQUIRED, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
 import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
 import { DEFAULT_OWNED } from "./lib/shop";
-import type { Prefs } from "./lib/api";
+import type { GachaPulled, Prefs } from "./lib/api";
+
+/**
+ * 뽑기 연출 중에는 잔액·보유 물건·사무실 털색 반영을 미룬다 (결과가 연출보다 먼저 새지 않게).
+ * 연출이 끝나면 `releaseGacha`가 밀린 값을 한 번에 반영한다.
+ */
+let holding = false;
+let held: Prefs | null = null;
 
 export type View =
   | { name: "home" }
@@ -63,8 +70,15 @@ interface AppState {
   confirmQuit: boolean;
 
   openShop(on: boolean): void;
-  /** buy one shop item; resolves to null on success, or a plain Korean reason to show */
-  buyItem(id: string, price: number): Promise<string | null>;
+  /** buy one shop item (소품); resolves to null on success, or a plain Korean reason to show */
+  buyItem(id: string): Promise<string | null>;
+  /**
+   * 고양이 뽑기 1회 요청. 결과는 바로 돌아오지만 잔액·보유 반영은 `releaseGacha()` 전까지 미룬다.
+   * 실패(잔액 부족 등)면 반영할 것이 없으니 바로 풀리고 이유를 돌려준다.
+   */
+  startGacha(): Promise<{ ok: true; res: GachaPulled } | { ok: false; reason: string }>;
+  /** 뽑기 연출이 끝났을 때 (또는 상점을 닫았을 때) 미뤄 둔 잔액·보유 반영을 한 번에 한다 */
+  releaseGacha(): void;
   toggleDark(): void;
   toggleLeft(): void;
   toggleRight(): void;
@@ -159,9 +173,19 @@ export const useApp = create<AppState>((set, get) => {
   let autoResumed = false;
   /** the shop's money and purchases, from prefs (read at start, then on every change) */
   const applyPrefs = (p: Prefs) => {
+    if (holding) {
+      held = p;
+      return;
+    }
     const owned = p.owned ?? DEFAULT_OWNED;
     setOwnedCoats(owned);
     set({ churu: p.churu ?? 0, owned });
+  };
+  const releaseGacha = () => {
+    holding = false;
+    const p = held;
+    held = null;
+    if (p) applyPrefs(p);
   };
   const upsertBatch = (b: Batch) => set((s) => ({ batches: [...s.batches.filter((x) => x.id !== b.id), b] }));
 
@@ -192,9 +216,23 @@ export const useApp = create<AppState>((set, get) => {
     shopOpen: false,
 
     openShop: (shopOpen) => set({ shopOpen }),
-    buyItem: async (id, price) => {
+    startGacha: async () => {
+      holding = true;
       try {
-        applyPrefs(await api.buyItem(id, price));
+        const res = await api.gachaPull();
+        // 연출 중이면 미룬다. 이미 풀렸다면(상점을 닫은 뒤 도착) 바로 반영한다
+        if (holding) held = res.prefs;
+        else applyPrefs(res.prefs);
+        return { ok: true, res };
+      } catch (e) {
+        releaseGacha();
+        return { ok: false, reason: msg(e) };
+      }
+    },
+    releaseGacha,
+    buyItem: async (id) => {
+      try {
+        applyPrefs(await api.buyItem(id));
         // the teammates' coats and the lounge follow the purchase at once
         set((s) => ({ teams: { ...s.teams } }));
         return null;
