@@ -30,7 +30,7 @@ function ItemPicture({ e }: { e: ShopEntry }) {
 }
 
 /** 사무실과 같은 도트 고양이가 앉은 모습. silhouette면 털색 없이 회색 그림자 (아직 못 얻은 고양이) */
-function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boolean }) {
+export function CatPicture({ coat, silhouette = false }: { coat: Coat; silhouette?: boolean }) {
   // 그림 한 칸(FW·K × FH·K)에서 위쪽 빈 곳(감정 표시 자리)은 잘라내고 보여준다. 그림자 모양은 흰 고양이로 통일
   const url = strip(silhouette ? COATS[0] : coat, "look", [1], "plain");
   return (

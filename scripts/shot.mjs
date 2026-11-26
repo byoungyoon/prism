@@ -58,6 +58,8 @@ const SCREENS = {
   "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
+  "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
+  "coat-done": "털색 메뉴에서 다른 색을 고른 뒤의 모습",
   dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
   account: "계정 화면 (맨 아래에 지금 버전 표시)",
   "account-end": "계정 화면을 맨 아래까지 내린 모습",
@@ -176,6 +178,13 @@ function fakeApi(cmd, args, data) {
       return data.prefs;
     case "install_check":
       return data.install ?? null;
+    case "prefs_set_coat": {
+      const coats = { ...data.prefs.coats };
+      if (args.coat) coats[args.member] = args.coat;
+      else delete coats[args.member];
+      data.prefs = { ...data.prefs, coats };
+      return data.prefs;
+    }
     case "gacha_info":
       return GACHA_INFO;
     case "gacha_pull": {
@@ -249,6 +258,18 @@ async function liftLoungeCat(page) {
   await page.mouse.move(x, y - 90, { steps: 14 });
 }
 
+/** 털색 메뉴 시연: 휴게실에서 쉬는 고양이 하나를 (없으면 아무 고양이나) 우클릭한다 */
+async function rightClickCat(page) {
+  const cats = page.locator(".of-cats .cr-mover .critter[data-coat-key]");
+  await cats.first().waitFor({ timeout: 15000 });
+  // 걸어가는 중이면 자리가 바뀌니 앉을 때까지 기다린다
+  await page.waitForTimeout(2500);
+  const resting = page.locator(".of-cats .critter[data-coat-key].cr-pose-coffee, .of-cats .critter[data-coat-key].cr-pose-sit, .of-cats .critter[data-coat-key].cr-pose-sleep");
+  const box = await ((await resting.count()) ? resting : cats).first().boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.65, { button: "right" });
+  await page.getByRole("menu").waitFor({ timeout: 5000 });
+}
+
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
 async function openScreen(page, screen, o, data) {
   const narrow = o.width <= 820;
@@ -283,6 +304,15 @@ async function openScreen(page, screen, o, data) {
     await page.locator(".of-lounge [data-piece]").first().waitFor({ timeout: 15000 }).catch(() => {});
     if (screen === "arrange") await arrangeLounge(page);
     else await liftLoungeCat(page);
+  }
+  if (screen.startsWith("coat-")) {
+    if (narrow) await phoneTab("사무실").click();
+    await rightClickCat(page);
+    if (screen === "coat-done") {
+      // 지금 색이 아닌 것 중 마지막 털색을 고른다
+      const other = page.getByRole("menu").locator('[role="menuitemradio"][aria-checked="false"]');
+      if (await other.count()) await other.last().click();
+    }
   }
   if (screen.startsWith("shop")) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();

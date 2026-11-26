@@ -11,6 +11,7 @@ import { AccountSheet } from "./components/AccountSheet";
 import { Onboarding } from "./components/Onboarding";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { QuitConfirm } from "./components/QuitConfirm";
+import { CoatMenu } from "./components/CoatMenu";
 import { InstallNotice } from "./components/InstallNotice";
 import { EngineStage } from "./engines/EngineStage";
 import { useEngineEdit } from "./engines/editing";
@@ -267,6 +268,7 @@ export default function App() {
       <UpdateBanner />
       <InstallNotice />
       <QuitConfirm />
+      <CoatMenu />
       <ReconnectBadge />
       <ErrorToast />
     </div>

@@ -7,7 +7,7 @@ import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { workNews } from "./lib/workNews";
 import { api, LOGIN_REQUIRED, type AlertKind, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
-import { catName, setOwnedCoats } from "./components/critters/pixel/coats";
+import { catName, setChosenCoats, setOwnedCoats } from "./components/critters/pixel/coats";
 import { DEFAULT_OWNED } from "./lib/shop";
 import type { GachaPulled, Prefs } from "./lib/api";
 
@@ -17,6 +17,9 @@ import type { GachaPulled, Prefs } from "./lib/api";
  */
 let holding = false;
 let held: Prefs | null = null;
+
+/** 팀원마다 속한 팀을 붙인다 (고른 털색을 찾는 데 쓴다). 늘 새 객체라서, 털색이 바뀌었을 때 다시 하면 memo된 고양이도 다시 그려진다 */
+const tagTeam = (snap: TeamSnapshot): TeamSnapshot => ({ ...snap, agents: snap.agents.map((a) => ({ ...a, projectId: snap.projectId })) });
 
 export type View =
   | { name: "home" }
@@ -67,6 +70,10 @@ interface AppState {
   /** 츄르 잔액 and the things bought so far ("cat:<id>" · "item:<이름>") */
   churu: number;
   owned: string[];
+  /** 직접 고른 팀원 털색 (Prefs.coats) */
+  coats: Record<string, string>;
+  /** 팀원 털색 고르기. `coat` null이면 자동 배정으로 되돌린다 */
+  setCoat(member: string, coat: string | null): Promise<void>;
   /** the 상점 sheet is open */
   shopOpen: boolean;
   /** show the teammate characters (board, live work, walking about the app); kept on this device */
@@ -195,9 +202,14 @@ export const useApp = create<AppState>((set, get) => {
       return;
     }
     const owned = p.owned ?? DEFAULT_OWNED;
+    const coats = p.coats ?? {};
     setOwnedCoats(owned);
+    setChosenCoats(coats);
     // a new coat renames and repaints teammates: every screen showing them draws again
-    set((s) => ({ churu: p.churu ?? 0, owned, ...(owned.join() === s.owned.join() ? {} : { teams: { ...s.teams } }) }));
+    set((s) => {
+      const same = owned.join() === s.owned.join() && JSON.stringify(coats) === JSON.stringify(s.coats);
+      return { churu: p.churu ?? 0, owned, coats, ...(same ? {} : { teams: Object.fromEntries(Object.entries(s.teams).map(([id, t]) => [id, tagTeam(t)])) }) };
+    });
   };
   const releaseGacha = () => {
     holding = false;
@@ -235,8 +247,10 @@ export const useApp = create<AppState>((set, get) => {
     autoAllowSafe: true,
     churu: 0,
     owned: [...DEFAULT_OWNED],
+    coats: {},
     shopOpen: false,
 
+    setCoat: guard(async (member: string, coat: string | null) => applyPrefs(await api.setCoat(member, coat))),
     openShop: (shopOpen) => set({ shopOpen }),
     mainTab: "office",
     setMainTab: (mainTab) => set({ mainTab }),
@@ -272,7 +286,8 @@ export const useApp = create<AppState>((set, get) => {
     setError: (e) => set({ error: e == null ? null : msg(e) }),
 
     init: async () => {
-      await api.onSnapshot((snap) => {
+      await api.onSnapshot((raw) => {
+        const snap = tagTeam(raw);
         const prev = get().teams[snap.projectId];
         set((s) => ({ teams: { ...s.teams, [snap.projectId]: snap } }));
         const name = get().projects.find((p) => p.id === snap.projectId)?.name ?? "팀";
@@ -307,7 +322,7 @@ export const useApp = create<AppState>((set, get) => {
         // every team's current state up front, so teams at work show without waiting for their next update
         const projects = get().projects;
         const snaps = await Promise.all(projects.map((p) => api.getTeam(p.id).catch(() => null)));
-        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, x])) } }));
+        set((s) => ({ teams: { ...s.teams, ...Object.fromEntries(snaps.filter((x) => x != null).map((x) => [x.projectId, tagTeam(x)])) } }));
       };
       await reload();
       // remote: after a reconnect (or dropped updates) fetch everything again
@@ -371,7 +386,8 @@ export const useApp = create<AppState>((set, get) => {
     openProject: guard(async (id: string) => {
       const p = await api.touchProject(id);
       replaceProject(p);
-      const snap = await api.getTeam(id);
+      const raw = await api.getTeam(id);
+      const snap = raw && tagTeam(raw);
       set((s) => ({
         projectId: id,
         teams: snap ? { ...s.teams, [id]: snap } : s.teams,
@@ -384,7 +400,7 @@ export const useApp = create<AppState>((set, get) => {
 
     startTeam: async (projectId: string, cwd?: string) => {
       try {
-        const snap = await api.startTeam(projectId, cwd);
+        const snap = tagTeam(await api.startTeam(projectId, cwd));
         set((s) => ({ projectId, teams: { ...s.teams, [projectId]: snap }, view: { name: "main" }, selectedNode: "lead" }));
       } catch (e) {
         const m = msg(e);
@@ -403,7 +419,7 @@ export const useApp = create<AppState>((set, get) => {
       for (const id of ids) {
         const name = get().projects.find((p) => p.id === id)?.name ?? "팀";
         try {
-          const snap = await api.startTeam(id);
+          const snap = tagTeam(await api.startTeam(id));
           set((s) => ({ teams: { ...s.teams, [id]: snap } }));
         } catch (e) {
           failures.push({ id, name, reason: plainReason(msg(e)) });

@@ -87,6 +87,8 @@ export interface Agent {
   id: string;
   name: string;
   role: Role;
+  /** 화면에서만: 이 팀원이 속한 프로젝트 id (스냅샷을 받을 때 붙인다. 고른 털색을 찾는 데 쓴다) */
+  projectId?: string;
   kind: Provider;
   model: string;
   effort: Effort;
@@ -356,6 +358,8 @@ export interface Prefs {
   churu: number;
   /** 산 물건 id: "cat:<털색 id>" · "item:<이름>" (기본 ["cat:white"]) */
   owned: string[];
+  /** 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id (없으면 자동 배정) */
+  coats?: Record<string, string>;
 }
 
 /** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). tier는 흔함·레어·에픽·유니크·레전더리, percent는 소수 첫째 자리까지 */
@@ -450,6 +454,8 @@ export const api = {
   setPrefs: (providers: Provider[], onboarded: boolean) => call<Prefs>("prefs_set", { providers, onboarded }),
   /** buy a shop item (소품 only; the price is Rust's): returns the updated prefs, or rejects with a plain Korean reason */
   buyItem: (id: string) => call<Prefs>("shop_buy", { id }),
+  /** 팀원 털색 고르기 (coat null = 자동으로 되돌리기). 가진 털색이 아니면 Korean reason으로 reject */
+  setCoat: (member: string, coat: string | null) => call<Prefs>("prefs_set_coat", { member, coat }),
   /** 고양이 뽑기 가격과 고양이별 등급·확률 (화면 확률표) */
   gachaInfo: () => call<GachaInfo>("gacha_info"),
   /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */

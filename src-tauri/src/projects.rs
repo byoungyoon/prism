@@ -1,5 +1,6 @@
 //! Projects the user has added, and each project's team preset. Persisted as JSON.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -135,6 +136,9 @@ pub struct Settings {
     /// 가진 상점 물건 id 목록 ("cat:white"는 처음부터 가진다)
     #[serde(default = "default_owned")]
     pub owned: Vec<String>,
+    /// 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id. 없으면 화면이 이름으로 자동 배정한다
+    #[serde(default)]
+    pub coats: BTreeMap<String, String>,
     /// 츄르 1개로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
     #[serde(default)]
     pub churu_rest: u64,
@@ -165,9 +169,29 @@ impl Default for Settings {
             auto_allow_safe: true,
             churu: 0,
             owned: default_owned(),
+            coats: BTreeMap::new(),
             churu_rest: 0,
         }
     }
+}
+
+/// 팀원 `member`의 털색을 정한다. `coat`가 None이면 자동 배정으로 되돌린다. 가진 털색(owned의 "cat:<id>")만 고를 수 있다.
+pub fn set_coat(s: &mut Settings, member: &str, coat: Option<&str>) -> Result<(), String> {
+    if member.is_empty() {
+        return Err("어느 팀원인지 알 수 없어요".into());
+    }
+    match coat {
+        None => {
+            s.coats.remove(member);
+        }
+        Some(c) => {
+            if !s.owned.iter().any(|x| x.strip_prefix("cat:") == Some(c)) {
+                return Err("아직 없는 털색이에요. 상점에서 뽑으면 고를 수 있어요".into());
+            }
+            s.coats.insert(member.into(), c.into());
+        }
+    }
+    Ok(())
 }
 
 /// 토큰 `tokens`를 더해 (츄르 잔액, 남은 토큰)을 구한다. 환율 미만은 나머지로 이월된다.
@@ -448,6 +472,17 @@ impl Projects {
         let snap = {
             let mut p = self.prefs.lock().unwrap();
             buy_item(&mut p, id)?;
+            p.clone()
+        };
+        self.save_prefs();
+        Ok(snap)
+    }
+
+    /// 팀원 털색 고르기 (`set_coat`). 성공하면 저장하고 새 Settings를 돌려준다.
+    pub fn choose_coat(&self, member: &str, coat: Option<&str>) -> Result<Settings, String> {
+        let snap = {
+            let mut p = self.prefs.lock().unwrap();
+            set_coat(&mut p, member, coat)?;
             p.clone()
         };
         self.save_prefs();
@@ -755,6 +790,14 @@ pub fn shop_buy(app: AppHandle, projects: State<'_, Projects>, id: String) -> Re
     Ok(s)
 }
 
+/// 팀원 털색을 고른다 (`coat` null = 자동으로 되돌리기). 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
+#[tauri::command]
+pub fn prefs_set_coat(app: AppHandle, projects: State<'_, Projects>, member: String, coat: Option<String>) -> Result<Settings, String> {
+    let s = projects.choose_coat(&member, coat.as_deref())?;
+    let _ = app.emit("prefs", &s);
+    Ok(s)
+}
+
 /// 고양이 뽑기 1회 (인자 없음). 결과와 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
 #[tauri::command]
 pub fn gacha_pull(app: AppHandle, projects: State<'_, Projects>) -> Result<GachaPulled, String> {
@@ -910,6 +953,20 @@ mod churu_tests {
         assert!(err.contains("뽑기"));
         assert_eq!(s.churu, 99_999);
         assert_eq!(s.owned, vec!["cat:white".to_string()]);
+    }
+
+    #[test]
+    fn only_owned_coats_can_be_chosen_and_auto_removes_the_pick() {
+        let mut s = fresh();
+        assert!(set_coat(&mut s, "p1:worker:W1", Some("black")).unwrap_err().contains("상점"));
+        assert!(set_coat(&mut s, "", Some("white")).is_err());
+        assert!(s.coats.is_empty());
+        s.owned.push("cat:black".into());
+        set_coat(&mut s, "p1:worker:W1", Some("black")).unwrap();
+        set_coat(&mut s, "p2:worker:W1", Some("white")).unwrap();
+        assert_eq!(s.coats["p1:worker:W1"], "black");
+        set_coat(&mut s, "p1:worker:W1", None).unwrap();
+        assert_eq!(s.coats.keys().collect::<Vec<_>>(), vec!["p2:worker:W1"]);
     }
 
     #[test]
@@ -1083,6 +1140,18 @@ mod create_tests {
             h.join().unwrap();
         }
         (t.elapsed().as_secs_f64() * 1000.0, worst.as_secs_f64() * 1000.0)
+    }
+
+    #[test]
+    fn chosen_coat_is_still_there_after_reading_the_settings_file_again() {
+        let (root, mut ps) = scratch();
+        let file = root.join("data/settings.json");
+        ps.settings = Some(file.clone());
+        ps.prefs.lock().unwrap().owned.push("cat:black".into());
+        ps.choose_coat("p1:lead:총괄", Some("black")).unwrap();
+        let again: Settings = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(again.coats["p1:lead:총괄"], "black");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

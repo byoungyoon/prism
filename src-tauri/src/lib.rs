@@ -253,6 +253,7 @@ pub fn run() {
             alerts::team_alert,
             alerts::prefs_set_alert,
             projects::shop_buy,
+            projects::prefs_set_coat,
             projects::gacha_pull,
             projects::gacha_info,
             app_prepare_restart,

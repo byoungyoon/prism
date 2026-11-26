@@ -12,7 +12,7 @@ import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
-import { catName, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
+import { catName, coatKey, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
 
 type Spot = { x: number; y: number };
 type Box = { x: number; y: number; w: number; h: number };
@@ -621,7 +621,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     if (!desk && !spot) return false;
     const p = local(e);
     // a cat's character follows its coat; a little one in five times it does the opposite
-    const coat = coatOf(m.agent.role === "lead" ? m.project.name : m.agent.name, m.agent.role);
+    const coat = coatOf(m.agent.role === "lead" ? m.project.name : m.agent.name, m.agent.role, coatKey(m.agent));
     const compliant = (temperOf(coat) === "docile") !== (Math.random() < TEMPER_FLIP);
     const g: CatGesture = {
       key,
@@ -732,7 +732,8 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
   };
   /** a press in the room: on a cat (lift it, or be bothered at its desk), else on a piece of the lounge */
   const onRoomDown = (e: RPointer) => {
-    if (e.button !== 0) return;
+    // (Mac에서 ctrl+클릭은 우클릭이다: 털색 메뉴만 뜨고 고양이를 집지 않는다)
+    if (e.button !== 0 || e.ctrlKey) return;
     swallow.current = false;
     const cat = catAt(e.clientX, e.clientY);
     if (cat) {
