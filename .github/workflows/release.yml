@@ -1,6 +1,11 @@
 # Push a tag like v0.1.1 → build the two outside editors' web builds (figcraft, deckcraft) once,
-# then build macOS (Apple Silicon + Intel) and Windows with those builds inside the app, publish a
+# then build macOS (Apple Silicon + Intel) and Windows with those builds inside the app, into a
 # GitHub Release with the installers, update signatures and latest.json (what installed apps check).
+# The release stays a DRAFT until all three builds are done and checked: one job creates it, the
+# builds upload into it, and a last job publishes it as Latest. So people never see a half-filled
+# release, and "Latest" moves from the old version to the complete new one in one step.
+# If a build or the check fails, the draft stays unpublished (users keep the old version);
+# use "Re-run all jobs" — the same draft is reused.
 #
 # Caches: GitHub Actions only lets a run see caches made on its own ref or on the default branch.
 # Every tag is its own ref, so tag runs never share caches with each other (checked in v0.3.1:
@@ -20,11 +25,17 @@ on:
 permissions:
   contents: write
 
+# one run per ref: two runs for the same tag must not each create (or publish) a draft
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # Engine sources (public repositories). "main" = whatever is latest when the tag is built.
   # For a reproducible release, pin to a full commit SHA instead, e.g. FIGCRAFT_REF: 1a2b3c4...
   FIGCRAFT_REF: main
   DECKCRAFT_REF: main
+  RELEASE_BODY: "Prism 새 버전이에요. 앱을 켜면 자동으로 업데이트 안내가 떠요."
 
 jobs:
   # Builds the web versions of both engines (wasm, OS-independent) once. The three app builds
@@ -160,9 +171,47 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
         working-directory: src-tauri
 
-  build:
+  # The one place the release is created. Three builds creating drafts side by side could each make
+  # their own (GitHub allows several drafts for one tag).
+  draft:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     needs: engines
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # a tag pushed without a version bump would ship an app that still calls itself the old version
+      - name: Check the tag matches the app version
+        run: node scripts/check-release.mjs versions "$GITHUB_REF_NAME"
+
+      - id: release
+        name: Create (or reuse) the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          found=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | \"\(.id) \(.draft)\"")
+          if grep -q ' false$' <<< "$found"; then
+            echo "::error::$GITHUB_REF_NAME is already published. Release a new version instead of rebuilding a live one."
+            exit 1
+          fi
+          id=$(awk 'NR == 1 { print $1 }' <<< "$found")
+          if [ -z "$id" ]; then
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$GITHUB_REF_NAME" \
+              -f target_commitish="$GITHUB_SHA" \
+              -f name="Prism $GITHUB_REF_NAME" \
+              -f body="$RELEASE_BODY" \
+              -F draft=true -F prerelease=false --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: [engines, draft]
     strategy:
       fail-fast: false
       matrix:
@@ -210,10 +259,48 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: Prism v__VERSION__
-          releaseBody: "Prism 새 버전이에요. 앱을 켜면 자동으로 업데이트 안내가 떠요."
-          releaseDraft: false
+          # upload into the draft made above (tagName: so latest.json links use the tag, not the
+          # draft's temporary address)
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          tagName: ${{ github.ref_name }}
+          releaseBody: ${{ env.RELEASE_BODY }}
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
+
+  # Runs only when all three builds succeeded: check the draft is complete, then publish it.
+  publish:
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.draft.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The three builds each add their platform to the same latest.json, so check none got lost.
+      - name: Check the installers and latest.json
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" > "$RUNNER_TEMP/assets.json"
+          id=$(jq -r '.[] | select(.name == "latest.json") | .id' "$RUNNER_TEMP/assets.json")
+          if [ -z "$id" ]; then
+            echo "::error::latest.json is missing from the draft. Use 'Re-run all jobs'."
+            exit 1
+          fi
+          gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$RUNNER_TEMP/latest.json"
+          node scripts/check-release.mjs assets "$GITHUB_REF_NAME" "$RUNNER_TEMP/latest.json" "$RUNNER_TEMP/assets.json" "$GITHUB_REPOSITORY"
+
+      # Latest only moves forward: finishing an older tag late must not put the old version back.
+      - name: Publish
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null) || current=""
+          make_latest=true
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$GITHUB_REF_NAME" | sort -V | tail -n 1)" != "$GITHUB_REF_NAME" ]; then
+            make_latest=false
+            echo "::warning::$current is newer, so $GITHUB_REF_NAME is published without becoming Latest."
+          fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -f make_latest="$make_latest" > /dev/null

@@ -3343,22 +3343,24 @@ impl TeamManager {
         let pid = team.project.id.clone();
         // a Claude session that never got a message has nothing saved to resume: start it fresh
         let home = team.homes.get(&a.kind).cloned().flatten();
-        let resume = resume.filter(|sid| a.kind != "claude" || crate::launch::claude_session_exists(home.as_deref(), sid, &a.cwd));
+        // (Codex likewise: no rollout file under this account's CODEX_HOME = nothing to continue)
+        let resume = resume.filter(|sid| match a.kind.as_str() {
+            "claude" => crate::launch::claude_session_exists(home.as_deref(), sid, &a.cwd),
+            "codex" => crate::launch::codex_thread_exists(home.as_deref(), sid),
+            _ => true,
+        });
         let session_id = resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         // a fresh session gets its task card (and, for a reused 작업자, a line about its last card);
         // a resumed one already has it
         let handoff = team.agent_mut(aid).and_then(|x| x.handoff.take());
-        let prompt = if resume.is_none() {
-            task.as_ref().map(|t| {
-                let card = prompts::task_card(&t.id, &t.title, &t.goal, &t.files, &t.done_when, a.branch.as_deref());
-                match &handoff {
-                    Some(h) => format!("{card}\n\n{h}"),
-                    None => card,
-                }
-            })
-        } else {
-            None
-        };
+        let card = task.as_ref().map(|t| {
+            let card = prompts::task_card(&t.id, &t.title, &t.goal, &t.files, &t.done_when, a.branch.as_deref());
+            match &handoff {
+                Some(h) => format!("{card}\n\n{h}"),
+                None => card,
+            }
+        });
+        let prompt = if resume.is_none() { card.clone() } else { None };
         let launch = crate::launch::build(&crate::launch::Ctx {
             kind: &a.kind,
             agent_id: aid,
@@ -3432,6 +3434,10 @@ impl TeamManager {
                 let codex = crate::structured::Codex::new(spawn, launch.resume_args, launch.fallback_models, sink);
                 if let Some(thread) = &resume {
                     codex.continue_thread(thread);
+                    // if Codex says the conversation is gone after all, the new one starts from the card
+                    if let Some(c) = &card {
+                        codex.set_fresh_context(c.clone());
+                    }
                 }
                 Arc::new(crate::structured::CodexHandle(codex))
             }
@@ -3446,7 +3452,9 @@ impl TeamManager {
             self.push_entry(&pid, aid, "in", first);
         }
         if let Some(m) = team.agent_mut(aid) {
-            m.session_id = session_id;
+            // Codex names its conversation itself (`thread.started`, see on_event): until then there
+            // is nothing to resume, so don't keep a made-up id that `exec resume` would fail on
+            m.session_id = if a.kind == "codex" && resume.is_none() { String::new() } else { session_id };
             m.structured = true;
             m.ready = true;
             m.stuck = None;

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useApp } from "../store";
-import { api, pty, type Account, type CliStatus, type Provider } from "../lib/api";
+import { api, type Account, type CliStatus, type Provider } from "../lib/api";
 import { TerminalView } from "./TerminalView";
 import { ConnectPanel } from "./ConnectPanel";
+import { InstallFailed } from "./FailureDetail";
+import { useInstall } from "./useInstall";
 import { PROVIDER_NAME } from "../lib/topAccount";
 import { isRemote } from "../lib/transport";
 import { useShallow } from "zustand/react/shallow";
@@ -139,41 +141,44 @@ function Row({ a, onConnect, children }: { a: Account; onConnect: (a: Account) =
   );
 }
 
-/** Runs the vendor's official installer in a visible terminal; closes once the CLI answers. */
+/** Runs the vendor's official installer in a terminal; closes once the CLI answers. */
 function InstallTerminal({ name, onDone, onClose }: { name: Provider; onDone: () => void; onClose: () => void }) {
-  const [ptyId, setPtyId] = useState<number | null>(null);
+  const target = PROVIDER_INFO[name].cli;
+  /** what is being installed now: Node.js first when Codex needs it (Windows); null while checking */
+  const [tool, setTool] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let alive = true;
-    let started: number | null = null;
-    const timer = setTimeout(() => {
-      api
-        .cliInstall(PROVIDER_INFO[name].cli, 92, 18)
-        .then((p) => {
-          started = p;
-          if (alive) setPtyId(p);
-          else void pty.kill(p);
-        })
-        .catch((e) => useApp.getState().setError(e));
-    }, 150); // one install, even when React (dev) runs this effect twice
-    const t = setInterval(() => {
-      void api.cliStatus().then((list) => {
-        if (list.find((c) => c.name === PROVIDER_INFO[name].cli)?.installed) setDone(true);
+    void api
+      .cliStatus()
+      .catch((): CliStatus[] => [])
+      .then((list) => {
+        if (alive) setTool(target === "codex" && list.some((c) => c.name === "node" && !c.installed) ? "node" : target);
       });
-    }, 3000);
     return () => {
       alive = false;
-      clearTimeout(timer);
-      clearInterval(t);
-      if (started != null) void pty.kill(started);
     };
-  }, [name]);
+  }, [target]);
+  const { ptyId, failure } = useInstall(
+    tool,
+    (list) => {
+      if (!list.find((c) => c.name === tool)?.installed) return;
+      if (tool === target) setDone(true);
+      else setTool(target);
+    },
+    attempt,
+  );
+  // a fresh `onDone` every render must not restart the wait
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
   useEffect(() => {
     if (!done) return;
     void useApp.getState().loadAccounts();
-    const t = setTimeout(onDone, 1500);
+    const t = setTimeout(() => doneRef.current(), 1500);
     return () => clearTimeout(t);
-  }, [done, onDone]);
+  }, [done]);
+  const what = tool === "node" && target !== "node" ? "먼저 필요한 Node.js" : `${PROVIDER_INFO[name].title} 프로그램`;
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2 text-[13px]">
@@ -183,14 +188,22 @@ function InstallTerminal({ name, onDone, onClose }: { name: Provider; onDone: ()
           </span>
         ) : (
           <>
-            <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />
-            <span className="flex-auto">{PROVIDER_INFO[name].title} 프로그램을 설치하는 중…</span>
+            {!failure && <span className="s-work size-2 rounded-full" style={{ background: "var(--amber)" }} />}
+            <span className="flex-auto">{failure ? "" : `${what}을 설치하는 중…`}</span>
             <button onClick={onClose} className="text-[12px] text-ink-2 underline">
               닫기
             </button>
           </>
         )}
       </div>
+      {failure && !done && (
+        <>
+          <InstallFailed label={tool === "node" ? "Node.js" : PROVIDER_INFO[name].title} failure={failure} />
+          <button onClick={() => setAttempt((n) => n + 1)} className="min-h-9 self-start rounded-full border-0 px-4 text-[13px] font-semibold" style={{ background: "var(--amber)", color: "#2B2520" }}>
+            다시 시도
+          </button>
+        </>
+      )}
       <details className="text-[12px] text-ink-2">
         <summary className="cursor-pointer select-none">설치 과정 보기</summary>
         <div className="mt-2 h-[220px] rounded-xl p-3" style={{ background: "var(--term-bg)" }}>
@@ -495,6 +508,8 @@ export function AccountSheet() {
                 <motion.span layout transition={spring} className="absolute top-1 size-5 rounded-full" style={{ left: autoUpdate ? 24 : 4, background: "#fff", boxShadow: "0 2px 6px rgba(0,0,0,0.18)" }} />
               </button>
             </div>
+            {/* which version this is — people report "I still see the old one" */}
+            <span className="shrink-0 text-center font-mono text-[11.5px] text-ink-2 select-text">Prism {__APP_VERSION__}</span>
           </motion.section>
         </motion.div>
       )}

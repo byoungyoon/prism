@@ -77,6 +77,8 @@ export function HomeScreen() {
   const [newName, setNewName] = useState("");
   const [arriving, setArriving] = useState(-1); // 0 worker, 1 manager, 2 lead
   const [busy, setBusy] = useState(false);
+  /** a new project is being made (folder + git): show it at once, block a second press */
+  const [creating, setCreating] = useState(false);
   const lastTeams = useApp((s) => s.lastTeams);
   const clockingIn = useApp((s) => s.clockingIn);
   const failures = useApp((s) => s.startFailures);
@@ -84,12 +86,17 @@ export function HomeScreen() {
   const cur: Project | undefined = projects.find((p) => p.id === selId) ?? projects[0];
   const create = async () => {
     const name = newName.trim();
-    if (!name) return;
-    const p = await useApp.getState().createProject(name);
-    if (p) {
-      setSelId(p.id);
-      setNewName("");
-      setNaming(false);
+    if (!name || creating) return;
+    setCreating(true);
+    try {
+      const p = await useApp.getState().createProject(name);
+      if (p) {
+        setSelId(p.id);
+        setNewName("");
+        setNaming(false);
+      }
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -155,18 +162,19 @@ export function HomeScreen() {
           autoFocus={naming}
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setNaming(false)}
+          onKeyDown={(e) => e.key === "Escape" && !creating && setNaming(false)}
+          readOnly={creating}
           placeholder="프로젝트 이름 (예: 우리 쇼핑몰)"
           className="min-h-10 min-w-0 flex-auto border-0 bg-transparent text-[14px] outline-none"
         />
       </label>
       {!empty && (
-        <button type="button" onClick={() => setNaming(false)} className="min-h-10 shrink-0 rounded-lg border-0 bg-transparent px-3 text-[13px] whitespace-nowrap text-ink-2">
+        <button type="button" disabled={creating} onClick={() => setNaming(false)} className="min-h-10 shrink-0 rounded-lg border-0 bg-transparent px-3 text-[13px] whitespace-nowrap text-ink-2">
           취소
         </button>
       )}
-      <button type="submit" disabled={!newName.trim()} className="min-h-10 shrink-0 rounded-lg border-0 px-4 text-[13px] font-semibold whitespace-nowrap disabled:opacity-50" style={{ background: "var(--amber)", color: "#2b2520" }}>
-        만들기
+      <button type="submit" disabled={!newName.trim() || creating} aria-busy={creating} className={`min-h-10 shrink-0 rounded-lg border-0 px-4 text-[13px] font-semibold whitespace-nowrap ${creating ? "" : "disabled:opacity-50"}`} style={{ background: "var(--amber)", color: "#2b2520" }}>
+        {creating ? "만드는 중…" : "만들기"}
       </button>
     </motion.form>
   ) : (

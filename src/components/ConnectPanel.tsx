@@ -4,13 +4,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useApp } from "../store";
 import { api, pty, type Account } from "../lib/api";
 import { loginFailureReason, loginPhase, reopenUrl } from "../lib/login";
+import { blockedReason, plainOutput } from "../lib/setupFailure";
 import { PROVIDER_NAME } from "../lib/topAccount";
+import { FailureDetail } from "./FailureDetail";
 import { TerminalView } from "./TerminalView";
 
 const LIMIT_MS = 10 * 60 * 1000;
 const amber = { background: "var(--amber)", color: "#2B2520" };
 
-type State = { kind: "waiting" } | { kind: "success" } | { kind: "failed"; reason: string } | { kind: "cancelled" };
+type State = { kind: "waiting" } | { kind: "success" } | { kind: "failed"; reason: string; detail?: string } | { kind: "cancelled" };
 
 /** One account's sign-in: the browser does it, this only says how it's going. The sign-in
  *  program runs unseen and gets the result back from the browser by itself (no code to copy). */
@@ -50,13 +52,17 @@ function Attempt({ acct, onRetry, onClose }: { acct: Account; onRetry: () => voi
       const p = running.current;
       if (over || p == null) return;
       // ask for the exit first: the status read after it is at least as new
-      const exit = await api.loginExit(p).catch(() => null);
+      const ran = await api.ptyState(p).catch(() => null);
+      const exit = ran?.done ? (ran.code ?? 1) : null;
       await loadAccounts();
       if (over) return;
       const loggedIn = !!useApp.getState().accounts.find((a) => a.id === id)?.status.loggedIn;
       const phase = loginPhase({ switching, loggedIn, exit });
       if (phase === "success") return finish({ kind: "success" });
-      if (phase === "failed") return finish({ kind: "failed", reason: loginFailureReason(output) });
+      if (phase === "failed") {
+        const said = ran?.tail || output;
+        return finish({ kind: "failed", reason: loginFailureReason(said), detail: `login ${provider} · exit ${exit}\n${plainOutput(said)}` });
+      }
       if (Date.now() - began > LIMIT_MS) {
         stop();
         return finish({ kind: "failed", reason: "시간이 너무 오래 지났어요." });
@@ -80,7 +86,7 @@ function Attempt({ acct, onRetry, onClose }: { acct: Account; onRetry: () => voi
           .catch(() => undefined);
         void check();
       } catch (e) {
-        if (!over) finish({ kind: "failed", reason: `로그인을 시작하지 못했어요. (${String(e)})` });
+        if (!over) finish({ kind: "failed", reason: `로그인 프로그램을 시작하지 못했어요. ${blockedReason(String(e)) ?? ""}`, detail: `login ${provider}\n${plainOutput(String(e))}` });
       }
     }, 150);
     return () => {
@@ -92,7 +98,7 @@ function Attempt({ acct, onRetry, onClose }: { acct: Account; onRetry: () => voi
       // closed before the next check: pick up a sign-in that just landed
       void loadAccounts();
     };
-  }, [id, switching, loadAccounts]);
+  }, [id, provider, switching, loadAccounts]);
 
   const done = state.kind === "success";
   useEffect(() => {
@@ -159,6 +165,7 @@ function Attempt({ acct, onRetry, onClose }: { acct: Account; onRetry: () => voi
             {state.kind === "failed" ? state.reason : "연결하려면 다시 시도를 눌러 주세요."}
             {switching && " 원래 계정은 그대로예요."}
           </span>
+          {state.kind === "failed" && state.detail && <FailureDetail text={state.detail} />}
           <div className="flex gap-2">
             <button onClick={onRetry} className="min-h-9 rounded-full border-0 px-4 text-[13px] font-semibold" style={amber}>
               다시 시도
