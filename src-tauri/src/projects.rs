@@ -129,13 +129,13 @@ pub struct Settings {
     /// let members do safe things (reading, building, local commits…) without asking anyone
     #[serde(default = "yes")]
     pub auto_allow_safe: bool,
-    /// 츄르 잔액 (토큰 1,000개당 1개씩 쌓인다)
+    /// 츄르 잔액 (토큰 TOKENS_PER_CHURU개당 1개씩 쌓인다)
     #[serde(default)]
     pub churu: u64,
     /// 가진 상점 물건 id 목록 ("cat:white"는 처음부터 가진다)
     #[serde(default = "default_owned")]
     pub owned: Vec<String>,
-    /// 1,000토큰으로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
+    /// 츄르 1개로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
     #[serde(default)]
     pub churu_rest: u64,
 }
@@ -144,10 +144,10 @@ fn default_owned() -> Vec<String> {
     vec!["cat:white".into()]
 }
 
-/// 토큰 25,000개당 츄르 1개. 토큰 = input + output + cache_write (cache_read는 뺀다).
+/// 토큰 12,500개당 츄르 1개. 토큰 = input + output + cache_write (cache_read는 뺀다).
 /// 이 컴퓨터 최근 4주 주간 평균 약 2,990만 토큰(입력+출력+캐시생성, 캐시읽기 제외)
-/// → 4주 약 1억 1,960만 토큰 ≈ 상점 전체 합계 약 4,800츄르가 되도록 정함.
-pub const TOKENS_PER_CHURU: u64 = 25_000;
+/// → 4주 약 1억 1,960만 토큰 ≈ 약 4,800츄르(25,000개당 1개)로 처음 정했고, 이후 받는 양을 2배(약 9,600츄르)로 늘림.
+pub const TOKENS_PER_CHURU: u64 = 12_500;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -835,6 +835,15 @@ mod churu_tests {
 
     fn fresh() -> Settings {
         Settings::default()
+    }
+
+    #[test]
+    fn churu_is_paid_at_double_the_old_rate() {
+        // 예전에는 25,000토큰에 1개였다: 같은 토큰으로 이제 2개
+        assert_eq!(churu_add(0, 0, 25_000), (2, 0));
+        assert_eq!(churu_add(0, 0, 1_000_000), (80, 0));
+        // 이미 모은 츄르는 다시 계산하지 않는다
+        assert_eq!(churu_add(100, 0, 0), (100, 0));
     }
 
     #[test]
