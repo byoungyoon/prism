@@ -287,3 +287,96 @@ textarea {
     margin-bottom: 0.5rem;
   }
 }
+
+/* ── 대시보드 탭 ───────────────────────────────────────
+   차트 3색: 참조 팔레트(dataviz 검증). 라이트/다크 각각. 앱 자체 색(navy 등)은 차트에 쓰지 않는다. */
+.t-light { --viz-1: #257de0; --viz-2: #f47230; --viz-3: #00b894; }
+.t-dark { --viz-1: #338ced; --viz-2: #e76624; --viz-3: #00a888; }
+
+.dash-root { display: flex; min-height: 0; min-width: 0; flex: 1 1 auto; flex-direction: column; gap: 10px; overflow: auto; }
+.dash-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.dash-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dash-title b { font-size: 15px; }
+.dash-title small, .dash-hint { color: var(--text2); font-size: 12px; line-height: 1.5; }
+.dash-add { position: relative; }
+.dash-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: flex; flex-direction: column; min-width: 180px; padding: 6px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--glass-border); box-shadow: var(--shadow); }
+.dash-menu button { text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.dash-menu button:hover { background: var(--chip); }
+
+.dash-canvas { position: relative; width: 100%; min-height: 240px; flex: 0 0 auto; }
+.dash-card { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-radius: 16px; background: var(--glass2); border: 1px solid var(--glass-border); box-shadow: var(--shadow-sm); box-sizing: border-box; }
+.dash-card-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); cursor: grab; touch-action: none; user-select: none; min-width: 0; }
+.dash-card-head:active { cursor: grabbing; }
+.dash-card-emoji { font-size: 16px; flex: 0 0 auto; }
+.dash-card-name { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.dash-card-name b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-card-name small { color: var(--text2); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-badge { flex: 0 0 auto; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--text); white-space: nowrap; }
+.dash-icon { flex: 0 0 auto; width: 26px; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--text2); cursor: pointer; }
+.dash-icon:hover, .dash-icon[aria-pressed="true"] { background: var(--chip); color: var(--text); }
+.dash-card-body { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; padding: 10px; }
+.dash-busy { position: absolute; right: 10px; top: 8px; font-size: 11.5px; color: var(--text2); }
+.dash-ask { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.dash-ask-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.dash-ask-row.small { font-size: 12px; }
+.dash-ask input, .dash-field input, .dash-field select { flex: 1 1 auto; min-width: 0; height: 32px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--tile); color: var(--text); font-size: 13px; }
+.dash-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.dash-field span { color: var(--text2); }
+.dash-check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.dash-primary { flex: 0 0 auto; min-height: 32px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--amber); color: #2B2520; font-size: 13px; font-weight: 600; cursor: pointer; }
+.dash-primary:disabled { opacity: 0.5; cursor: default; }
+.dash-link { border: 0; background: transparent; color: var(--text2); text-decoration: underline; font-size: 12px; cursor: pointer; padding: 2px 4px; }
+.dash-link:hover { color: var(--text); }
+.dash-err { color: var(--block-ink); font-size: 12px; line-height: 1.5; margin: 0; }
+.dash-handle { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; background: linear-gradient(135deg, transparent 50%, var(--text2) 50%, var(--text2) 58%, transparent 58%, transparent 74%, var(--text2) 74%, var(--text2) 82%, transparent 82%); opacity: 0.6; }
+.dash-form { display: flex; flex-direction: column; gap: 8px; }
+
+.dash-web { height: 100%; min-height: 120px; }
+.dash-web-slot { position: relative; height: 100%; min-height: 120px; border-radius: 10px; background: var(--tile); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text2); font-size: 12.5px; }
+.dash-web-ph { text-align: center; }
+
+.dash-scroll { overflow: auto; max-height: 100%; }
+.dash-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dash-table th, .dash-table td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.dash-table th { color: var(--text2); font-weight: 600; position: sticky; top: 0; background: var(--bg2); }
+.dash-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.dash-sheet .dash-hint, .dash-ai-title { margin: 0 0 6px; }
+.dash-ai-title { font-size: 13px; font-weight: 600; }
+.dash-summary { font-size: 13px; line-height: 1.7; white-space: pre-wrap; margin: 0; }
+.dash-msgs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.dash-msgs li { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.dash-msg-who { font-size: 11.5px; font-weight: 600; color: var(--text2); }
+.dash-msg-who time { font-weight: 400; margin-left: 6px; }
+.dash-msg-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+.dash-chart { display: flex; flex-direction: column; gap: 6px; }
+.dash-svg { width: 100%; height: auto; max-height: 220px; display: block; }
+.dash-grid { stroke: var(--line); stroke-width: 1; }
+.dash-axis { font-size: 10px; fill: var(--text2); }
+.dash-value { font-size: 10px; fill: var(--text); }
+.dash-line { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.dash-dot { stroke: var(--bg2); stroke-width: 1.5; }
+.dash-legend { list-style: none; margin: 0; padding: 0; display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.dash-legend li { display: flex; align-items: center; gap: 6px; }
+.dash-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.dash-numbers { font-size: 12px; }
+.dash-numbers summary { cursor: pointer; color: var(--text2); margin-top: 4px; }
+
+.dash-empty { display: flex; flex-direction: column; gap: 14px; max-width: 760px; margin: 24px auto 0; padding: 8px; }
+.dash-empty h2 { margin: 0; font-size: 20px; }
+.dash-empty .dash-hint { font-size: 13px; }
+.dash-draft-box { display: flex; flex-direction: column; gap: 6px; }
+.dash-draft-box .dash-field { font-size: 13px; }
+.dash-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.dash-bigcard { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 18px; border-radius: 18px; text-align: left; background: var(--glass2); border: 1px solid var(--glass-border); box-shadow: var(--shadow-sm); cursor: pointer; color: var(--text); }
+.dash-bigcard:hover { border-color: var(--amber); }
+.dash-big-emoji { font-size: 28px; }
+.dash-bigcard b { font-size: 15px; }
+.dash-bigcard small { color: var(--text2); font-size: 12.5px; line-height: 1.5; }
+
+.dash-draft { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 16px; background: var(--glass2); border: 1px solid var(--amber); }
+.dash-draft-title { margin: 0; font-size: 14px; font-weight: 600; }
+.dash-mini { position: relative; width: 100%; border-radius: 10px; background: var(--chip); overflow: hidden; }
+.dash-mini-cell { position: absolute; border-radius: 4px; background: var(--tile); border: 1px solid var(--line); font-size: 10px; overflow: hidden; white-space: nowrap; padding: 1px 4px; box-sizing: border-box; }
+.dash-draft-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.dash-draft-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }

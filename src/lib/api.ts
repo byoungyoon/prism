@@ -562,3 +562,103 @@ export const pty = {
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   kill: (id: number) => invoke<void>("pty_kill", { id }),
 };
+
+// ── dashboard (대시보드 탭) ─────────────────────────────
+// 백엔드(src-tauri) 계약 그대로. 웹은 Tauri 자식 웹뷰라 칸 위치를 web_bounds로 계속 알려 준다.
+
+export type WidgetKind = "web" | "sheet" | "slack";
+
+/** AI가 바꾼 결과 한 장: 표 · 요약 · 막대/선 그래프 중 하나 */
+export interface AiView {
+  type: "table" | "summary" | "chart";
+  title: string;
+  columns?: string[];
+  rows?: (string | number | null)[][];
+  text?: string;
+  chart?: {
+    kind: "bar" | "line";
+    labels: string[];
+    series: { name: string; values: number[] }[];
+  };
+}
+
+export interface Widget {
+  id: string;
+  kind: WidgetKind;
+  title: string;
+  /** 12열 격자 칸 위치와 크기 (x·w는 열, y·h는 줄) */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 연결 설정 (web: url · sheet: path · slack: channelId, channelName) */
+  config: Record<string, string>;
+  view?: { prompt: string; result?: AiView; showOriginal: boolean };
+}
+
+/** 대시보드 설계도 (src/components/dashboard/blueprint.ts 와 같은 모양) */
+export interface Dashboard {
+  version: 1;
+  widgets: Widget[];
+}
+
+export interface SheetData {
+  headers: string[];
+  rows: (string | number | boolean | null)[][];
+  sheetName: string;
+  truncated: boolean;
+}
+
+export interface SlackStatus {
+  connected: boolean;
+  team: string | null;
+}
+
+export interface SlackChannel {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+}
+
+export interface SlackMessage {
+  ts: string;
+  user: string;
+  userName: string;
+  text: string;
+  time: string;
+}
+
+export const dashboardApi = {
+  load: () => call<Dashboard>("dashboard_load"),
+  save: (dashboard: Dashboard) => call<void>("dashboard_save", { dashboard }),
+
+  // web: 메인 창 기준 논리 px
+  webOpen: (widgetId: string, url: string, x: number, y: number, w: number, h: number) =>
+    call<void>("web_open", { widgetId, url, x, y, w, h }),
+  webBounds: (widgetId: string, x: number, y: number, w: number, h: number) =>
+    call<void>("web_bounds", { widgetId, x, y, w, h }),
+  webShow: (widgetId: string) => call<void>("web_show", { widgetId }),
+  webHide: (widgetId: string) => call<void>("web_hide", { widgetId }),
+  webReload: (widgetId: string) => call<void>("web_reload", { widgetId }),
+  webClose: (widgetId: string) => call<void>("web_close", { widgetId }),
+  webHideAll: () => call<void>("web_hide_all"),
+  webText: (widgetId: string) => call<string>("web_text", { widgetId }),
+
+  // sheet: 바뀌면 "dashboard://sheet-changed" 이벤트로 알려 준다
+  sheetRead: (path: string) => call<SheetData>("sheet_read", { path }),
+  sheetWatch: (widgetId: string, path: string) => call<void>("sheet_watch", { widgetId, path }),
+  sheetUnwatch: (widgetId: string) => call<void>("sheet_unwatch", { widgetId }),
+  onSheetChanged: (fn: (p: { widgetId: string; path: string }) => void): Promise<UnlistenFn> =>
+    on<{ widgetId: string; path: string }>("dashboard://sheet-changed", fn),
+
+  // slack: 토큰은 백엔드에만 머문다 (프론트 상태·저장소에 넣지 않는다). 읽기 전용.
+  slackTokenSet: (token: string) => call<{ team: string; user: string }>("slack_token_set", { token }),
+  slackTokenStatus: () => call<SlackStatus>("slack_token_status"),
+  slackTokenClear: () => call<void>("slack_token_clear"),
+  slackChannels: () => call<SlackChannel[]>("slack_channels"),
+  slackHistory: (channelId: string, limit: number) => call<SlackMessage[]>("slack_history", { channelId, limit }),
+
+  aiTransform: (prompt: string, data: string, source: WidgetKind) => call<AiView>("ai_transform", { prompt, data, source }),
+  /** 말로 설명한 대시보드 → 설계도 초안 (검사는 화면에서 한다) */
+  aiDashboardDraft: (description: string) => call<unknown>("ai_dashboard_draft", { description }),
+};

@@ -19,7 +19,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildScenario, SCENARIO_NAMES, GACHA_INFO } from "./shot/scenarios.mjs";
+import { buildScenario, SCENARIO_NAMES, GACHA_INFO, dashMock } from "./shot/scenarios.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -58,6 +58,8 @@ const SCREENS = {
   "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
+  dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
+  draft: "대시보드 설명으로 만들기: 설명을 적고 '초안 만들기' 뒤 미리보기 (-s dash-draft)",
 };
 
 const HELP = `사용법: pnpm shot -- [옵션]
@@ -145,6 +147,8 @@ async function launchBrowser() {
 
 /** /api/<명령> 요청에 가짜 팀 데이터로 답한다. 실제 백엔드(Tauri/원격 서버) 없이도 화면이 채워진다. */
 function fakeApi(cmd, args, data) {
+  // 대시보드 명령(웹·엑셀·슬랙·AI 보기·설계도)은 시나리오의 대시보드 목 데이터로 답한다
+  if (/^(dashboard_|sheet_|web_|slack_|ai_)/.test(cmd)) return dashMock(data.dash, cmd, args);
   switch (cmd) {
     case "projects_list":
       return data.projects;
@@ -235,7 +239,7 @@ async function openScreen(page, screen, o, data) {
   await page.evaluate(
     ({ screen, focus, dark, edit }) => {
       const app = window.__app;
-      const set = { dark, critters: true, error: null };
+      const set = { dark, critters: true, error: null, mainTab: screen === "dashboard" || screen === "draft" ? "dashboard" : "office" };
       if (screen === "home") set.view = { name: "home" };
       else if (screen === "settings") Object.assign(set, { view: { name: "settings" }, projectId: focus });
       else Object.assign(set, { view: { name: "main" }, projectId: focus ?? app.getState().projectId });
@@ -260,6 +264,12 @@ async function openScreen(page, screen, o, data) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();
     // 뽑기 연출: 버튼을 누른 뒤 --wait 만큼 기다렸다 찍는다 (흔들리는 중은 짧게, 결과는 연출이 끝난 뒤)
     if (["shop-roll", "shop-new", "shop-dup"].includes(screen)) await page.getByRole("button", { name: /고양이 뽑기/ }).click();
+  }
+  if (screen === "draft") {
+    // 빈 대시보드에 할 일을 적고 초안을 만든 뒤, 미리보기가 뜰 때까지 기다린다
+    await page.getByLabel("하는 일을 설명해 주세요").fill("고객 문의 엑셀에서 답 안 단 문의만 보고, 슬랙 고객센터 채널도 같이 보고 싶어요");
+    await page.getByRole("button", { name: "초안 만들기" }).click();
+    await page.getByText("이렇게 만들어 볼까요?").waitFor({ timeout: 15000 });
   }
   if (screen === "team") {
     // 팀 요약 탭 줄에서 첫 번째 팀 (0번은 🏢 사무실)
