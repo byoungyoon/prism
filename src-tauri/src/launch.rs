@@ -258,6 +258,32 @@ pub fn codex_account_home(home: Option<&str>) -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".codex"))
 }
 
+/// Whether Codex still has conversation `thread` saved under the account's CODEX_HOME. It keeps
+/// each as `sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl` and only writes one once the
+/// first turn starts — so an id saved before that, one from another account (a different
+/// CODEX_HOME), or one Codex has archived or deleted can't be resumed ("no rollout found").
+pub fn codex_thread_exists(home: Option<&str>, thread: &str) -> bool {
+    fn find(dir: &std::path::Path, suffix: &str, depth: u8) -> bool {
+        let Ok(rd) = std::fs::read_dir(dir) else { return false };
+        rd.flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                depth > 0 && find(&p, suffix, depth - 1)
+            } else {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(suffix))
+            }
+        })
+    }
+    if thread.is_empty() {
+        return false;
+    }
+    let sessions = codex_account_home(home).join("sessions");
+    if !sessions.is_dir() {
+        return false;
+    }
+    find(&sessions, &format!("{thread}.jsonl"), 3)
+}
+
 fn codex(c: &Ctx) -> Result<Launch, String> {
     // Structured: `codex exec --json` per turn, `codex exec resume <thread>` after that.
     // Uses the account's own CODEX_HOME (no hooks needed — events come from --json).
@@ -654,5 +680,20 @@ mod read_root_tests {
         let c = ctx(&agents, &cwd, &[&worktrees.to_string_lossy()]);
         build(&c).unwrap();
         assert!(worktrees.is_dir());
+    }
+
+    #[test]
+    fn codex_resumes_only_conversations_it_has_on_disk() {
+        let home = std::env::temp_dir().join(format!("prism-t118-codex-home-{}", std::process::id()));
+        let day = home.join("sessions/2026/11/25");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(day.join("rollout-2026-11-25T14-52-33-01a21143-4c81-7633-99ad-705c573b63af.jsonl"), "{}").unwrap();
+        let h = home.to_string_lossy();
+        assert!(codex_thread_exists(Some(&h), "01a21143-4c81-7633-99ad-705c573b63af"));
+        // an id Prism made up before the first turn, or one from another account's CODEX_HOME
+        assert!(!codex_thread_exists(Some(&h), "5b0e6f0c-0000-4000-8000-000000000000"));
+        assert!(!codex_thread_exists(Some(&h), ""));
+        let other = home.join("other");
+        assert!(!codex_thread_exists(Some(&other.to_string_lossy()), "01a21143-4c81-7633-99ad-705c573b63af"));
     }
 }

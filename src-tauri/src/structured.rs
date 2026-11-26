@@ -336,6 +336,15 @@ pub struct Codex {
     queue: Mutex<std::collections::VecDeque<String>>,
     running: Mutex<Option<Child>>,
     killed: std::sync::atomic::AtomicBool,
+    /// what a brand-new conversation needs to pick up the work (the card) when the saved one is gone
+    fresh_context: Mutex<Option<String>>,
+}
+
+/// Codex can't find the saved conversation it was asked to continue (its rollout file is gone, or
+/// lives under another account's CODEX_HOME): "thread/resume failed: no rollout found for thread id …".
+pub fn codex_thread_lost(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    m.contains("no rollout found") || m.contains("thread/resume failed") || m.contains("thread not found")
 }
 
 impl Codex {
@@ -353,6 +362,7 @@ impl Codex {
             queue: Mutex::new(Default::default()),
             running: Mutex::new(None),
             killed: Default::default(),
+            fresh_context: Mutex::new(None),
         })
     }
 
@@ -439,6 +449,10 @@ impl Codex {
                         if !ended {
                             ended = true;
                             let msg = s("/error/message").or_else(|| s("/message")).unwrap_or_else(|| "알 수 없는 오류".into());
+                            // the saved conversation is gone: quietly start a new one with the same message
+                            if codex_thread_lost(&msg) && me.start_over() {
+                                continue;
+                            }
                             // the plan doesn't include this model: switch to the next one and retry
                             if msg.contains("not supported") && me.switch_model() {
                                 let next = me.model().unwrap_or_default();
@@ -457,6 +471,12 @@ impl Codex {
             let child = me.running.lock().unwrap().take();
             let code = child.and_then(|mut c| c.wait().ok()).and_then(|s| s.code());
             if !ended && !me.killed.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = tail.done.recv_timeout(STDERR_SETTLE);
+                let lost = codex_thread_lost(&tail.text.lock().unwrap());
+                if lost && me.start_over() {
+                    me.pump();
+                    return;
+                }
                 let why = if code == Some(0) && last_line(&tail).is_none() { "Codex가 응답 없이 끝났어요".to_string() } else { exit_reason("Codex", code, &tail) };
                 (me.sink)(Event::TurnEnd { result: Some(why), cost: None, error: true });
             }
@@ -469,6 +489,28 @@ impl Codex {
     /// Pick up an earlier conversation: the next turn runs `exec resume <thread>`.
     pub fn continue_thread(&self, thread: &str) {
         *self.thread.lock().unwrap() = Some(thread.to_string());
+    }
+
+    /// What to tell a new conversation if the saved one turns out to be gone (see `start_over`).
+    pub fn set_fresh_context(&self, text: String) {
+        *self.fresh_context.lock().unwrap() = Some(text);
+    }
+
+    /// The turn tried to continue a conversation Codex no longer has: forget it and queue the same
+    /// message again as the first one of a new conversation, led by the card so the work carries on.
+    /// False when there was no saved conversation (a real failure, shown as one).
+    fn start_over(&self) -> bool {
+        if self.thread.lock().unwrap().take().is_none() {
+            return false;
+        }
+        let Some(text) = self.current.lock().unwrap().clone() else { return true };
+        let note = "(이전 대화 기록을 찾을 수 없어서 새 대화로 이어서 해요. 지금까지 한 일은 이 폴더의 파일과 git 기록에 있어요.)";
+        let text = match self.fresh_context.lock().unwrap().take() {
+            Some(ctx) => format!("{ctx}\n\n{note}\n\n{text}"),
+            None => format!("{note}\n\n{text}"),
+        };
+        self.queue.lock().unwrap().push_front(text);
+        true
     }
 
     fn model(&self) -> Option<String> {
@@ -921,6 +963,7 @@ mod tests {
 
 #[cfg(test)]
 mod token_tests {
+    use std::sync::mpsc;
     use super::*;
     use std::collections::HashMap;
 
@@ -978,5 +1021,84 @@ mod token_tests {
     #[test]
     fn a_result_without_usage_gives_nothing() {
         assert!(claude_tokens(&json!({ "type": "result", "is_error": true }), "x", &mut fresh()).is_empty());
+    }
+
+    /// A fake `codex`: `exec resume …` fails the way a lost conversation does (as a JSON event, or
+    /// only on stderr), a plain `exec …` starts thread "new-thread" and echoes its message back.
+    fn fake_codex(name: &str, lost_on_stderr: bool) -> (Arc<Codex>, mpsc::Receiver<String>) {
+        let dir = std::env::temp_dir().join(format!("prism-t118-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("codex");
+        let fail = if lost_on_stderr {
+            "echo 'Error: thread/resume failed: no rollout found for thread id old-thread' >&2; exit 1"
+        } else {
+            r#"echo '{"type":"error","message":"thread/resume failed: no rollout found for thread id old-thread"}'; exit 1"#
+        };
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ \"$2\" = resume ]; then {fail}; fi\n\
+                 for a; do last=\"$a\"; done\n\
+                 echo '{{\"type\":\"thread.started\",\"thread_id\":\"new-thread\"}}'\n\
+                 printf '%s\\n' \"$last\" | python3 -I -c 'import json,sys; print(json.dumps({{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":sys.stdin.read()}}}}))'\n\
+                 echo '{{\"type\":\"turn.completed\"}}'\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let sink: Sink = Arc::new(move |ev| {
+            let s = match ev {
+                Event::Started(id) => format!("started:{id}"),
+                Event::Text(t) => format!("text:{t}"),
+                Event::TurnEnd { result, error, .. } => format!("end:{error}:{}", result.unwrap_or_default()),
+                _ => return,
+            };
+            let _ = tx.lock().unwrap().send(s);
+        });
+        let spawn = Spawn { program: script.to_string_lossy().into_owned(), args: vec!["--json".into()], cwd: ".".into(), env: vec![] };
+        let codex = Codex::new(spawn, vec!["--json".into()], vec![], sink);
+        codex.continue_thread("old-thread");
+        codex.set_fresh_context("[작업 카드 T-1] 버튼 고치기".into());
+        (codex, rx)
+    }
+
+    fn until_end(rx: &mpsc::Receiver<String>) -> Vec<String> {
+        let mut seen = vec![];
+        while let Ok(e) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            let end = e.starts_with("end:");
+            seen.push(e);
+            if end {
+                break;
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn a_lost_codex_conversation_starts_a_new_one_without_an_error() {
+        for (name, on_stderr) in [("event", false), ("stderr", true)] {
+            let (codex, rx) = fake_codex(name, on_stderr);
+            CodexHandle(codex.clone()).send("이어서 해 줘").unwrap();
+            let seen = until_end(&rx);
+            assert!(seen.iter().all(|e| !e.starts_with("end:true")), "{name}: 오류가 화면에 나오면 안 된다: {seen:?}");
+            assert!(seen.contains(&"started:new-thread".to_string()), "{name}: 새 대화가 시작된다: {seen:?}");
+            let text = seen.iter().find(|e| e.starts_with("text:")).expect("새 대화의 답");
+            assert!(text.contains("[작업 카드 T-1]") && text.contains("이어서 해 줘"), "{name}: 카드와 원래 메시지가 넘어간다: {text}");
+            assert_eq!(codex.thread.lock().unwrap().as_deref(), Some("new-thread"));
+        }
+    }
+
+    #[test]
+    fn a_lost_conversation_only_restarts_once() {
+        // a fresh conversation that fails the same way is a real error, not a loop
+        assert!(codex_thread_lost("thread/resume failed: no rollout found for thread id x"));
+        assert!(!codex_thread_lost("You've hit your usage limit"));
+        let (codex, _rx) = fake_codex("once", false);
+        *codex.current.lock().unwrap() = Some("hi".into());
+        assert!(codex.start_over());
+        assert!(!codex.start_over(), "no saved conversation left: report the error");
     }
 }
