@@ -733,3 +733,152 @@
 .of-lounge [data-piece]:active {
   cursor: grabbing;
 }
+
+/* ── T-128: the playroom, a second room next to the lounge (below it on a narrow office) ── */
+.of-rooms {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 22px;
+  align-items: flex-start;
+}
+.of-playroom {
+  position: relative;
+  flex: none;
+  width: 400px;
+  height: 390px;
+  border-radius: 6px;
+  background: var(--pxi-tiles) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  image-rendering: pixelated;
+  border: 2px solid var(--of-lounge-line);
+}
+.of-playroom .of-toy {
+  position: absolute;
+}
+.of-mark {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.of-hammock {
+  top: calc(var(--u) * 8);
+  left: calc(var(--u) * 3);
+}
+/* in front of the cat sleeping there (the cats' layer is z 2) */
+.of-playroom .of-hammock-lip {
+  z-index: 3;
+  top: calc(var(--u) * 37);
+  left: calc(var(--u) * 6);
+}
+.of-ptower {
+  top: calc(var(--u) * 15);
+  right: calc(var(--u) * 2);
+}
+.of-rod {
+  top: calc(var(--u) * 9);
+  left: calc(36% + var(--u) * 2);
+}
+.of-lure {
+  position: absolute;
+  top: calc(var(--u) * 2);
+  left: calc(var(--u) * 17);
+  transform-origin: 50% 0;
+  animation: of-sway 2.4s ease-in-out infinite;
+}
+@keyframes of-sway {
+  0%,
+  100% {
+    transform: rotate(-14deg);
+  }
+  50% {
+    transform: rotate(14deg);
+  }
+}
+.of-wheel {
+  top: calc(var(--u) * 54);
+  left: calc(var(--u) * 3);
+}
+.of-spokes {
+  position: absolute;
+  top: calc(var(--u) * 6);
+  left: calc(var(--u) * 7);
+  animation: of-spin 1.2s steps(8) infinite;
+}
+@keyframes of-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.of-phouse {
+  bottom: calc(var(--u) * 3);
+  left: calc(var(--u) * 3);
+}
+.of-toybox {
+  top: calc(var(--u) * 66);
+  left: 50%;
+}
+.of-tunnel {
+  right: calc(var(--u) * 4);
+  bottom: calc(var(--u) * 4);
+}
+.of-balltrack {
+  position: absolute;
+  bottom: calc(var(--u) * 25);
+  left: 34%;
+  right: 24%;
+  height: 0;
+}
+.of-ball {
+  position: absolute;
+  bottom: calc(var(--u) * -1);
+  width: 0;
+  transition: left 1.5s cubic-bezier(0.2, 0.7, 0.3, 1) 0.25s;
+}
+/* it turns a quarter at a time, so its dots stay square */
+.of-ball-art {
+  position: absolute;
+  bottom: 0;
+  left: calc(var(--u) * -6);
+  transform: rotate(var(--turn));
+  transition: transform 1.5s steps(8) 0.25s;
+}
+@media (max-width: 820px) {
+  .of-rooms {
+    align-items: stretch;
+  }
+  .of-playroom {
+    width: auto;
+    height: 300px;
+  }
+}
+@container office (max-width: 760px) {
+  .of-rooms {
+    align-items: stretch;
+  }
+  .of-playroom {
+    width: auto;
+    height: 390px;
+  }
+}
+@media (max-width: 820px) {
+  @container office (max-width: 760px) {
+    .of-playroom {
+      height: 300px;
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .of-lure,
+  .of-spokes {
+    animation: none;
+  }
+  .of-ball,
+  .of-ball-art {
+    transition: none;
+  }
+}
+/* a hidden window: the toys stop too */
+.cr-paused .of-lure,
+.cr-paused .of-spokes {
+  animation-play-state: paused;
+}

@@ -253,7 +253,7 @@ export function ShopSheet() {
             <div className="flex items-center justify-between gap-3">
               <div className="flex flex-col">
                 <span className="text-[16px] font-semibold">츄르 상점</span>
-                <span className="text-[12px] text-ink-2">고양이는 뽑기로, 휴게실 물건은 상점에서 얻어요</span>
+                <span className="text-[12px] text-ink-2">고양이는 뽑기로, 휴게실·놀이방 물건은 상점에서 얻어요</span>
               </div>
               <span className="rounded-full px-3 py-1.5 font-mono text-[13px] font-semibold" style={{ background: "var(--chip)" }}>
                 츄르 {churu.toLocaleString("ko-KR")}개

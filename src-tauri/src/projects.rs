@@ -355,7 +355,7 @@ fn today() -> i32 {
     chrono::Local::now().date_naive().num_days_from_ce()
 }
 
-/// 휴게실 소품 가격 (츄르). 앱이 가격을 믿지 않도록 이 표가 기준이다.
+/// 휴게실·놀이방 소품 가격 (츄르). 앱이 가격을 믿지 않도록 이 표가 기준이다.
 /// 화면의 가격표(src/lib/shop.ts)와 같아야 한다: scripts/test/shop-prices.test.mjs 가 맞는지 본다.
 pub const ITEM_PRICES: &[(&str, u64)] = &[
     ("소파", 150),
@@ -372,6 +372,9 @@ pub const ITEM_PRICES: &[(&str, u64)] = &[
     ("화분", 60),
     ("정수기", 120),
     ("캣타워", 100),
+    ("캣휠", 130),
+    ("캣 터널", 90),
+    ("장난감 상자", 40),
 ];
 
 /// 소품 가격. "item:<이름>" 이 아니거나 없는 물건이면 None.

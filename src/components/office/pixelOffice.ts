@@ -544,6 +544,189 @@ const tiles: Sprite = {
   },
 };
 
+// ── 놀이방 ────────────────────────────────────────────────
+
+/** 창가 해먹: 창문 아래에 줄 두 가닥으로 매단 천 (앞자락은 hammocklip) */
+const hammock: Sprite = {
+  w: 42,
+  h: 36,
+  solid: true,
+  draw: (d) => {
+    const win = new Dots(30, 13);
+    windowArt.draw(win);
+    win.grid.forEach((row, y) => row.forEach((c, x) => c && d.px(x + 6, y, c)));
+    d.rect(4, 13, 34, 2, "wood");
+    d.rect(4, 14, 34, 1, "woodDk");
+    // 흡착판과 줄
+    for (const x of [4, 36]) d.rect(x, 12, 2, 3, "metalDk");
+    for (let y = 15; y < 27; y++) {
+      d.px(4 + Math.floor((y - 15) / 5), y, "ropeDk");
+      d.px(37 - Math.floor((y - 15) / 5), y, "ropeDk");
+    }
+    // 늘어진 천의 안쪽
+    d.ellipse(21, 28.5, 17, 4.5, "mintDk");
+    d.ellipse(21, 28, 13, 2.8, "mint");
+  },
+};
+
+const hammocklip: Sprite = {
+  w: 36,
+  h: 6,
+  solid: true,
+  draw: (d) => {
+    d.art(0, 0, ["mm................................mm"], { m: "mint" });
+    d.rect(1, 1, 34, 2, "mint");
+    d.rect(4, 3, 28, 2, "mint");
+    d.rect(10, 5, 16, 1, "mintDk");
+    d.rect(5, 1, 26, 1, "paper");
+    for (let x = 6; x < 31; x += 4) d.rect(x, 3, 2, 1, "mintDk");
+  },
+};
+
+/** 놀이방의 큰 캣타워: 엇갈린 칸 세 개, 밧줄 기둥, 바닥판 */
+const ptower: Sprite = {
+  w: 38,
+  h: 58,
+  solid: true,
+  draw: (d) => {
+    const post = (x: number, y: number, h: number) => {
+      d.rect(x, y, 4, h, "rope");
+      for (let j = y + 1; j < y + h; j += 3) d.rect(x, j, 4, 1, "ropeDk");
+    };
+    const shelfAt = (x: number, y: number, w: number) => {
+      d.box(x, y, w, 4, "carpet");
+      d.rect(x + 1, y, w - 2, 1, "lavHi");
+      d.rect(x + 1, y + 3, w - 2, 1, "carpetDk");
+    };
+    post(29, 11, 44);
+    post(10, 30, 25);
+    shelfAt(15, 7, 23);
+    shelfAt(1, 26, 22);
+    shelfAt(16, 42, 21);
+    // 꼭대기의 폭신한 테두리와 매달린 방울
+    d.box(35, 3, 3, 5, "pink");
+    d.rect(17, 11, 1, 6, "line");
+    d.box(16, 17, 3, 3, "yarn");
+    d.box(0, 54, 38, 4, "wood");
+    d.rect(1, 54, 36, 1, "woodHi");
+  },
+};
+
+/** 낚싯대 장난감: 받침에 꽂은 휜 장대 (깃털은 lure, 살랑살랑 흔들린다) */
+const rod: Sprite = {
+  w: 22,
+  h: 36,
+  solid: true,
+  draw: (d) => {
+    d.box(0, 32, 12, 4, "wood");
+    d.rect(1, 32, 10, 1, "woodHi");
+    d.rect(4, 12, 2, 20, "woodDk");
+    d.art(4, 1, ["..........wwwwww", "......wwww......", "....ww..........", "...w............", "..w.............", ".ww.............", ".w..............", "ww..............", "ww..............", "ww..............", "ww.............."], { w: "woodDk" });
+    d.rect(4, 22, 2, 2, "red");
+  },
+};
+
+const lure: Sprite = {
+  w: 7,
+  h: 15,
+  solid: true,
+  draw: (d) => {
+    d.rect(3, 0, 1, 7, "line");
+    d.art(0, 7, ["..ggg..", "...g...", ".ppppp.", "ppqpqpp", ".ppqpp.", ".pp.pp.", "pp...pp", "p.....p"], { g: "gold", p: "yarn", q: "yarnHi" });
+  },
+};
+
+/** 놀이방 숨숨집: 귀가 달린 폭신한 집 */
+const phouse: Sprite = {
+  w: 32,
+  h: 27,
+  solid: true,
+  draw: (d) => {
+    d.art(3, 0, ["..s..", ".sps.", ".sps.", "sppps", "sssss"], { s: "sofa", p: "pink" });
+    d.art(24, 0, ["..s..", ".sps.", ".sps.", "sppps", "sssss"], { s: "sofa", p: "pink" });
+    d.ellipse(16, 17, 16, 13, "sofa");
+    d.rect(0, 17, 32, 9, "sofa");
+    d.ellipse(16, 10, 10, 4, "sofaHi");
+    d.ellipse(16, 20, 8, 7.5, "sofaDk");
+    d.ellipse(16, 20.5, 6.6, 6.4, "line");
+    d.rect(10, 21, 12, 5, "line");
+    d.rect(0, 25, 32, 2, "sofaDk");
+  },
+};
+
+const wheel: Sprite = {
+  w: 36,
+  h: 36,
+  solid: true,
+  draw: (d) => {
+    d.ellipse(18, 17, 17, 17, "wood");
+    d.ellipse(18, 17, 14.5, 14.5, "woodHi");
+    d.ellipse(18, 17, 12.5, 12.5, "tileA");
+    // 받침 다리
+    d.rect(5, 31, 4, 4, "woodDk");
+    d.rect(27, 31, 4, 4, "woodDk");
+    d.rect(3, 34, 30, 2, "woodDk2");
+  },
+};
+
+/** 바퀴살: 네 칸씩 돌아도(90°) 도트가 흐트러지지 않는 정사각형 */
+const spokes: Sprite = {
+  w: 24,
+  h: 24,
+  draw: (d) => {
+    d.rect(11, 1, 2, 22, "rope");
+    d.rect(1, 11, 22, 2, "rope");
+    d.box(11, 1, 2, 3, "red");
+    d.box(9, 9, 6, 6, "woodDk");
+    d.rect(11, 11, 2, 2, "gold");
+  },
+};
+
+const tunnel: Sprite = {
+  w: 40,
+  h: 16,
+  solid: true,
+  draw: (d) => {
+    d.box(4, 1, 32, 15, "lav");
+    d.rect(5, 2, 30, 1, "lavHi");
+    for (let x = 10; x < 32; x += 6) d.rect(x, 1, 2, 15, "lavDk");
+    for (const cx of [4.5, 35.5]) {
+      d.ellipse(cx, 8, 4.5, 8, "mint");
+      d.ellipse(cx, 8.5, 3, 6, "line");
+    }
+  },
+};
+
+const toybox: Sprite = {
+  w: 20,
+  h: 17,
+  solid: true,
+  draw: (d) => {
+    // 삐죽 나온 장난감들
+    d.ellipse(6, 5, 4, 4, "yarn");
+    d.px(5, 3, "yarnHi");
+    d.rect(12, 0, 1, 8, "woodDk2");
+    d.box(10, 0, 5, 3, "gold");
+    d.art(14, 3, ["..ll", ".lll", "lll.", "ll.."], { l: "leaf" });
+    d.box(0, 6, 20, 11, "wood");
+    d.rect(1, 7, 18, 1, "woodHi");
+    d.rect(0, 14, 20, 1, "woodDk");
+    d.art(7, 9, ["p...p.", ".ppp..", "ppppp.", ".ppp.."], { p: "paper" });
+  },
+};
+
+const ball: Sprite = {
+  w: 9,
+  h: 9,
+  solid: true,
+  draw: (d) => {
+    d.ellipse(4.5, 4.5, 4.5, 4.5, "red");
+    d.rect(0, 4, 9, 2, "paper");
+    d.rect(2, 1, 2, 2, "yarnHi");
+    d.rect(5, 6, 2, 3, "gold");
+  },
+};
+
 export const SPRITES: Record<string, Sprite> = {
   desk: desk(42, false),
   "desk-lead": desk(56, true),
@@ -574,6 +757,17 @@ export const SPRITES: Record<string, Sprite> = {
   frame,
   lamp,
   rug2,
+  hammock,
+  hammocklip,
+  ptower,
+  rod,
+  lure,
+  phouse,
+  wheel,
+  spokes,
+  tunnel,
+  toybox,
+  ball,
   floor,
   wall,
   tiles,
