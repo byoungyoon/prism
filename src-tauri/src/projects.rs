@@ -163,6 +163,8 @@ pub struct RewardLog {
     /// `pet_count`를 센 날
     pub pet_day: i32,
     pub pet_count: u32,
+    /// 이미 받은 선물 ID (`Gift::id`). 지우지 않는다.
+    pub gifts: Vec<String>,
 }
 
 fn default_owned() -> Vec<String> {
@@ -249,7 +251,28 @@ pub const PET_DAILY_MAX: u32 = 5;
 /// 기억해 두는 완료 카드 수. 팀에 남는 끝난 카드보다 훨씬 많아서, 다시 열었다 닫은 카드도 걸러진다.
 const PAID_CARDS_KEPT: usize = 500;
 
-/// 방금 받은 보상 (화면의 '+N 출석' 표시용). kind: "attend" | "card" | "pet"
+/// 딱 한 번 주는 기념 선물. `id`를 `RewardLog::gifts`에 적어 두 번 주지 않는다.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Gift {
+    pub id: &'static str,
+    pub amount: u64,
+    /// 잔액 옆 '+N ○○' 표시에 쓰는 말
+    pub label: &'static str,
+    /// 받을 때 보여 주는 안내 문구
+    pub message: &'static str,
+}
+
+/// 지금 주는 선물: 업데이트하거나 새로 설치한 뒤 처음 켤 때 한 번. 양은 고양이 뽑기 1번 값.
+/// 다음 기념 선물은 `id`를 새로 정하고 (필요하면 양·문구도) 바꾼다. 쓴 적 있는 id는 다시 쓰지 않는다.
+pub const GIFT: Gift = Gift {
+    id: "gift:release-next",
+    amount: 250,
+    label: "새 버전 기념",
+    message: "새 버전 오픈 기념으로 츄르 250개를 드려요",
+};
+
+/// 방금 받은 보상 (화면의 '+N 출석' 표시용). kind: "attend" | "card" | "pet" | "gift"
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChuruReward {
@@ -257,11 +280,22 @@ pub struct ChuruReward {
     pub amount: u64,
     /// 출석일 때 연속 일수 (나머지는 0)
     pub streak: u32,
+    /// 선물일 때만 있다
+    pub gift: Option<Gift>,
 }
 
 fn pay(s: &mut Settings, kind: &'static str, amount: u64, streak: u32) -> ChuruReward {
     s.churu = s.churu.saturating_add(amount);
-    ChuruReward { kind, amount, streak }
+    ChuruReward { kind, amount, streak, gift: None }
+}
+
+/// 기념 선물. 이미 받은 id면 None.
+pub fn gift_reward(s: &mut Settings, gift: Gift) -> Option<ChuruReward> {
+    if s.rewards.gifts.iter().any(|id| id == gift.id) {
+        return None;
+    }
+    s.rewards.gifts.push(gift.id.into());
+    Some(ChuruReward { gift: Some(gift), ..pay(s, "gift", gift.amount, 0) })
 }
 
 /// 하루 상한이 있는 보상의 횟수를 센다. 받을 수 있으면 true.
@@ -959,6 +993,12 @@ pub fn reward_attend(app: AppHandle, projects: State<'_, Projects>) -> Option<Ch
     announce_reward(&app, projects.reward(|s| attend_reward(s, today())))
 }
 
+/// 앱을 켰다: 아직 안 받은 기념 선물(`GIFT`)이 있으면 준다. 받은 적 있으면 null.
+#[tauri::command]
+pub fn reward_gift(app: AppHandle, projects: State<'_, Projects>) -> Option<ChuruReward> {
+    announce_reward(&app, projects.reward(|s| gift_reward(s, GIFT)))
+}
+
 /// 고양이를 쓰다듬거나 들어 올렸다. 오늘 상한을 넘었으면 null.
 #[tauri::command]
 pub fn reward_pet(app: AppHandle, projects: State<'_, Projects>) -> Option<ChuruReward> {
@@ -1276,7 +1316,7 @@ mod reward_tests {
     #[test]
     fn attendance_pays_once_a_day() {
         let mut s = Settings::default();
-        assert_eq!(attend_reward(&mut s, DAY), Some(ChuruReward { kind: "attend", amount: 20, streak: 1 }));
+        assert_eq!(attend_reward(&mut s, DAY), Some(ChuruReward { kind: "attend", amount: 20, streak: 1, gift: None }));
         assert_eq!(attend_reward(&mut s, DAY), None);
         assert_eq!(s.churu, 20);
         // 시계를 어제로 돌려도 다시 받지 못한다
@@ -1351,6 +1391,37 @@ mod reward_tests {
         // 시계를 뒤로 돌려도 상한이 풀리지 않는다
         assert_eq!(pet_reward(&mut s, DAY), None);
         assert_eq!(s.churu, 12);
+    }
+
+    #[test]
+    fn gift_is_paid_once_per_id() {
+        let mut s = Settings::default();
+        let got = gift_reward(&mut s, GIFT).unwrap();
+        assert_eq!((got.kind, got.amount, got.gift), ("gift", 250, Some(GIFT)));
+        assert_eq!(gift_reward(&mut s, GIFT), None);
+        assert_eq!(s.churu, 250);
+        // 다음 기념 선물은 id만 바꾸면 한 번 더 받고, 앞의 선물은 그대로 받은 것으로 남는다
+        let next = Gift { id: "gift:another", ..GIFT };
+        assert!(gift_reward(&mut s, next).is_some());
+        assert_eq!(gift_reward(&mut s, next), None);
+        assert_eq!(gift_reward(&mut s, GIFT), None);
+        assert_eq!(s.churu, 500);
+    }
+
+    #[test]
+    fn gift_reaches_updaters_once_and_survives_restart() {
+        // 예전 버전이 저장한 설정(선물 기록 없음)으로 업데이트한 경우. 임시 dev.prism.* 폴더만 쓴다
+        let dir = std::env::temp_dir().join(format!("dev.prism.t126-{}", uuid::Uuid::new_v4()));
+        let file = dir.join("settings.json");
+        let open = |saved: Settings| Projects { list: Mutex::new(vec![]), file: Mutex::new(None), root: Mutex::new(dir.join("ws")), settings: Some(file.clone()), prefs: Mutex::new(saved) };
+        let old: Settings = serde_json::from_str(r#"{"root":null,"providers":["claude"],"onboarded":true,"churu":30,"rewards":{"attendDay":739999,"streak":2}}"#).unwrap();
+        let first = open(old);
+        assert!(first.reward(|s| gift_reward(s, GIFT)).is_some());
+        let again = open(serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap());
+        assert!(again.reward(|s| gift_reward(s, GIFT)).is_none());
+        assert_eq!(again.settings().churu, 280);
+        assert_eq!(again.settings().rewards.streak, 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

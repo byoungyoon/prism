@@ -98,6 +98,11 @@ interface AppState {
   /** rewards waiting to flash beside the 츄르 balance ("+20 출석"), oldest first */
   rewardNotes: (ChuruReward & { id: number })[];
   showReward(r: ChuruReward): void;
+  /** message of a gift just received; stays until the user closes it */
+  giftNotice: string | null;
+  closeGiftNotice(): void;
+  /** asks for the one-time gift. Call only when the app is visible (not behind the first-run guide) */
+  claimGift(): void;
   dropReward(id: number): void;
   /** a cat was petted or lifted (the app decides whether it pays) */
   petCat(): void;
@@ -283,8 +288,19 @@ export const useApp = create<AppState>((set, get) => {
         // the same kind again while it still waits: one note with the sum (quick petting doesn't queue up)
         const same = s.rewardNotes.find((n) => n.kind === r.kind);
         const note = { ...r, amount: r.amount + (same?.amount ?? 0), id: ++rewardSeq };
-        return { rewardNotes: same ? s.rewardNotes.map((n) => (n === same ? note : n)) : [...s.rewardNotes, note] };
+        return {
+          rewardNotes: same ? s.rewardNotes.map((n) => (n === same ? note : n)) : [...s.rewardNotes, note],
+          ...(r.gift ? { giftNotice: r.gift.message } : {}),
+        };
       }),
+    giftNotice: null,
+    closeGiftNotice: () => set({ giftNotice: null }),
+    claimGift: () => {
+      void api
+        .rewardGift()
+        .then((r) => r && get().showReward(r))
+        .catch(() => {});
+    },
     dropReward: (id) => set((s) => ({ rewardNotes: s.rewardNotes.filter((n) => n.id !== id) })),
     petCat: () => {
       void api
@@ -354,6 +370,8 @@ export const useApp = create<AppState>((set, get) => {
           .then((r) => r && get().showReward(r))
           .catch(() => {}),
       );
+      // a first install gets it when the first-run guide ends (Onboarding), so it isn't hidden behind it
+      if (!isRemote) void api.prefs().then((p) => p.onboarded && get().claimGift()).catch(() => {});
       await api.onUsage((usage) => set({ usage }));
       void api.usage().then((usage) => set({ usage })).catch(() => {});
       const reload = async () => {

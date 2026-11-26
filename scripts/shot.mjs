@@ -58,6 +58,7 @@ const SCREENS = {
   "shop-dup": "뽑기 결과: 이미 가진 고양이 (-s gacha-dup --wait 2600)",
   "shop-earn": "상점 '츄르 받는 법' 탭",
   reward: "츄르를 받은 순간: 잔액 옆에 '+N 출석' 표시",
+  gift: "기념 선물을 받은 순간: 잔액 옆 '+250 새 버전 기념'과 안내 문구",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
   "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
@@ -323,6 +324,10 @@ async function openScreen(page, screen, o, data) {
     if (["shop-roll", "shop-new", "shop-dup"].includes(screen)) await page.getByRole("button", { name: /고양이 뽑기/ }).click();
   }
   if (screen === "reward") await page.evaluate(() => window.__app.getState().showReward({ kind: "attend", amount: 80, streak: 7 }));
+  if (screen === "gift") {
+    const gift = { id: "gift:release-next", amount: 250, label: "새 버전 기념", message: "새 버전 오픈 기념으로 츄르 250개를 드려요" };
+    await page.evaluate((gift) => window.__app.getState().showReward({ kind: "gift", amount: gift.amount, streak: 0, gift }), gift);
+  }
   if (screen === "draft") {
     // 빈 대시보드에 할 일을 적고 초안을 만든 뒤, 미리보기가 뜰 때까지 기다린다
     await page.getByLabel("하는 일을 설명해 주세요").fill("고객 문의 엑셀에서 답 안 단 문의만 보고, 슬랙 고객센터 채널도 같이 보고 싶어요");

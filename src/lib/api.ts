@@ -364,9 +364,11 @@ export interface Prefs {
 
 /** 토큰 말고 방금 받은 츄르 (Rust ChuruReward). streak는 출석일 때의 연속 일수 */
 export interface ChuruReward {
-  kind: "attend" | "card" | "pet";
+  kind: "attend" | "card" | "pet" | "gift";
   amount: number;
   streak: number;
+  /** 선물일 때만: 표시에 쓸 말과 안내 문구 (Rust Gift) */
+  gift?: { id: string; amount: number; label: string; message: string } | null;
 }
 
 /** 고양이 뽑기 확률표 한 줄 (Rust gacha_info). tier는 흔함·레어·에픽·유니크·레전더리, percent는 소수 첫째 자리까지 */
@@ -470,6 +472,8 @@ export const api = {
   onPrefs: (fn: (p: Prefs) => void): Promise<UnlistenFn> => on<Prefs>("prefs", fn),
   /** 그날 첫 접속 보상 (이미 받았으면 null) */
   rewardAttend: () => call<ChuruReward | null>("reward_attend"),
+  /** 기념 선물 (받은 적 있으면 null) */
+  rewardGift: () => call<ChuruReward | null>("reward_gift"),
   /** 고양이 쓰다듬기·들어 올리기 보상 (오늘 상한을 넘었으면 null) */
   rewardPet: () => call<ChuruReward | null>("reward_pet"),
   /** 작업 카드가 완료돼 츄르를 받았다 (출석·고양이 보상은 위 명령의 응답으로 온다) */
