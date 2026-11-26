@@ -35,73 +35,120 @@
   max-width: none;
 }
 
-/* ── team summary tabs ── */
-.of-tabs {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 2px 2px 4px;
-  scrollbar-width: none;
+/* ── team tabs: one slim line; the picked one gets a pale amber wash and an underline ── */
+.of-tabbar {
   flex: none;
+  min-width: 0;
+  padding: 2px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass);
+  box-shadow: var(--shadow-sm);
+}
+.of-tabs {
+  --fade-l: 0px;
+  --fade-r: 0px;
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent);
+}
+.of-tabs[data-more-left] {
+  --fade-l: 32px;
+}
+.of-tabs[data-more-right] {
+  --fade-r: 32px;
 }
 .of-tabs::-webkit-scrollbar {
   display: none;
 }
 .of-tab {
+  position: relative;
   display: flex;
   flex: none;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 118px;
-  max-width: 220px;
-  padding: 8px 13px;
-  border-radius: 14px;
-  border: 1px solid var(--glass-border);
-  background: var(--glass);
-  box-shadow: var(--shadow-sm);
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  color: var(--text2);
+  white-space: nowrap;
+}
+.of-tab:hover {
+  background: var(--chip);
   color: var(--text);
-  text-align: left;
+}
+/* the row clips what sticks out, so the focus ring goes inside */
+.of-tab:focus-visible {
+  outline-offset: -2px;
 }
 .of-tab.on {
+  background: color-mix(in srgb, var(--amber) 18%, transparent);
+  color: var(--text);
+}
+.of-tab.on::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: 2px;
+  left: 12px;
+  height: 2.5px;
+  border-radius: 999px;
   background: var(--amber);
-  border-color: var(--amber);
-  color: #2b2520;
 }
 .of-tab-name {
-  display: flex;
-  max-width: 100%;
-  align-items: center;
-  gap: 6px;
+  max-width: 180px;
   overflow: hidden;
   font-size: 13.5px;
   font-weight: 600;
-  white-space: nowrap;
   text-overflow: ellipsis;
 }
-.of-tab-sub {
-  font-size: 11.5px;
-  white-space: nowrap;
-  color: var(--text2);
-}
-.of-tab.on .of-tab-sub {
-  color: #4a3c2e;
-}
-.of-tab-sub b {
-  font-weight: 600;
-  color: var(--text);
-}
-.of-tab.on .of-tab-sub b {
-  color: #2b2520;
-}
+.of-tab-run,
+.of-tab-review,
 .of-tab-badge {
   flex: none;
   padding: 0 6px;
   border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+/* running: quiet, a green dot and the number */
+.of-tab-run {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--chip);
+  color: var(--work-ink);
+}
+.of-tab-run::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--work);
+}
+/* waiting to be merged: the one that asks for a look */
+.of-tab-review {
+  background: var(--amber);
+  color: #2b2520;
+}
+.of-tab-badge {
+  min-width: 16px;
   background: var(--block);
   color: #fff;
-  font-size: 10.5px;
-  line-height: 16px;
+  text-align: center;
+}
+.of-tab-block {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--block);
 }
 
 /* ── the room ── */
@@ -533,20 +580,6 @@
 .of-content {
   min-height: 100%;
   height: auto;
-}
-
-/* T-48: many team tabs scroll sideways; the last one fades at the edge so the row reads as more */
-.of-tabs {
-  min-width: 0;
-  max-width: 100%;
-  overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  padding-right: 28px;
-}
-.of-tab {
-  scroll-snap-align: start;
 }
 
 /* T-51: the office measures itself, not the window — in the 관제탑 it sits between the chat and the
