@@ -24,5 +24,17 @@ jobs:
       # the app macro wants the built screen to exist; these tests don't show it
       - run: New-Item -ItemType Directory -Force dist | Out-Null; Set-Content dist/index.html "test"
       - run: |
-          cargo test --lib -- --nocapture pty:: sys:: setup_log::
+          cargo test --lib -- --nocapture pty:: sys:: setup_log:: windows_path_tests::
         working-directory: src-tauri
+      # TEMP (T-125 probe): how does Claude Code spell a project folder in .claude.json on Windows?
+      - if: always()
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          $env:CLAUDE_CONFIG_DIR = "$env:RUNNER_TEMP\cc"
+          New-Item -ItemType Directory -Force $env:CLAUDE_CONFIG_DIR, "$env:RUNNER_TEMP\My Proj" | Out-Null
+          Set-Location "$env:RUNNER_TEMP\My Proj"
+          git init -q
+          claude --version
+          claude mcp add --scope local probe -- cmd /c echo
+          Write-Output "PROBE cwd: $((Get-Location).Path)"
+          Get-Content "$env:CLAUDE_CONFIG_DIR\.claude.json"

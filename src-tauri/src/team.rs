@@ -6569,6 +6569,54 @@ mod copy_cleanup_tests {
     }
 }
 
+/// git lists work copies with `/` while the app builds the same folders with `\`.
+#[cfg(all(test, windows))]
+mod windows_path_tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_a_member_is_working_in_is_not_cleaned_up() {
+        let root = std::env::temp_dir().join(format!("prism-t125-{}", now_ms()));
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let r = repo.to_string_lossy().into_owned();
+        sys::git(&r, &["init", "-b", "main"]).unwrap();
+        sys::git(&r, &["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--allow-empty", "-m", "first"]).unwrap();
+        // just started: no commit of its own yet, so it counts as merged
+        let copy = worktrees_dir(&r).join("run-t-1");
+        sys::add_worktree(&r, &copy, "prism/run/t-1").unwrap();
+        let agent: Agent = serde_json::from_value(json!({
+            "id": "W1", "name": "W1", "role": "worker", "kind": "claude", "model": "", "effort": "", "status": "work",
+            "taskId": "T-1", "parentId": "lead", "ptyId": null, "cwd": copy.to_string_lossy(), "branch": "prism/run/t-1",
+            "sessionId": "", "costUsd": 0.0, "startedAt": 0, "statusSince": 0, "lastNote": null, "structured": true, "activity": []
+        }))
+        .unwrap();
+        let team = Team {
+            restarted: None,
+            project: serde_json::from_value(json!({ "id": "p", "name": "p", "path": r, "isGit": true })).unwrap(),
+            homes: HashMap::new(),
+            run: "run".into(),
+            cwd: r.clone(),
+            branch: Some("main".into()),
+            home: None,
+            agents: vec![agent],
+            tasks: vec![],
+            chat: vec![],
+            events: vec![],
+            next_task: 0,
+            next_msg: 0,
+            next_mgr: 0,
+            next_lone: 0,
+            always_allow: Default::default(),
+        };
+        eprintln!("PROBE app path: {}", copy.display());
+        eprintln!("PROBE git path: {:?}", sys::work_copies(&r).iter().map(|w| w.path.clone()).collect::<Vec<_>>());
+        let listed = removable_copies(&r, Some(&team), now_ms(), false);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(listed.is_empty(), "a copy in use would be deleted: {listed:?}");
+    }
+}
+
 #[cfg(test)]
 mod handover_tests {
     use super::*;

@@ -446,6 +446,38 @@ mod tests {
         assert!(began.elapsed() < std::time::Duration::from_secs(15), "ping kept running: {:?}", began.elapsed());
     }
 
+    /// Windows has no `du`, and a stock Git install doesn't put its copy on PATH.
+    #[cfg(windows)]
+    #[test]
+    fn folder_size_counts_the_files() {
+        let dir = std::env::temp_dir().join(format!("prism-size-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.bin"), vec![0u8; 100_000]).unwrap();
+        std::fs::write(dir.join("sub").join("b.bin"), vec![0u8; 50_000]).unwrap();
+        eprintln!("PROBE du: {:?}", command("where").arg("du").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()));
+        let size = disk_bytes(&dir.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(size >= 150_000, "size was {size}");
+    }
+
+    /// What a `\\?\` folder (what `canonicalize` returns on Windows) does to the programs run in it.
+    #[cfg(windows)]
+    #[test]
+    fn probe_verbatim_paths() {
+        let dir = std::env::temp_dir().join(format!("prism-verbatim-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = std::fs::canonicalize(&dir).unwrap().to_string_lossy().into_owned();
+        eprintln!("PROBE canonical: {long}");
+        eprintln!("PROBE git init: {:?}", git(&long, &["init", "-b", "main"]));
+        eprintln!("PROBE git toplevel: {:?}", git(&long, &["rev-parse", "--show-toplevel"]));
+        let copy = PathBuf::from(&long).join(".prism").join("worktrees").join("x");
+        eprintln!("PROBE git commit: {:?}", git(&long, &["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--allow-empty", "-m", "a"]));
+        eprintln!("PROBE git worktree add: {:?}", add_worktree(&long, &copy, "prism/x"));
+        eprintln!("PROBE git worktree list: {:?}", git(&long, &["worktree", "list", "--porcelain"]));
+        let out = command("cmd").args(["/d", "/c", "cd"]).current_dir(&long).output().unwrap();
+        eprintln!("PROBE cmd cwd: {} / {}", String::from_utf8_lossy(&out.stdout).trim(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+
     #[test]
     fn cmd_files_with_awkward_paths_are_called() {
         assert_eq!(cmd_shim(r"C:\npm\codex.cmd".into()).1, ["/c", r"C:\npm\codex.cmd"]);
