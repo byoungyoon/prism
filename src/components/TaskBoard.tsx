@@ -1,7 +1,8 @@
-// 작업 보드: who is doing what, floor by floor — 총괄 on top, then every 팀장, then every 작업자,
+// 작업 보드: who is doing what, as a tree of who handed work to whom — each team's 총괄 on top, its
+// 팀장 (and the 작업자 it gave cards to directly) under it, and under each 팀장 the 작업자 it asked,
 // each with the card they hold. (The work itself, with results, is in the report feed.)
 // Below: one merged progress log.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { isLive, useApp, useShownTeams, waitsForMe } from "../store";
 import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
@@ -32,7 +33,7 @@ function stateOf(a: Agent, team: TeamSnapshot) {
   return { task, word: a.status === "done" ? "끝남" : a.status === "work" ? "작업 중" : "대기", problem: false };
 }
 
-function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean }) {
+function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnapshot; project: Project; multi: boolean; tree?: boolean }) {
   const openIn = useApp((s) => s.openIn);
   const st = stateOf(a, team);
   const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
@@ -43,7 +44,8 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
       title={`${catName(a)} 작업 화면 · ${modelLabel(a.model)}`}
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
     >
-      <span className="w-[68px] shrink-0 truncate font-medium">{a.role === "lead" && multi ? project.name : catName(a)}</span>
+      {/* in the tree the indent already takes width, so the name takes only what it needs */}
+      <span className={`${tree ? "max-w-[68px]" : "w-[68px]"} shrink-0 truncate font-medium`}>{a.role === "lead" && multi ? project.name : catName(a)}</span>
       <span className="flex min-w-0 flex-auto items-baseline gap-1.5 text-ink-2">
         {st.task && <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--text)]">{st.task.id}</span>}
         <span className="truncate">{st.task ? st.task.title : a.role === "lead" ? "" : (a.lastNote ?? "")}</span>
@@ -60,7 +62,49 @@ function MemberRow({ a, team, project, multi }: { a: Agent; team: TeamSnapshot; 
   );
 }
 
-/** Every shown team's people, floor by floor, and one merged progress log. */
+type TreeNode = { a: Agent; kids: Agent[] };
+
+/**
+ * The members at work as a tree. A 작업자 hangs under the 팀장 who asked for its card (no card: the
+ * one who brought it in), everyone else right under the 총괄. A 팀장 whose 작업자 are still at work
+ * stays in the tree even when idle or finished itself.
+ */
+function teamTree(team: TeamSnapshot, active: Agent[]) {
+  const nodes = new Map<string, TreeNode>();
+  const nodeOf = (a: Agent) => {
+    let n = nodes.get(a.id);
+    if (!n) nodes.set(a.id, (n = { a, kids: [] }));
+    return n;
+  };
+  active.filter((a) => a.role === "mgr").forEach(nodeOf);
+  for (const a of active.filter((x) => x.role === "worker")) {
+    const by = currentCard(team, a)?.requestedBy ?? a.parentId;
+    const boss = team.agents.find((x) => x.id === by && x.role === "mgr");
+    if (boss) nodeOf(boss).kids.push(a);
+    else nodeOf(a);
+  }
+  // 팀장 first, then the 작업자 the 총괄 asked directly
+  const children = [...nodes.values()].sort((x, y) => Number(x.a.role !== "mgr") - Number(y.a.role !== "mgr") || x.a.name.localeCompare(y.a.name, "ko"));
+  const lead = active.find((a) => a.role === "lead");
+  const ids = new Set([...(lead ? [lead] : []), ...children.flatMap((n) => [n.a, ...n.kids])].map((a) => a.id));
+  return { lead, children, ids };
+}
+
+/** One child in the tree: the connector line from its parent, then its row (and its own children). */
+function Branch({ last, children }: { last: boolean; children: ReactNode }) {
+  return (
+    <li className="relative min-w-0 pl-2.5">
+      {/* rows are 32px tall, so the elbow sits at 16px; the last child's line stops there */}
+      <span aria-hidden className="absolute top-0 left-0 w-px bg-[var(--text2)] opacity-35" style={{ height: last ? 16 : "100%" }} />
+      <span aria-hidden className="absolute top-4 left-0 h-px w-2.5 bg-[var(--text2)] opacity-35" />
+      {children}
+    </li>
+  );
+}
+
+const TREE_LIST = "m-0 ml-3.5 flex list-none flex-col p-0";
+
+/** Every shown team's people as a tree, and one merged progress log. */
 const reportKey = (pid: string, t: { id: string; updatedAt: number }) => `report:${pid}:${t.id}:${t.updatedAt}`; // 새로 보고되면(updatedAt 변경) 키가 달라져 다시 보인다
 
 export function TaskBoard() {
@@ -75,6 +119,14 @@ export function TaskBoard() {
   const [doneOpen, setDoneOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const { has: isDismissed, dismiss } = useDismissed();
+  // 팀장 lines the user folded (open by default)
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const toggleFold = (key: string) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
 
   const tasks = shown.flatMap(({ team }) => team.tasks);
   const count = (stage: string) => tasks.filter((t) => t.stage === stage).length;
@@ -84,9 +136,11 @@ export function TaskBoard() {
   // only who is at work (or the 총괄) shows by default; idle and finished members fold into one line
   const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
   const crewOf = (team: TeamSnapshot) => FLOORS.flatMap((f) => members(team, f.role));
-  const activeList = shown.flatMap(({ project, team }) => crewOf(team).filter((a) => isActive(a, team)).map((a) => ({ a, team, project })));
-  const doneGroups = shown
-    .map(({ project, team }) => ({ project, team, list: [...crewOf(team).filter((a) => !isActive(a, team)), ...finishedCrew(team)] }))
+  const trees = shown.map(({ project, team }) => ({ project, team, ...teamTree(team, crewOf(team).filter((a) => isActive(a, team))) }));
+  const activeN = trees.reduce((k, t) => k + t.ids.size, 0);
+  // whoever is already in the tree isn't listed again below
+  const doneGroups = trees
+    .map(({ project, team, ids }) => ({ project, team, list: [...crewOf(team).filter((a) => !isActive(a, team)), ...finishedCrew(team)].filter((a) => !ids.has(a.id)) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
   // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
@@ -148,11 +202,57 @@ export function TaskBoard() {
         {shown.length > 0 && (
           <div className="flex flex-col gap-0.5 py-2" style={{ borderTop: reports.length ? "1px solid var(--line)" : undefined }}>
             <span className="px-2 pb-0.5 text-[11.5px] font-semibold text-ink-2">
-              지금 하는 일 <span className="font-normal">{activeList.length}</span>
+              지금 하는 일 <span className="font-normal">{activeN}</span>
             </span>
-            {activeList.map((x) => (
-              <MemberRow key={`${x.project.id}-${x.a.id}`} a={x.a} team={x.team} project={x.project} multi={multi} />
-            ))}
+            {trees.map(({ project, team, lead, children }) => {
+              const row = (a: Agent) => <MemberRow a={a} team={team} project={project} multi={multi} tree />;
+              return (
+                <div key={project.id} className="flex min-w-0 flex-col">
+                  {lead ? row(lead) : multi && <span className="px-2 pt-1 text-[11px] text-ink-2">{project.name}</span>}
+                  <ul aria-label={`${project.name} 맡긴 일`} className={TREE_LIST}>
+                    {children.map(({ a, kids }, i) => {
+                      const key = `${project.id}:${a.id}`;
+                      const open = !folded.has(key);
+                      // a folded line still tells when someone under it is in trouble
+                      const trouble = !open && kids.some((k) => stateOf(k, team).problem);
+                      return (
+                        <Branch key={a.id} last={i === children.length - 1}>
+                          {kids.length === 0 ? (
+                            row(a)
+                          ) : (
+                            <>
+                              <div className="flex min-w-0 items-center">
+                                <div className="min-w-0 flex-auto">{row(a)}</div>
+                                <button
+                                  onClick={() => toggleFold(key)}
+                                  aria-expanded={open}
+                                  aria-label={`${catName(a)}에게 딸린 작업자 ${kids.length}명 ${open ? "접기" : "펼치기"}${trouble ? " (문제 있음)" : ""}`}
+                                  title={open ? "접기" : "펼치기"}
+                                  className="flex h-8 shrink-0 cursor-pointer items-center gap-0.5 rounded-lg border-0 bg-transparent px-1 text-[11px] text-ink-2 hover:bg-[var(--chip)]"
+                                  style={trouble ? { color: "var(--block-ink)", fontWeight: 600 } : undefined}
+                                >
+                                  {!open && <span>{trouble ? "문제 · " : ""}{kids.length}명</span>}
+                                  <ChevronDown size={13} style={{ transform: open ? undefined : "rotate(-90deg)", transition: "transform 160ms" }} />
+                                </button>
+                              </div>
+                              {open && (
+                                <ul className={TREE_LIST}>
+                                  {kids.map((k, j) => (
+                                    <Branch key={k.id} last={j === kids.length - 1}>
+                                      {row(k)}
+                                    </Branch>
+                                  ))}
+                                </ul>
+                              )}
+                            </>
+                          )}
+                        </Branch>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })}
           </div>
         )}
 
