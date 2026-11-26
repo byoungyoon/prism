@@ -113,11 +113,34 @@ fn engine_mcp_args(c: &Ctx) -> Vec<String> {
     args
 }
 
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~/".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+/// Where a member's CLI reaches an engine: through Prism, which starts the engine (with the
+/// member's own roots from `engine_mcp_args`) only when it is first used and stops it when idle
+/// (see `engines.rs`). `r`/`w` carry the read/write roots.
+fn engine_url(c: &Ctx, name: &str) -> String {
+    let args = engine_mcp_args(c);
+    let mut q = format!("t={}", url_encode(c.token));
+    for w in args.windows(2) {
+        let k = match w[0].as_str() {
+            "--automation-read-root" => "r",
+            "--automation-write-root" => "w",
+            _ => continue,
+        };
+        q += &format!("&{k}={}", url_encode(&w[1]));
+    }
+    format!("{}/engine/{name}/{}/{}?{q}", c.base, url_encode(c.project_id), url_encode(c.agent_id))
+}
+
 /// The `mcpServers` object for Claude's --mcp-config: Prism's own server, plus each installed engine.
 fn claude_mcp_servers(c: &Ctx, engines: &[(&str, PathBuf)]) -> serde_json::Value {
     let mut servers = json!({ "prism": { "type": "http", "url": c.mcp_url() } });
-    for (name, cli) in engines {
-        servers[*name] = json!({ "command": cli.to_string_lossy(), "args": engine_mcp_args(c) });
+    for (name, _cli) in engines {
+        servers[*name] = json!({ "type": "http", "url": engine_url(c, name) });
     }
     servers
 }
@@ -223,13 +246,9 @@ fn home_dir() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Codex `-c` overrides that add an engine's MCP server (same command and args as for Claude).
-fn codex_engine_config(name: &str, cli: &Path, engine_args: &[String]) -> Vec<String> {
-    let args = serde_json::to_string(engine_args).unwrap_or_else(|_| "[]".into()); // a JSON array is a valid TOML array
-    vec![
-        "-c".into(), format!("mcp_servers.{name}.command={}", serde_json::to_string(&cli.to_string_lossy()).unwrap_or_default()),
-        "-c".into(), format!("mcp_servers.{name}.args={args}"),
-    ]
+/// Codex `-c` override that adds an engine's MCP server (the same Prism endpoint as for Claude).
+fn codex_engine_config(c: &Ctx, name: &str) -> Vec<String> {
+    vec!["-c".into(), format!("mcp_servers.{name}.url={}", serde_json::to_string(&engine_url(c, name)).unwrap_or_default())]
 }
 
 /// The account's CODEX_HOME (default ~/.codex).
@@ -253,9 +272,8 @@ fn codex(c: &Ctx) -> Result<Launch, String> {
         "-c".into(), format!("developer_instructions={}", toml_str(c.system)),
         "-c".into(), format!("projects.{}.trust_level=\"trusted\"", toml_str(c.cwd)),
     ];
-    let engine_args = engine_mcp_args(c);
-    for (name, cli) in installed_engines() {
-        shared.extend(codex_engine_config(name, &cli, &engine_args));
+    for (name, _cli) in installed_engines() {
+        shared.extend(codex_engine_config(c, name));
     }
     if !c.model.is_empty() {
         shared.extend(["-m".into(), c.model.into()]);
@@ -470,21 +488,16 @@ mod figcraft_tests {
         let dir = tmp("fc");
         let c = ctx(&dir, "/work/wt");
         let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
-        assert_eq!(v["figcraft"]["command"], "/opt/figcraft-cli");
-        assert_eq!(
-            v["figcraft"]["args"],
-            json!(["mcp", "--automation-read-root", "/work/wt", "--automation-write-root", "/work/wt"])
-        );
+        assert_eq!(v["figcraft"]["type"], "http");
+        assert_eq!(v["figcraft"]["url"], "http://127.0.0.1:1/engine/figcraft/p1/a1?t=t&r=/work/wt&w=/work/wt");
         assert!(v["prism"].is_object());
     }
 
     #[test]
     fn codex_overrides_name_the_same_server() {
-        let args = engine_mcp_args(&ctx(Path::new("/unused"), "/work/wt"));
-        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), &args);
+        let out = codex_engine_config(&ctx(Path::new("/unused"), "/work/wt"), "figcraft");
         assert_eq!(out[0], "-c");
-        assert_eq!(out[1], "mcp_servers.figcraft.command=\"/opt/figcraft-cli\"");
-        assert_eq!(out[3], "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
+        assert_eq!(out[1], "mcp_servers.figcraft.url=\"http://127.0.0.1:1/engine/figcraft/p1/a1?t=t&r=/work/wt&w=/work/wt\"");
     }
 }
 
@@ -541,23 +554,23 @@ mod deckcraft_tests {
         let dir = tmp("dc");
         let c = ctx(&dir, "/work/wt");
         let v = claude_mcp_servers(&c, &[("deckcraft", PathBuf::from("/opt/deckcraft-cli"))]);
-        assert_eq!(v["deckcraft"]["command"], "/opt/deckcraft-cli");
-        assert_eq!(
-            v["deckcraft"]["args"],
-            json!(["mcp", "--automation-read-root", "/work/wt", "--automation-write-root", "/work/wt"])
-        );
+        assert_eq!(v["deckcraft"]["type"], "http");
+        assert_eq!(v["deckcraft"]["url"], "http://127.0.0.1:1/engine/deckcraft/p1/a1?t=t&r=/work/wt&w=/work/wt");
         assert!(v.get("figcraft").is_none());
         assert!(v["prism"].is_object());
     }
 
     #[test]
     fn codex_overrides_name_the_deckcraft_server() {
-        let args = engine_mcp_args(&ctx(Path::new("/unused"), "/work/wt"));
-        let out = codex_engine_config("deckcraft", Path::new("/opt/deckcraft-cli"), &args);
+        let out = codex_engine_config(&ctx(Path::new("/unused"), "/work/wt"), "deckcraft");
         assert_eq!(out[0], "-c");
-        assert_eq!(out[1], "mcp_servers.deckcraft.command=\"/opt/deckcraft-cli\"");
-        assert_eq!(out[2], "-c");
-        assert_eq!(out[3], "mcp_servers.deckcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-write-root\",\"/work/wt\"]");
+        assert_eq!(out[1], "mcp_servers.deckcraft.url=\"http://127.0.0.1:1/engine/deckcraft/p1/a1?t=t&r=/work/wt&w=/work/wt\"");
+    }
+
+    #[test]
+    fn engine_url_escapes_odd_folder_names() {
+        let c = ctx(Path::new("/unused"), "/w/내 폴더&x");
+        assert_eq!(engine_url(&c, "deckcraft"), "http://127.0.0.1:1/engine/deckcraft/p1/a1?t=t&r=/w/%EB%82%B4%20%ED%8F%B4%EB%8D%94%26x&w=/w/%EB%82%B4%20%ED%8F%B4%EB%8D%94%26x");
     }
 
     #[test]
@@ -605,10 +618,7 @@ mod read_root_tests {
         let cwd = "/proj/.prism/worktrees/r1-t-1";
         let c = ctx(&dir, cwd, &["/proj/.prism/worktrees"]);
         let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
-        assert_eq!(
-            v["figcraft"]["args"],
-            json!(["mcp", "--automation-read-root", cwd, "--automation-read-root", "/proj/.prism/worktrees", "--automation-write-root", cwd])
-        );
+        assert_eq!(v["figcraft"]["url"], format!("http://127.0.0.1:1/engine/figcraft/p1/a1?t=t&r={cwd}&r=/proj/.prism/worktrees&w={cwd}"));
         let (reads, writes) = roots(&engine_mcp_args(&c));
         assert_eq!(reads, vec![cwd.to_string(), "/proj/.prism/worktrees".to_string()]);
         assert_eq!(writes, vec![cwd.to_string()]);
@@ -620,10 +630,7 @@ mod read_root_tests {
         let cwd = "/proj/.prism/worktrees/r1-t-2";
         let c = ctx(&dir, cwd, &[]);
         let v = claude_mcp_servers(&c, &[("figcraft", PathBuf::from("/opt/figcraft-cli"))]);
-        assert_eq!(
-            v["figcraft"]["args"],
-            json!(["mcp", "--automation-read-root", cwd, "--automation-write-root", cwd])
-        );
+        assert_eq!(v["figcraft"]["url"], format!("http://127.0.0.1:1/engine/figcraft/p1/a1?t=t&r={cwd}&w={cwd}"));
         let (reads, writes) = roots(&engine_mcp_args(&c));
         assert_eq!(reads, vec![cwd.to_string()]);
         assert_eq!(writes, vec![cwd.to_string()]);
@@ -633,11 +640,8 @@ mod read_root_tests {
     fn codex_gets_the_same_read_roots_as_claude() {
         let dir = tmp("codex");
         let c = ctx(&dir, "/work/wt", &["/work/.prism/worktrees"]);
-        let out = codex_engine_config("figcraft", Path::new("/opt/figcraft-cli"), &engine_mcp_args(&c));
-        assert_eq!(
-            out[3],
-            "mcp_servers.figcraft.args=[\"mcp\",\"--automation-read-root\",\"/work/wt\",\"--automation-read-root\",\"/work/.prism/worktrees\",\"--automation-write-root\",\"/work/wt\"]"
-        );
+        let out = codex_engine_config(&c, "figcraft");
+        assert_eq!(out[1], "mcp_servers.figcraft.url=\"http://127.0.0.1:1/engine/figcraft/p1/a1?t=t&r=/work/wt&r=/work/.prism/worktrees&w=/work/wt\"");
     }
 
     #[test]

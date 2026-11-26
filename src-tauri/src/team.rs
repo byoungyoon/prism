@@ -3630,6 +3630,7 @@ impl TeamManager {
     }
 
     fn on_exit(&self, pid: &str, aid: &str, code: Option<u32>) {
+        crate::engines::engines().stop_member(pid, aid);
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
         // it died while its conversation was being handed over: the card goes on in a new one (the board keeps it working)
@@ -4181,6 +4182,8 @@ impl TeamManager {
     /// Stop a member's process. It leaves the driver map right away, so a relaunch can follow
     /// immediately (its late exit is ignored — see `launches`).
     fn kill_driver(&self, pid: &str, aid: &str) {
+        // its design engines (if it started any) go with the session
+        crate::engines::engines().stop_member(pid, aid);
         let d = self.drivers.lock().unwrap().remove(&format!("{pid}/{aid}"));
         if let Some(d) = d {
             d.cancel(); // let it wrap up the turn if it can (ACP session/cancel…)

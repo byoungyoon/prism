@@ -35,6 +35,7 @@ pub async fn serve(listener: tokio::net::TcpListener, ctx: Ctx) {
         .route("/hook/{project}/{agent}/{event}", post(hook))
         .route("/status/{project}/{agent}", post(status))
         .route("/perm/{project}/{agent}", post(perm))
+        .route("/engine/{engine}/{project}/{agent}", post(engine).get(|| async { StatusCode::METHOD_NOT_ALLOWED }))
         .with_state(ctx);
     let _ = axum::serve(listener, app).await;
 }
@@ -75,6 +76,20 @@ async fn perm(State(ctx): State<Ctx>, Path((p, a)): Path<(String, String)>, q: Q
         _ => json!({}),
     };
     Json(body).into_response()
+}
+
+/// A design engine's MCP, started on first use (see `engines`). `r`/`w` repeat: the member's roots.
+async fn engine(Path((e, p, a)): Path<(String, String, String)>, State(ctx): State<Ctx>, Query(q): Query<Vec<(String, String)>>, Json(req): Json<Value>) -> Response {
+    if !q.iter().any(|(k, v)| k == "t" && v == &ctx.token) || !crate::engines::known(&e) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let pick = |name: &str| q.iter().filter(|(k, _)| k == name).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+    let key = crate::engines::Key { engine: e, project: p, agent: a, reads: pick("r"), writes: pick("w") };
+    match tokio::task::spawn_blocking(move || crate::engines::engines().handle(&key, &req)).await {
+        Ok(Some(body)) => Json(body).into_response(),
+        Ok(None) => StatusCode::ACCEPTED.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn status(State(ctx): State<Ctx>, Path((p, a)): Path<(String, String)>, q: Q, body: String) -> Response {
