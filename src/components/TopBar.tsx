@@ -256,7 +256,7 @@ function ChurruButton() {
 }
 
 const REWARD_MS = 2600;
-const REWARD_WORD = { attend: "출석", card: "작업 완료", pet: "고양이" } as const;
+const REWARD_WORD = { attend: "출석", card: "작업 완료", pet: "고양이", gift: "선물" } as const;
 
 /** 츄르를 받으면 잔액 옆에 '+N 출석'이 잠깐 뜬다 (여러 개면 하나씩) */
 function RewardFlash() {
@@ -280,7 +280,7 @@ function RewardFlash() {
             className="block rounded-full px-2.5 py-1 text-[12px] font-semibold whitespace-nowrap"
             style={{ background: "var(--amber)", color: "#2B2520", boxShadow: "var(--shadow)" }}
           >
-            +{note.amount} {REWARD_WORD[note.kind]}
+            +{note.amount} {note.gift?.label ?? REWARD_WORD[note.kind]}
             {week ? ` · ${note.streak}일 연속 보너스` : note.kind === "attend" && note.streak > 1 ? ` · ${note.streak}일 연속` : ""}
           </motion.span>
         )}

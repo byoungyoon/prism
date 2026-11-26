@@ -131,6 +131,7 @@ export function Onboarding() {
         }
       }
       setOpen(false);
+      useApp.getState().claimGift();
     } finally {
       setBusy(false);
     }
