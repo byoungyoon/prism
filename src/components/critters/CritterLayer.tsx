@@ -171,7 +171,7 @@ const Walker = memo(function Walker({ item, layer, size, speed, bubble, name, st
   const fidget = item.fidget && !moving ? { "--fd": `${-(h % 9000)}ms`, "--fdur": `${9 + (h % 8)}s` } : undefined;
   return (
     <div
-      className={`cr-mover${leaving ? " cr-leaving" : ""}`}
+      className={`cr-mover${leaving ? " cr-leaving" : ""}${item.drag ? " cr-held" : ""}`}
       data-critter={item.id}
       style={{ transform: `translate3d(${x}px, ${y}px, 0)`, transitionDuration: `${moving ? w.ms : 0}ms`, animationDuration: leaving ? `${leaving}ms` : undefined }}
     >
