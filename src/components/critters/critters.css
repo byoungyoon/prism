@@ -281,6 +281,18 @@
   text-overflow: ellipsis;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
+/* a change just happened ("일 시작!", "쉬는 중"): the sign pops up over its head */
+.cr-say.cr-flag {
+  background: var(--amber);
+  border-color: transparent;
+  color: #2b2118;
+  font-weight: 700;
+  animation: cr-flag 0.35s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+@keyframes cr-flag {
+  0% { transform: translateY(6px) scale(0.7); }
+  100% { transform: none; }
+}
 .cr-name {
   margin-top: -2px;
   font-size: 9.5px;
@@ -372,7 +384,8 @@
     animation: none !important;
   }
   .cr-in,
-  .cr-leaving {
+  .cr-leaving,
+  .cr-flag {
     animation: none !important;
   }
   .cr-mover {
