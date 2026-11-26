@@ -1,23 +1,24 @@
 // The side walk (facing right), after the picture the cats are taken from: a big head turned a
 // little toward you (both eyes show), a short body, stubby legs and a tail held up with its tip
-// curled over. Unlike the other motions it is drawn straight at the fine resolution (FW·K × FH·K,
-// no Scale2x), with the same letters as art.ts, plus:
-//   f fur of a far leg (a shade darker)    g paw of a far leg
+// curled over. Like every motion (the others are in art.ts) it is drawn straight at the fine
+// resolution (FW·K × FH·K), with the same letters; the brush here (stamp, oval, stroke) and the
+// head are shared with them.
 
 /** frames in one round of the walk */
 export const WALK_FRAMES = 8;
 
-const W = 48;
-const H = 56;
+/** a frame in fine dots */
+export const W = 48;
+export const H = 56;
 /** the lowest row of a paw's fill (its outline sits on the row below) */
-const FLOOR = 52;
+export const FLOOR = 52;
 
 /** cells of one layer: "x,y" → letter */
-type Cells = Map<string, string>;
-const set = (c: Cells, x: number, y: number, ch: string) => c.set(`${x},${y}`, ch);
+export type Cells = Map<string, string>;
+export const set = (c: Cells, x: number, y: number, ch: string) => c.set(`${x},${y}`, ch);
 
 /** paint a layer onto the grid, with a one-dot outline around it (over whatever is behind) */
-function stamp(g: string[][], cells: Cells) {
+export function stamp(g: string[][], cells: Cells) {
   for (const key of cells.keys()) {
     const [x, y] = key.split(",").map(Number);
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -32,10 +33,23 @@ function stamp(g: string[][], cells: Cells) {
   }
 }
 
-function oval(c: Cells, cx: number, cy: number, rx: number, ry: number, ch: (x: number, y: number) => string) {
+export function oval(c: Cells, cx: number, cy: number, rx: number, ry: number, ch: (x: number, y: number) => string) {
   for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)
     for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++)
       if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) set(c, x, y, ch(x, y));
+}
+
+/** a thick line through `pts` (the tails), four dots across */
+export function stroke(c: Cells, pts: [number, number][], ch = "t") {
+  for (let n = 1; n < pts.length; n++) {
+    const [ax, ay] = pts[n - 1];
+    const [bx, by] = pts[n];
+    for (let k = 0; k <= 10; k++) {
+      const x = ax + ((bx - ax) * k) / 10;
+      const y = ay + ((by - ay) * k) / 10;
+      oval(c, Math.round(x), Math.round(y), 1.5, 1.5, () => ch);
+    }
+  }
 }
 
 /** the head (26 wide, fill only: the outline is added around it) */
@@ -107,15 +121,30 @@ function tail(c: Cells, bob: number, s: number) {
     [7 + s * 1.5, 23.5 + bob],
     [9.5 + s * 1.5, 25 + bob],
   ];
-  for (let n = 1; n < pts.length; n++) {
-    const [ax, ay] = pts[n - 1];
-    const [bx, by] = pts[n];
-    for (let k = 0; k <= 10; k++) {
-      const x = ax + ((bx - ax) * k) / 10;
-      const y = ay + ((by - ay) * k) / 10;
-      oval(c, Math.round(x), Math.round(y), 1.5, 1.5, () => "t");
-    }
-  }
+  stroke(c, pts);
+}
+
+/**
+ * The walking cat's head with its fill's top left at (x, y) fine dots, both even; the lie-down
+ * wears it too. Returns where the face is, in drawing dots.
+ */
+export function sideHead(g: string[][], hx: number, hy: number) {
+  const head: Cells = new Map();
+  HEAD.forEach((row, y) =>
+    [...row].forEach((ch, x) => {
+      if (ch !== ".") set(head, hx + x, hy + y, ch);
+    }),
+  );
+  stamp(g, head);
+  for (const [x, y] of MOUTH) g[hy + y][hx + x] = "o";
+  for (const [x, y] of WHISKERS) if (hx + x < W) g[hy + y][hx + x] = "o";
+  const half = (v: number) => v / 2;
+  return {
+    eyes: [half(hx + EYE_L), half(hx + EYE_R)] as [number, number],
+    eyeY: half(hy + EYE_ROW),
+    nose: [half(hx + NOSE[0]), half(hy + NOSE[1])] as [number, number],
+    top: half(hy),
+  };
 }
 
 export interface Walk {
@@ -174,25 +203,7 @@ export function walkFrame(i: number): Walk {
   for (const [x, y] of [[17, 0], [18, 1], [18, 2], [18, 3], [17, 4]]) crease(x, cy + y);
   for (const y of [3, 4, 5]) crease(26, cy + y);
 
-  const hx = 18;
-  const hy = 22 + headDip;
-  const head: Cells = new Map();
-  HEAD.forEach((row, y) =>
-    [...row].forEach((ch, x) => {
-      if (ch !== ".") set(head, hx + x, hy + y, ch);
-    }),
-  );
-  stamp(g, head);
-  for (const [x, y] of MOUTH) g[hy + y][hx + x] = "o";
-  for (const [x, y] of WHISKERS) if (hx + x < W) g[hy + y][hx + x] = "o";
+  const face = sideHead(g, 18, 22 + headDip);
 
-  const half = (v: number) => v / 2;
-  return {
-    grid: g,
-    eyes: [half(hx + EYE_L), half(hx + EYE_R)],
-    eyeY: half(hy + EYE_ROW),
-    nose: [half(hx + NOSE[0]), half(hy + NOSE[1])],
-    top: half(hy),
-    bodyY: cy,
-  };
+  return { grid: g, ...face, bodyY: cy };
 }

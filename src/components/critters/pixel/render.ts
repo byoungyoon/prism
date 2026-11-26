@@ -3,7 +3,7 @@
 // through its frames with CSS (no work in JavaScript while it plays).
 // The strip is drawn at K × K dots per drawing dot (art.ts), so the cat keeps its size on screen
 // but its dots are finer: fur, eyes, ears and outline all get more detail.
-import { FH, FW, K, frameOf, hires, letters, type Row } from "./art";
+import { FH, FW, K, frameOf, letters, type Row } from "./art";
 import { dotColor, lift, type Coat } from "./coats";
 import { faceDots, INK, type Feel } from "./faces";
 
@@ -24,11 +24,12 @@ const shade = (hex: string) => {
 /** paint one frame at (ox, 0) of a canvas at K × K dots per drawing dot */
 function paint(g: CanvasRenderingContext2D, coat: Coat, row: Row, i: number, feel: Feel, ox: number) {
   const f = frameOf(row, i);
-  const low = letters(f); // the drawing itself: for the sign's place and the head's edge
-  const grid = hires(f); // the same drawing, K× the dots, smoothed
+  const low = letters(f); // at one letter per drawing dot: for the sign's place and the head's edge
+  const grid = f.fine;
   const W = FW * K;
   const H = FH * K;
-  const faceX = f.front ? (f.front.eyes[0] + f.front.eyes[1]) / 2 : f.side ? f.side.eye[0] - 3 : FW / 2;
+  // the middle of the face, in fine dots
+  const faceX = f.faceX ?? (f.front ? ((f.front.eyes[0] + f.front.eyes[1]) / 2) * K : (FW / 2) * K);
   const filled = (x: number, y: number) => y >= 0 && y < H && x >= 0 && x < W && grid[y][x] !== ".";
   // the drop shadow first (two dots down and to the right)
   g.fillStyle = SHADOW;
@@ -38,7 +39,7 @@ function paint(g: CanvasRenderingContext2D, coat: Coat, row: Row, i: number, fee
   for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) {
       const ch = grid[y][x];
-      let c = dotColor(coat, ch, x, y, f.top * K, faceX * K, f.bodyY);
+      let c = dotColor(coat, ch, x, y, f.top * K, faceX, f.bodyY, f.back);
       if (!c) continue;
       // fur on the top silhouette catches the light: a lift along the top edge (lying and curled poses)
       if ("kwt".includes(ch) && c.startsWith("#") && !filled(x, y - 1)) c = lift(c);
@@ -53,7 +54,7 @@ function paint(g: CanvasRenderingContext2D, coat: Coat, row: Row, i: number, fee
   let right = 0;
   for (let y = f.top; y < f.top + 6 && y < FH; y++) for (let x = 0; x < FW; x++) if (low[y][x] !== ".") right = Math.max(right, x);
   // the face: each drawing dot of it is K × K dots; an eye's top dot carries a shine
-  const dots = faceDots(feel, f.front, f.side, !!f.asleep, f.top, right - 3);
+  const dots = faceDots(feel, f.front, !!f.asleep, f.top, right - 3);
   const eyeAt = new Set(dots.filter(([, , ink]) => ink === "eye").map(([x, y]) => `${x},${y}`));
   for (const [x, y, ink] of dots) {
     if (x < 0 || x >= FW || y < 0 || y >= FH) continue;
