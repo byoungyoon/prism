@@ -592,6 +592,58 @@ impl Projects {
         self.save(&list);
         Ok(out)
     }
+
+    /// The work of `project_create` (blocking: run it off the main thread).
+    pub fn create(&self, name: &str) -> Result<Project, String> {
+        let name = name.trim();
+        if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\', ':']) {
+            return Err("폴더 이름으로 쓸 수 없는 이름이에요".into());
+        }
+        let dir = self.root.lock().unwrap().join(name);
+        if dir.exists() {
+            return Err("같은 이름의 프로젝트가 이미 있어요".into());
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        sys::init_new_repo(&dir.to_string_lossy())?;
+        let path = dir.to_string_lossy().into_owned();
+        self.sync();
+        let p = self.list.lock().unwrap().iter().find(|p| p.path == path).cloned().ok_or("생성 실패")?;
+        self.update(&p.id, |p| p.last_opened = now_ms())
+    }
+
+    /// The work of `project_import` (blocking: run it off the main thread).
+    pub fn import(&self, path: &str) -> Result<Project, String> {
+        let dir = PathBuf::from(path.trim());
+        if !dir.is_dir() {
+            return Err("폴더를 찾을 수 없어요".into());
+        }
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let path = dir.to_string_lossy().into_owned();
+        if let Some(home) = std::env::home_dir() {
+            if dir == home || dir.parent().is_none() {
+                return Err("홈 폴더나 디스크 전체는 프로젝트로 가져올 수 없어요. 프로젝트 폴더를 골라주세요.".into());
+            }
+        }
+        let existing = self.sync().into_iter().find(|p| p.path == path);
+        if let Some(p) = existing {
+            return self.update(&p.id, |p| p.last_opened = now_ms());
+        }
+        let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "프로젝트".into());
+        let p = Project {
+            id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
+            name,
+            is_git: dir.join(".git").exists(),
+            path,
+            team: self.default_team(),
+            last_opened: now_ms(),
+            knowledge: String::new(),
+            linked: true,
+        };
+        let mut list = self.list.lock().unwrap();
+        list.push(p.clone());
+        self.save(&list);
+        Ok(p)
+    }
 }
 
 /// (model, effort) for [lead, managers, workers]
@@ -604,9 +656,11 @@ pub fn presets(name: &str) -> Option<[(&'static str, &'static str); 3]> {
     }
 }
 
+/// Reads the workspace folder (one disk look per subfolder): off the main thread, so the window
+/// never waits on the disk.
 #[tauri::command]
-pub fn projects_list(projects: State<'_, Projects>) -> Vec<Project> {
-    projects.sync()
+pub async fn projects_list(app: AppHandle) -> Vec<Project> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Projects>().sync()).await.unwrap_or_default()
 }
 
 #[tauri::command]
@@ -615,70 +669,31 @@ pub fn workspace_root(projects: State<'_, Projects>) -> String {
 }
 
 #[tauri::command]
-pub fn workspace_set_root(projects: State<'_, Projects>, path: String) -> Result<Vec<Project>, String> {
-    let dir = PathBuf::from(&path);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    *projects.root.lock().unwrap() = dir;
-    let _ = path;
-    projects.save_prefs();
-    Ok(projects.sync())
+pub async fn workspace_set_root(app: AppHandle, path: String) -> Result<Vec<Project>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects = app.state::<Projects>();
+        let dir = PathBuf::from(&path);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        *projects.root.lock().unwrap() = dir;
+        projects.save_prefs();
+        Ok(projects.sync())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// New project = new folder in the workspace with a git repo and a first commit.
+/// git runs several programs (about 0.1–0.2 s): never on the main thread, or the window freezes.
 #[tauri::command]
-pub fn project_create(projects: State<'_, Projects>, name: String) -> Result<Project, String> {
-    let name = name.trim();
-    if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\', ':']) {
-        return Err("폴더 이름으로 쓸 수 없는 이름이에요".into());
-    }
-    let dir = projects.root.lock().unwrap().join(name);
-    if dir.exists() {
-        return Err("같은 이름의 프로젝트가 이미 있어요".into());
-    }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    sys::ensure_repo(&dir.to_string_lossy())?;
-    let path = dir.to_string_lossy().into_owned();
-    projects.sync();
-    let p = projects.list.lock().unwrap().iter().find(|p| p.path == path).cloned().ok_or("생성 실패")?;
-    projects.update(&p.id, |p| p.last_opened = now_ms())
+pub async fn project_create(app: AppHandle, name: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Projects>().create(&name)).await.map_err(|e| e.to_string())?
 }
 
 /// "다른 위치의 폴더 가져오기": make a project of a folder outside the workspace. Nothing in the
 /// folder changes now (a folder without git gets one when its team first clocks in).
 #[tauri::command]
-pub fn project_import(projects: State<'_, Projects>, path: String) -> Result<Project, String> {
-    let dir = PathBuf::from(path.trim());
-    if !dir.is_dir() {
-        return Err("폴더를 찾을 수 없어요".into());
-    }
-    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-    let path = dir.to_string_lossy().into_owned();
-    if let Some(home) = std::env::home_dir() {
-        if dir == home || dir.parent().is_none() {
-            return Err("홈 폴더나 디스크 전체는 프로젝트로 가져올 수 없어요. 프로젝트 폴더를 골라주세요.".into());
-        }
-    }
-    let existing = projects.sync().into_iter().find(|p| p.path == path);
-    if let Some(p) = existing {
-        return projects.update(&p.id, |p| p.last_opened = now_ms());
-    }
-    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "프로젝트".into());
-    let p = Project {
-        id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
-        name,
-        is_git: dir.join(".git").exists(),
-        path,
-        team: projects.default_team(),
-        last_opened: now_ms(),
-        knowledge: String::new(),
-        linked: true,
-    };
-    {
-        let mut list = projects.list.lock().unwrap();
-        list.push(p.clone());
-        projects.save(&list);
-    }
-    Ok(p)
+pub async fn project_import(app: AppHandle, path: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Projects>().import(&path)).await.map_err(|e| e.to_string())?
 }
 
 /// Take a brought-in folder off the list. The folder itself is left as it is.
@@ -1032,5 +1047,84 @@ mod churu_tests {
         assert_eq!(s.owned, vec!["cat:white".to_string()]);
         let v = serde_json::to_value(&s).unwrap();
         assert!(v.get("churuRest").is_some());
+    }
+}
+
+
+#[cfg(test)]
+mod create_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn scratch() -> (PathBuf, Projects) {
+        // 정식 데이터는 건드리지 않는다: 임시 폴더 안의 dev.prism.* 전용 폴더만 쓴다
+        let root = std::env::temp_dir().join(format!("dev.prism.t117-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("ws")).unwrap();
+        let ps = Projects { list: Mutex::new(vec![]), file: Mutex::new(Some(root.join("data/projects.json"))), root: Mutex::new(root.join("ws")), settings: None, prefs: Mutex::new(Settings::default()) };
+        (root, ps)
+    }
+
+    /// Runs `work` while a pretend screen thread ticks every 1 ms; returns (work ms, longest screen stall ms).
+    /// `inline`: the work runs on the screen thread itself (the old sync command), else beside it.
+    fn stall(inline: bool, work: impl FnOnce() + Send + 'static) -> (f64, f64) {
+        let t = Instant::now();
+        let mut worst = Duration::ZERO;
+        if inline {
+            work();
+            worst = t.elapsed();
+        } else {
+            let h = std::thread::spawn(work);
+            let mut last = Instant::now();
+            while !h.is_finished() {
+                std::thread::sleep(Duration::from_millis(1));
+                worst = worst.max(last.elapsed());
+                last = Instant::now();
+            }
+            h.join().unwrap();
+        }
+        (t.elapsed().as_secs_f64() * 1000.0, worst.as_secs_f64() * 1000.0)
+    }
+
+    #[test]
+    fn new_project_gets_a_repo_with_a_first_commit() {
+        let (root, ps) = scratch();
+        let p = ps.create("우리 쇼핑몰").unwrap();
+        assert!(p.is_git);
+        assert_eq!(p.name, "우리 쇼핑몰");
+        assert!(sys::git(&p.path, &["rev-parse", "--verify", "HEAD"]).is_ok());
+        assert_eq!(sys::current_branch(&p.path).as_deref(), Some("main"));
+        let ex = std::fs::read_to_string(PathBuf::from(&p.path).join(".git/info/exclude")).unwrap();
+        assert!(ex.lines().any(|l| l == ".prism/"));
+        assert!(ps.create("우리 쇼핑몰").err().unwrap().contains("이미"));
+        assert!(ps.create("a/b").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 고치기 전/후 시간: `cargo test create_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn create_timing() {
+        let (root, ps) = scratch();
+        let ps = std::sync::Arc::new(ps);
+        let (mut before, mut after) = (vec![], vec![]);
+        for i in 0..8 {
+            // before: 6 git programs, on the screen thread
+            let p2 = ps.clone();
+            before.push(stall(true, move || {
+                let dir = p2.root.lock().unwrap().join(format!("old{i}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                sys::ensure_repo(&dir.to_string_lossy()).unwrap();
+                p2.sync();
+            }));
+            // after: 3 git programs, beside the screen thread
+            let p2 = ps.clone();
+            after.push(stall(false, move || {
+                p2.create(&format!("new{i}")).unwrap();
+            }));
+        }
+        let avg = |v: &[(f64, f64)], k: usize| v.iter().map(|x| if k == 0 { x.0 } else { x.1 }).sum::<f64>() / v.len() as f64;
+        eprintln!("BEFORE make {:.0} ms, screen stalled {:.0} ms", avg(&before, 0), avg(&before, 1));
+        eprintln!("AFTER  make {:.0} ms, screen stalled {:.1} ms", avg(&after, 0), avg(&after, 1));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
