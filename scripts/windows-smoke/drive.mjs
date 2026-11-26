@@ -22,7 +22,10 @@ for (let i = 0; i < 240 && !browser; i++) {
   await sleep(250);
   browser = await chromium.connectOverCDP("http://127.0.0.1:9222").catch(() => undefined);
 }
-if (!browser) throw new Error("could not attach to WebView2");
+if (!browser) {
+  log(`webview command lines:\n${ps(`Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' } | ForEach-Object CommandLine`)}`);
+  throw new Error("could not attach to WebView2");
+}
 const page = browser.contexts()[0].pages()[0] ?? (await browser.contexts()[0].waitForEvent("page"));
 page.on("pageerror", (e) => log(`PAGE ERROR ${e.message}`));
 page.on("console", (m) => m.type() === "error" && log(`console.error ${hide(m.text())}`));

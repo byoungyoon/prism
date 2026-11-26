@@ -16,7 +16,19 @@ foreach ($run in 1, 2) {
     if ($p.MainWindowHandle -ne 0) { $shown = $sw.Elapsed.TotalSeconds; break }
     Start-Sleep -Milliseconds 20
   }
-  "run$run window visible after {0:N2}s title='{1}'" -f $shown, $p.MainWindowTitle
+  "run$run process started {0:HH:mm:ss.fff} (window time: first 'Tauri Window' line in windows.tsv)" -f $p.StartTime
+  # the window is plain white until the web page paints: watch one pixel of the app's background
+  $pixel = New-Object System.Drawing.Bitmap 1, 1
+  $g = [System.Drawing.Graphics]::FromImage($pixel)
+  $inside = $false
+  while ($sw.Elapsed.TotalSeconds -lt 30) {
+    $g.CopyFromScreen(60, 200, 0, 0, $pixel.Size)
+    $c = $pixel.GetPixel(0, 0)
+    if ($c.R -eq 255 -and $c.G -eq 255 -and $c.B -eq 255) { $inside = $true }
+    elseif ($inside) { "run$run first screen painted after {0:N2}s" -f ((Get-Date) - $p.StartTime).TotalSeconds; break }
+    Start-Sleep -Milliseconds 50
+  }
+  $g.Dispose(); $pixel.Dispose()
   foreach ($at in 1, 2, 3, 5, 8, 15) {
     while ($sw.Elapsed.TotalSeconds -lt $at) { Start-Sleep -Milliseconds 50 }
     Save-Screen "$Out\run$run-t$at.png"

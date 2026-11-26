@@ -95,6 +95,11 @@ jobs:
           $env:PATH = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User') + ";$env:PWSH_DIR"
           # a first run again
           foreach ($d in "$env:APPDATA\dev.byoungyoon.prism", "$env:LOCALAPPDATA\dev.byoungyoon.prism") { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+          # the job runs as administrator, where WebView2 ignores the environment variable;
+          # only a machine policy can open the debugging port (set after the measurements)
+          $key = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+          New-Item $key -Force | Out-Null
+          New-ItemProperty $key -Name 'prism.exe' -Value '--remote-debugging-port=9222' -PropertyType String -Force | Out-Null
           "$(Get-Date -Format HH:mm:ss.fff) drive start" >> "$env:OUT\marks.txt"
           & "$env:DRIVER\node.exe" scripts\windows-smoke\drive.mjs $env:EXE $env:OUT $env:DRIVER 2>&1 | Tee-Object "$env:OUT\drive.txt"
       - name: collect
