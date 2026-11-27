@@ -391,7 +391,7 @@
   min-height: 280px;
   align-self: stretch;
   border-radius: 6px;
-  background: var(--pxi-tiles) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  background: var(--pxi-loungerug) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
   image-rendering: pixelated;
   border: 2px solid var(--of-lounge-line);
 }
@@ -739,18 +739,73 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 22px;
   align-items: flex-start;
+}
+/* one house: the two rooms share their outer walls, and a wall with a doorway stands between them */
+.of-rooms > .of-lounge,
+.of-rooms > .of-playroom {
+  border: var(--u) solid var(--of-edge);
+  border-radius: 0;
+}
+.of-rooms > .of-lounge {
+  border-bottom: 0;
+}
+.of-rooms > .of-playroom {
+  border-top: 0;
+}
+.of-divider {
+  display: flex;
+  flex: none;
+  align-self: stretch;
+  height: calc(var(--u) * 22);
+  border: solid var(--of-edge);
+  border-width: 0 var(--u);
+}
+.of-partition,
+.of-doorway {
+  position: relative;
+  height: 100%;
+}
+.of-partition {
+  flex: 1 1 0;
+  border-top: var(--u) solid var(--of-edge);
+  border-bottom: calc(var(--u) * 2) solid var(--of-base);
+  background: var(--pxi-wall) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  image-rendering: pixelated;
+  box-shadow: 0 var(--u) 0 var(--of-edge);
+}
+/* through the opening, one floor runs into the other: carpet, then the mats */
+.of-doorway {
+  flex: none;
+  width: calc(var(--u) * 44);
+  background:
+    var(--pxi-playmat) 0 100% / calc(var(--u) * 32) calc(var(--u) * 32) repeat-x,
+    var(--pxi-loungerug) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  background-size:
+    calc(var(--u) * 32) calc(var(--u) * 8),
+    calc(var(--u) * 8) calc(var(--u) * 8);
+  image-rendering: pixelated;
+}
+/* the arch is in front of a cat walking through (the cats' layer is z 2) */
+.of-arch {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  image-rendering: pixelated;
 }
 .of-playroom {
   position: relative;
   flex: none;
   width: 400px;
   height: 390px;
-  border-radius: 6px;
-  background: var(--pxi-tiles) 0 0 / calc(var(--u) * 8) calc(var(--u) * 8) repeat;
+  background: var(--pxi-playmat) 0 0 / calc(var(--u) * 32) calc(var(--u) * 32) repeat;
   image-rendering: pixelated;
-  border: 2px solid var(--of-lounge-line);
+}
+/* its name hangs on the wall above it, beside the doorway */
+.of-playroom > .of-lounge-name {
+  top: calc(var(--u) * -15);
+  left: calc(var(--u) * 4);
 }
 .of-playroom .of-toy {
   position: absolute;
@@ -774,8 +829,9 @@
   top: calc(var(--u) * 15);
   right: calc(var(--u) * 2);
 }
+/* a little way down: the space just inside the doorway stays clear */
 .of-rod {
-  top: calc(var(--u) * 9);
+  top: calc(var(--u) * 22);
   left: calc(36% + var(--u) * 2);
 }
 .of-lure {

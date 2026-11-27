@@ -192,3 +192,33 @@ type Rect = { x: number; y: number; w: number; h: number };
 const away = (p: { x: number; y: number }, r: Rect) => Math.hypot(Math.max(r.x - p.x, 0, p.x - r.x - r.w), Math.max(r.y - p.y, 0, p.y - r.y - r.h));
 /** 고양이를 놓은 곳의 방: 방 밖(두 방 사이, 책상 쪽)이면 가까운 방 */
 export const dropRoom = (p: { x: number; y: number }, lounge: Rect, play: Rect): RoomName => (away(p, play) < away(p, lounge) ? "play" : "lounge");
+
+type Point = { x: number; y: number };
+/** 두 방 사이 벽의 통로 (화면에서 잰 px) */
+export interface Passage {
+  /** 통로 가운데와, 문틀 폭의 절반 */
+  x: number;
+  half: number;
+  /** 벽의 윗선과 아랫선 */
+  top: number;
+  bottom: number;
+  /** 놀이방(벽 아래)의 왼쪽·오른쪽·아래 끝 */
+  left: number;
+  right: number;
+  end: number;
+}
+
+/**
+ * 벽 너머로 걸어갈 때 거쳐 가는 곳. 놀이방을 드나드는 길은 통로 하나뿐이라, 놀이방 안과 밖을 오가는
+ * 걸음은 통로 앞뒤의 두 점을 지난다 (같은 쪽이면 바로 간다). size는 고양이 크기: 벽 아래쪽 점은
+ * 고양이 그림이 벽을 다 빠져나온 자리다.
+ */
+export function passageRoute(from: Point, to: Point, p: Passage, size: number): Point[] {
+  const upper = { x: p.x, y: p.top - 4 };
+  const lower = { x: p.x, y: p.bottom + size * 0.8 };
+  const inPlay = (q: Point) => q.y > p.bottom && q.y <= p.end + 20 && q.x >= p.left && q.x <= p.right;
+  // 통로 한가운데에서 갈 곳이 바뀌었으면: 가는 쪽 출구로 먼저 빠져나간다
+  if (Math.abs(from.x - p.x) <= p.half && from.y >= upper.y && from.y <= p.bottom) return [inPlay(to) ? lower : upper];
+  if (inPlay(from) === inPlay(to)) return [];
+  return inPlay(to) ? [upper, lower] : [lower, upper];
+}
