@@ -139,6 +139,9 @@ pub struct Settings {
     /// 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id. 없으면 화면이 이름으로 자동 배정한다
     #[serde(default)]
     pub coats: BTreeMap<String, String>,
+    /// 사용자가 지어 준 고양이 이름. 키는 `coats`와 같다. 없으면 화면의 원래 이름
+    #[serde(default)]
+    pub cat_names: BTreeMap<String, String>,
     /// 츄르 1개로 환산되지 않고 남은 토큰 (다음에 더해서 환산한다)
     #[serde(default)]
     pub churu_rest: u64,
@@ -193,6 +196,7 @@ impl Default for Settings {
             churu: 0,
             owned: default_owned(),
             coats: BTreeMap::new(),
+            cat_names: BTreeMap::new(),
             churu_rest: 0,
             rewards: RewardLog::default(),
         }
@@ -213,6 +217,28 @@ pub fn set_coat(s: &mut Settings, member: &str, coat: Option<&str>) -> Result<()
                 return Err("아직 없는 털색이에요. 상점에서 뽑으면 고를 수 있어요".into());
             }
             s.coats.insert(member.into(), c.into());
+        }
+    }
+    Ok(())
+}
+
+/// 고양이 이름의 글자 수 상한. 화면(coats.ts `CAT_NAME_MAX`)과 같아야 한다.
+pub const CAT_NAME_MAX: usize = 12;
+
+/// 팀원 `member`의 고양이 이름을 정한다 (앞뒤 빈칸은 뺀다). `name`이 None이면 원래 이름으로 되돌린다.
+pub fn set_cat_name(s: &mut Settings, member: &str, name: Option<&str>) -> Result<(), String> {
+    if member.is_empty() {
+        return Err("어느 팀원인지 알 수 없어요".into());
+    }
+    match name.map(str::trim) {
+        None => {
+            s.cat_names.remove(member);
+        }
+        Some("") => return Err("이름을 한 글자 이상 적어 주세요".into()),
+        Some(n) if n.chars().count() > CAT_NAME_MAX => return Err(format!("이름은 {CAT_NAME_MAX}자까지 지을 수 있어요")),
+        Some(n) if n.chars().any(char::is_control) => return Err("이름에 쓸 수 없는 글자가 있어요".into()),
+        Some(n) => {
+            s.cat_names.insert(member.into(), n.into());
         }
     }
     Ok(())
@@ -666,6 +692,17 @@ impl Projects {
         Ok(snap)
     }
 
+    /// 고양이 이름 짓기 (`set_cat_name`). 성공하면 저장하고 새 Settings를 돌려준다.
+    pub fn rename_cat(&self, member: &str, name: Option<&str>) -> Result<Settings, String> {
+        let snap = {
+            let mut p = self.prefs.lock().unwrap();
+            set_cat_name(&mut p, member, name)?;
+            p.clone()
+        };
+        self.save_prefs();
+        Ok(snap)
+    }
+
     /// 고양이 뽑기 한 번. 계산·차감·추가·저장을 한 잠금 안에서 하고, 결과를 돌려준다.
     pub fn gacha(&self, rand: &mut dyn FnMut() -> u32) -> Result<GachaPulled, String> {
         let (cat, is_new, snap) = {
@@ -975,6 +1012,14 @@ pub fn prefs_set_coat(app: AppHandle, projects: State<'_, Projects>, member: Str
     Ok(s)
 }
 
+/// 고양이 이름을 짓는다 (`name` null = 원래 이름으로). 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
+#[tauri::command]
+pub fn prefs_set_cat_name(app: AppHandle, projects: State<'_, Projects>, member: String, name: Option<String>) -> Result<Settings, String> {
+    let s = projects.rename_cat(&member, name.as_deref())?;
+    let _ = app.emit("prefs", &s);
+    Ok(s)
+}
+
 /// 고양이 뽑기 1회 (인자 없음). 결과와 저장된 Settings를 돌려주고 "prefs" 이벤트를 보낸다.
 #[tauri::command]
 pub fn gacha_pull(app: AppHandle, projects: State<'_, Projects>) -> Result<GachaPulled, String> {
@@ -1169,6 +1214,20 @@ mod churu_tests {
         assert_eq!(s.coats["p1:worker:W1"], "black");
         set_coat(&mut s, "p1:worker:W1", None).unwrap();
         assert_eq!(s.coats.keys().collect::<Vec<_>>(), vec!["p2:worker:W1"]);
+    }
+
+    #[test]
+    fn cat_name_is_trimmed_limited_and_can_go_back() {
+        let mut s = fresh();
+        assert!(set_cat_name(&mut s, "", Some("콩이")).is_err());
+        assert!(set_cat_name(&mut s, "p1:worker:W1", Some("   ")).is_err());
+        assert!(set_cat_name(&mut s, "p1:worker:W1", Some("가나다라마바사아자차카타파")).unwrap_err().contains("12자"));
+        assert!(set_cat_name(&mut s, "p1:worker:W1", Some("콩\n이")).is_err());
+        assert!(s.cat_names.is_empty());
+        set_cat_name(&mut s, "p1:worker:W1", Some("  가나다라마바사아자차카타 ")).unwrap();
+        assert_eq!(s.cat_names["p1:worker:W1"], "가나다라마바사아자차카타");
+        set_cat_name(&mut s, "p1:worker:W1", None).unwrap();
+        assert!(s.cat_names.is_empty());
     }
 
     #[test]
@@ -1487,6 +1546,17 @@ mod create_tests {
         ps.choose_coat("p1:lead:총괄", Some("black")).unwrap();
         let again: Settings = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(again.coats["p1:lead:총괄"], "black");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cat_name_is_still_there_after_reading_the_settings_file_again() {
+        let (root, mut ps) = scratch();
+        let file = root.join("data/settings.json");
+        ps.settings = Some(file.clone());
+        ps.rename_cat("p1:lead:총괄", Some("대장")).unwrap();
+        let again: Settings = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(again.cat_names["p1:lead:총괄"], "대장");
         let _ = std::fs::remove_dir_all(&root);
     }
 

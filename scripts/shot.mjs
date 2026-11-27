@@ -64,6 +64,11 @@ const SCREENS = {
   grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고, 휴게실·놀이방 사이에 놓아 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
   "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
   "coat-done": "털색 메뉴에서 다른 색을 고른 뒤의 모습",
+  "name-edit": "고양이 우클릭 메뉴에서 '이름 바꾸기'를 눌러 이름을 적는 모습",
+  "name-done": "이름을 바꾼 뒤의 모습 (이름표에 반영)",
+  "name-menu": "이름을 바꾼 고양이를 다시 우클릭한 모습 ('원래 이름으로')",
+  "name-long": "너무 긴 이름을 적고 Enter를 눌렀을 때",
+  "name-hold": "터치로 고양이를 길게 눌러 메뉴를 띄운 모습",
   dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
   account: "계정 화면 (맨 아래에 지금 버전 표시)",
   "account-end": "계정 화면을 맨 아래까지 내린 모습",
@@ -183,10 +188,17 @@ function fakeApi(cmd, args, data) {
     case "install_check":
       return data.install ?? null;
     case "prefs_set_coat": {
-      const coats = { ...data.prefs.coats };
+      const coats = { ...data.prefs?.coats };
       if (args.coat) coats[args.member] = args.coat;
       else delete coats[args.member];
       data.prefs = { ...data.prefs, coats };
+      return data.prefs;
+    }
+    case "prefs_set_cat_name": {
+      const catNames = { ...data.prefs?.catNames }; // 시나리오에 prefs가 없을 수도 있다
+      if (args.name) catNames[args.member] = args.name;
+      else delete catNames[args.member];
+      data.prefs = { ...data.prefs, catNames };
       return data.prefs;
     }
     case "gacha_info":
@@ -466,6 +478,53 @@ async function rightClickCat(page) {
   const box = await ((await resting.count()) ? resting : cats).first().boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.65, { button: "right" });
   await page.getByRole("menu").waitFor({ timeout: 5000 });
+  return box;
+}
+
+/** 이름 바꾸기 시연: 휴게실 고양이의 메뉴에서 이름을 적는다 */
+async function renameCat(page, screen) {
+  const cats = page.locator(".of-cats .cr-mover .critter[data-coat-key]");
+  if (screen === "name-hold") {
+    // 터치(CDP)로 길게 누른다: 손가락을 뗀 뒤에도 메뉴가 남고 작업 화면이 열리지 않아야 한다
+    await cats.first().waitFor({ timeout: 15000 });
+    await page.waitForTimeout(2500);
+    const box = await cats.first().boundingBox();
+    const touch = await page.context().newCDPSession(page);
+    await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height * 0.65 }] });
+    await page.waitForTimeout(800);
+    await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForTimeout(400);
+    const view = await page.evaluate(() => window.__app.getState().view.name);
+    if (!(await page.getByRole("menu").isVisible()) || view !== "main") throw new Error(`길게 누르기 실패 (화면: ${view})`);
+    console.log("  OK   길게 눌러 메뉴 열림");
+    return;
+  }
+  await rightClickCat(page);
+  const key = await page.getByRole("menu").getAttribute("aria-label");
+  await page.getByRole("menuitem", { name: "이름 바꾸기" }).click();
+  if (screen === "name-edit") return page.getByRole("textbox", { name: "새 이름" }).fill("콩떡이");
+  const input = page.getByRole("textbox", { name: "새 이름" });
+  if (screen === "name-long") {
+    await input.fill("아주아주긴고양이이름이에요");
+    await input.press("Enter");
+    return page.getByRole("alert").waitFor({ timeout: 5000 });
+  }
+  // Esc는 입력만 취소한다
+  await input.fill("취소할 이름");
+  await input.press("Escape");
+  await page.getByRole("menuitem", { name: "이름 바꾸기" }).click();
+  await input.fill("콩떡이");
+  await input.press("Enter");
+  await page.getByRole("menu").waitFor({ state: "detached", timeout: 5000 });
+  const tag = page.locator(".of-cats .cr-name, .of-plate").filter({ hasText: "콩떡이" });
+  await tag.first().waitFor({ timeout: 5000 });
+  console.log(`  OK   이름표에 반영됨 (${key})`);
+  if (screen === "name-menu") {
+    // 같은 고양이를 다시 고른다 (휴게실 고양이는 이름표가 없어 메뉴 이름으로 확인한다)
+    await rightClickCat(page);
+    await page.getByRole("menu", { name: "콩떡이 이름·털색 바꾸기" }).waitFor({ timeout: 5000 });
+    await page.getByRole("menuitem", { name: "원래 이름으로" }).waitFor({ timeout: 5000 });
+  }
 }
 
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
@@ -515,6 +574,10 @@ async function openScreen(page, screen, o, data) {
       const other = page.getByRole("menu").locator('[role="menuitemradio"][aria-checked="false"]');
       if (await other.count()) await other.last().click();
     }
+  }
+  if (screen.startsWith("name-")) {
+    if (narrow) await phoneTab("사무실").click();
+    await renameCat(page, screen);
   }
   if (screen.startsWith("shop")) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();

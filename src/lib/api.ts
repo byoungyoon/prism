@@ -360,6 +360,8 @@ export interface Prefs {
   owned: string[];
   /** 사용자가 고른 팀원 털색: "<프로젝트 id>:<직책>:<팀원 이름>" → 털색 id (없으면 자동 배정) */
   coats?: Record<string, string>;
+  /** 지어 준 고양이 이름 (키는 coats와 같다) */
+  catNames?: Record<string, string>;
 }
 
 /** 토큰 말고 방금 받은 츄르 (Rust ChuruReward). streak는 출석일 때의 연속 일수 */
@@ -465,6 +467,8 @@ export const api = {
   buyItem: (id: string) => call<Prefs>("shop_buy", { id }),
   /** 팀원 털색 고르기 (coat null = 자동으로 되돌리기). 가진 털색이 아니면 Korean reason으로 reject */
   setCoat: (member: string, coat: string | null) => call<Prefs>("prefs_set_coat", { member, coat }),
+  /** 고양이 이름 짓기 (name null = 원래 이름으로). 빈 이름·12자 넘는 이름은 Korean reason으로 reject */
+  setCatName: (member: string, name: string | null) => call<Prefs>("prefs_set_cat_name", { member, name }),
   /** 고양이 뽑기 가격과 고양이별 등급·확률 (화면 확률표) */
   gachaInfo: () => call<GachaInfo>("gacha_info"),
   /** 고양이 뽑기 1회: 결과와 새 prefs. 잔액 부족·다 모음이면 Korean reason으로 reject (차감 없음) */

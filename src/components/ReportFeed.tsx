@@ -16,7 +16,7 @@ import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
 import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
 import { CardUsageText } from "./TokenUse";
-import { catName } from "./critters/pixel/coats";
+import { catName, leftName } from "./critters/pixel/coats";
 
 const spring = { type: "spring" as const, stiffness: 260, damping: 28 };
 
@@ -321,7 +321,7 @@ function SubRow({ task, team, onOpen }: { task: Task; team: TeamSnapshot; onOpen
         </span>
       )}
       <span className="min-w-0 flex-auto truncate">{task.title}</span>
-      <span className="shrink-0 text-[11.5px] text-ink-2">{(a && catName(a)) ?? task.who ?? "배정 전"}</span>
+      <span className="shrink-0 text-[11.5px] text-ink-2">{(a && catName(a)) ?? (task.who ? leftName(team.projectId, task.who) : "배정 전")}</span>
       <span className="w-12 shrink-0 text-right text-[11.5px] font-medium" style={{ color: st.problem ? "var(--block-ink)" : "var(--text2)" }}>
         {st.word}
       </span>
@@ -457,7 +457,7 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
             {catName(assignee)} · <span className="font-mono text-[11px]">{modelLabel(assignee.model)}</span>
           </button>
         ) : task.who ? (
-          <span>{task.who}</span>
+          <span>{leftName(project.id, task.who)}</span>
         ) : (
           <span>맡을 사람을 기다려요</span>
         )}
@@ -484,10 +484,10 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
           ) : (
             <p className="m-0 text-[13.5px] leading-relaxed whitespace-pre-wrap select-text">{task.summary}</p>
           )}
-          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{(assignee && catName(assignee)) ?? task.who ?? "작업자"}: {task.summary}</p>}
+          {leadNote && task.summary && <p className="m-0 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2 select-text">{(assignee && catName(assignee)) ?? (task.who ? leftName(project.id, task.who) : "작업자")}: {task.summary}</p>}
         </div>
       )}
-      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={(assignee && catName(assignee)) ?? task.who ?? "작업자"} />}
+      {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={(assignee && catName(assignee)) ?? (task.who ? leftName(project.id, task.who) : "작업자")} />}
       {/* a report waiting for review: 합치기 into the team's branch, or 완료 when there's nothing to merge */}
       <MergeActions project={project} task={task} pick={pick} />
 

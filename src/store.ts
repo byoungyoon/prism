@@ -7,7 +7,7 @@ import { plainAction } from "./lib/plainAction";
 import { inOffice } from "./lib/crew";
 import { workNews } from "./lib/workNews";
 import { api, LOGIN_REQUIRED, type AlertKind, type Account, type Batch, type PresetName, type Project, type Provider, type TeamConfig, type TeamSnapshot, type Usage } from "./lib/api";
-import { catName, setChosenCoats, setOwnedCoats } from "./components/critters/pixel/coats";
+import { catName, setCatNames, setChosenCoats, setOwnedCoats } from "./components/critters/pixel/coats";
 import { DEFAULT_OWNED } from "./lib/shop";
 import type { ChuruReward, GachaPulled, Prefs } from "./lib/api";
 
@@ -93,6 +93,9 @@ interface AppState {
   coats: Record<string, string>;
   /** 팀원 털색 고르기. `coat` null이면 자동 배정으로 되돌린다 */
   setCoat(member: string, coat: string | null): Promise<void>;
+  /** 지어 준 고양이 이름 (Prefs.catNames) */
+  catNames: Record<string, string>;
+  setCatName(member: string, name: string | null): Promise<void>;
   /** the 상점 sheet is open */
   shopOpen: boolean;
   /** rewards waiting to flash beside the 츄르 balance ("+20 출석"), oldest first */
@@ -235,10 +238,12 @@ export const useApp = create<AppState>((set, get) => {
     const coats = p.coats ?? {};
     setOwnedCoats(owned);
     setChosenCoats(coats);
+    const catNames = p.catNames ?? {};
+    setCatNames(catNames);
     // a new coat renames and repaints teammates: every screen showing them draws again
     set((s) => {
-      const same = owned.join() === s.owned.join() && JSON.stringify(coats) === JSON.stringify(s.coats);
-      return { churu: p.churu ?? 0, owned, coats, ...(same ? {} : { teams: Object.fromEntries(Object.entries(s.teams).map(([id, t]) => [id, tagTeam(t)])) }) };
+      const same = owned.join() === s.owned.join() && JSON.stringify(coats) === JSON.stringify(s.coats) && JSON.stringify(catNames) === JSON.stringify(s.catNames);
+      return { churu: p.churu ?? 0, owned, coats, catNames, ...(same ? {} : { teams: Object.fromEntries(Object.entries(s.teams).map(([id, t]) => [id, tagTeam(t)])) }) };
     });
   };
   const releaseGacha = () => {
@@ -278,9 +283,11 @@ export const useApp = create<AppState>((set, get) => {
     churu: 0,
     owned: [...DEFAULT_OWNED],
     coats: {},
+    catNames: {},
     shopOpen: false,
 
     setCoat: guard(async (member: string, coat: string | null) => applyPrefs(await api.setCoat(member, coat))),
+    setCatName: guard(async (member: string, name: string | null) => applyPrefs(await api.setCatName(member, name))),
     openShop: (shopOpen) => set({ shopOpen }),
     rewardNotes: [],
     showReward: (r) =>

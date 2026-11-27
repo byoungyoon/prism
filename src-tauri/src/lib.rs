@@ -254,6 +254,7 @@ pub fn run() {
             alerts::prefs_set_alert,
             projects::shop_buy,
             projects::prefs_set_coat,
+            projects::prefs_set_cat_name,
             projects::gacha_pull,
             projects::gacha_info,
             projects::reward_attend,

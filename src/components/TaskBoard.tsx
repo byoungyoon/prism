@@ -11,7 +11,7 @@ import { ChevronDown } from "./icons";
 import { currentCard, finishedCrew, liveCrew, useDismissed } from "../lib/crew";
 import { MergeActions, MergeAllButton } from "./MergeActions";
 import { TeamUsageBox } from "./TokenUse";
-import { catName } from "./critters/pixel/coats";
+import { catName, givenName } from "./critters/pixel/coats";
 
 const FLOORS: { role: Role; name: string }[] = [
   { role: "lead", name: "총괄" },
@@ -45,7 +45,7 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
     >
       {/* in the tree the indent already takes width, so the name takes only what it needs */}
-      <span className={`${tree ? "max-w-[68px]" : "w-[68px]"} shrink-0 truncate font-medium`}>{a.role === "lead" && multi ? project.name : catName(a)}</span>
+      <span className={`${tree ? "max-w-[68px]" : "w-[68px]"} shrink-0 truncate font-medium`}>{a.role === "lead" && multi ? (givenName(a) ?? project.name) : catName(a)}</span>
       <span className="flex min-w-0 flex-auto items-baseline gap-1.5 text-ink-2">
         {st.task && <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--text)]">{st.task.id}</span>}
         <span className="truncate">{st.task ? st.task.title : a.role === "lead" ? "" : (a.lastNote ?? "")}</span>
@@ -290,7 +290,7 @@ export function TaskBoard() {
                 <button
                   key={`${project.id}-${t.id}`}
                   onClick={() => by && openIn(project.id, { name: "agent", id: by.id })}
-                  title={by ? `${by.name}이(가) 나눈 일` : undefined}
+                  title={by ? `${catName(by)}이(가) 나눈 일` : undefined}
                   className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
                 >
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
