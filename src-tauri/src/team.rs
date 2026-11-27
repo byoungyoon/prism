@@ -122,6 +122,18 @@ pub struct Task {
     /// member is cleared from the team (see `prune_finished`)
     #[serde(default)]
     pub who: Option<String>,
+    /// the checks (tests, build) the report said it ran: "passed" | "failed" (None: none were told)
+    #[serde(default)]
+    pub check: Option<String>,
+    /// screen captures the report named: image paths inside the work copy
+    #[serde(default)]
+    pub shots: Vec<String>,
+    /// the merge commit the user's 적용하기 made, while it can still be taken back
+    #[serde(default)]
+    pub applied: Option<String>,
+    /// the user took the applied work back (되돌리기)
+    #[serde(default)]
+    pub undone: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1997,6 +2009,17 @@ struct Team {
     next_mgr: u8,
     next_lone: u32,
     always_allow: std::collections::HashSet<String>,
+    /// old messages and cards taken out by `trim_history`, waiting to be appended to the team's
+    /// history file on the next save (not part of the saved state itself)
+    archived: Vec<Archived>,
+}
+
+/// One line of a team's history file (`teams/<id>.history.jsonl`): `{"chat":{…}}` or `{"task":{…}}`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Archived {
+    Chat(ChatMsg),
+    Task(Task),
 }
 
 #[derive(Serialize, Clone)]
@@ -2080,6 +2103,13 @@ pub struct TeamManager {
     tokens: Mutex<crate::tokens::Ledger>,
     /// "project/agent" whose long conversation is being handed over to a new one (mid-card) → its state
     handovers: Mutex<HashMap<String, Handover>>,
+    /// notices already sent (or about to be): "project/agent" for a broken member, "project/perm/id"
+    /// for a request left waiting. Cleared when the member shows life or starts again (see `faults`)
+    told: Mutex<HashSet<String>>,
+    /// "project/card" → how many times an AI boss restarted its member (see `faults::MAX_AI_RESTARTS`)
+    restarts: Mutex<HashMap<String, u32>>,
+    /// things the 총괄 couldn't be told because it was off, by project; handed over when it returns
+    missed: Mutex<HashMap<String, Vec<String>>>,
     watchdog: std::sync::Once,
 }
 
@@ -2479,15 +2509,41 @@ const SNAPSHOT_EVENTS: usize = 80;
 /// Finished cards the UI gets (newest first); older ones stay on disk.
 const SNAPSHOT_DONE_TASKS: usize = 30;
 
+/// The team keeps this much conversation (plus any question still waiting for an answer). Older
+/// messages move to the history file: the whole team is written to disk every couple of seconds
+/// while it works, so an endless conversation made every save — and the app — slower over time.
+const CHAT_KEEP: usize = 1000;
+/// Finished cards the team keeps (besides open ones and the ones its conversation and members
+/// point at); older ones move to the history file.
+const DONE_TASKS_KEEP: usize = 300;
+/// Trimming waits for this much extra, so it happens once in a while rather than on every message.
+const TRIM_SLACK: usize = 200;
+
+fn finished_task(t: &Task) -> bool {
+    t.stage == "done" || t.stage == "failed"
+}
+
+/// A message still waiting for the user (or a boss): never trimmed away.
+fn waiting_msg(m: &ChatMsg) -> bool {
+    m.escalation.as_ref().is_some_and(|e| e.answer.is_none()) || m.permission.as_ref().is_some_and(|p| p.answer.is_none())
+}
+
 /// The cards a snapshot carries: everything still open, the newest finished ones, the ones the
 /// shown conversation points at, and the cards those continue (so follow-up chains stay whole).
 fn snapshot_tasks(tasks: &[Task], chat: &[ChatMsg]) -> Vec<Task> {
-    let finished = |t: &Task| t.stage == "done" || t.stage == "failed";
-    let mut done: Vec<&Task> = tasks.iter().filter(|t| finished(t)).collect();
+    let keep = kept_tasks(tasks, chat, SNAPSHOT_DONE_TASKS, std::iter::empty());
+    tasks.iter().filter(|t| keep.contains(t.id.as_str())).cloned().collect()
+}
+
+/// Ids of the cards to keep: open ones, the newest `done_cap` finished ones, the ones `chat` and
+/// `extra` point at, and the cards those continue.
+fn kept_tasks<'a>(tasks: &'a [Task], chat: &'a [ChatMsg], done_cap: usize, extra: impl Iterator<Item = &'a str>) -> HashSet<&'a str> {
+    let mut done: Vec<&Task> = tasks.iter().filter(|t| finished_task(t)).collect();
     done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    let mut keep: HashSet<&str> = done.iter().take(SNAPSHOT_DONE_TASKS).map(|t| t.id.as_str()).collect();
-    keep.extend(tasks.iter().filter(|t| !finished(t)).map(|t| t.id.as_str()));
+    let mut keep: HashSet<&str> = done.iter().take(done_cap).map(|t| t.id.as_str()).collect();
+    keep.extend(tasks.iter().filter(|t| !finished_task(t)).map(|t| t.id.as_str()));
     keep.extend(chat.iter().flat_map(|m| m.task_ids.iter().map(String::as_str)));
+    keep.extend(extra);
     // walk follow-ups back to their first card
     let by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let mut todo: Vec<&str> = keep.iter().copied().collect();
@@ -2498,7 +2554,22 @@ fn snapshot_tasks(tasks: &[Task], chat: &[ChatMsg]) -> Vec<Task> {
             }
         }
     }
-    tasks.iter().filter(|t| keep.contains(t.id.as_str())).cloned().collect()
+    keep
+}
+
+/// Appends trimmed messages and cards to a team's history file, one JSON object per line.
+fn append_history(path: &std::path::Path, lines: &[Archived]) {
+    use std::io::Write;
+    let mut text = String::new();
+    for l in lines {
+        if let Ok(j) = serde_json::to_string(l) {
+            text.push_str(&j);
+            text.push('\n');
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(text.as_bytes());
+    }
 }
 
 fn window_label(id: &str) -> String {
@@ -2670,7 +2741,31 @@ impl Team {
         self.next_msg += 1;
         let task_ids = task_ids_in(&text);
         self.chat.push(ChatMsg { id: self.next_msg, kind: kind.into(), text, task_ids, at: now_ms(), escalation, permission: None });
+        self.trim_history();
         self.next_msg
+    }
+    /// Keep a long-running team light: past `CHAT_KEEP` messages and `DONE_TASKS_KEEP` finished
+    /// cards, the oldest move to `archived` (appended to the history file on the next save).
+    /// Questions still waiting, open cards and cards the kept conversation or members refer to stay.
+    fn trim_history(&mut self) {
+        if self.chat.len() > CHAT_KEEP + TRIM_SLACK {
+            let cut = self.chat.len() - CHAT_KEEP;
+            let mut kept = Vec::with_capacity(CHAT_KEEP + TRIM_SLACK);
+            for (i, m) in std::mem::take(&mut self.chat).into_iter().enumerate() {
+                if i >= cut || waiting_msg(&m) {
+                    kept.push(m);
+                } else {
+                    self.archived.push(Archived::Chat(m));
+                }
+            }
+            self.chat = kept;
+        }
+        if self.tasks.iter().filter(|t| finished_task(t)).count() > DONE_TASKS_KEEP + TRIM_SLACK {
+            let keep: HashSet<String> = kept_tasks(&self.tasks, &self.chat, DONE_TASKS_KEEP, self.agents.iter().filter_map(|a| a.task_id.as_deref())).into_iter().map(String::from).collect();
+            let (kept, gone): (Vec<Task>, Vec<Task>) = std::mem::take(&mut self.tasks).into_iter().partition(|t| keep.contains(&t.id));
+            self.tasks = kept;
+            self.archived.extend(gone.into_iter().map(Archived::Task));
+        }
     }
     fn set_status(&mut self, id: &str, status: &str) {
         if let Some(a) = self.agent_mut(id) {
@@ -2725,15 +2820,13 @@ impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
         let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), sent: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), sent: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), told: Mutex::default(), restarts: Mutex::default(), missed: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
     }
 
     /// Adds the token figures a team's screens show to its snapshot.
     fn with_usage(&self, mut snap: TeamSnapshot) -> TeamSnapshot {
-        let mut usage = self.tokens.lock().unwrap().summary(&snap.project_id);
         // only the cards the team still lists: the snapshot goes out on every change
-        usage.cards.retain(|c| snap.tasks.iter().any(|t| t.id == c.task_id));
-        snap.usage = usage;
+        snap.usage = self.tokens.lock().unwrap().summary(&snap.project_id, snap.tasks.iter().map(|t| t.id.as_str()));
         snap
     }
 
@@ -2777,9 +2870,10 @@ impl TeamManager {
     pub fn flush(&self) {
         let ids: Vec<String> = self.dirty.lock().unwrap().drain().collect();
         for pid in ids {
-            let saved = {
-                let teams = self.teams.lock().unwrap();
-                let Some(t) = teams.get(&pid) else { continue };
+            let (saved, archived) = {
+                let mut teams = self.teams.lock().unwrap();
+                let Some(t) = teams.get_mut(&pid) else { continue };
+                let archived = std::mem::take(&mut t.archived);
                 let prefix = format!("{pid}/");
                 let transcripts = self
                     .transcripts
@@ -2788,7 +2882,7 @@ impl TeamManager {
                     .iter()
                     .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|a| (a.to_string(), v.clone())))
                     .collect();
-                SavedTeam {
+                let saved = SavedTeam {
                     run: t.run.clone(),
                     cwd: t.cwd.clone(),
                     branch: t.branch.clone(),
@@ -2804,10 +2898,15 @@ impl TeamManager {
                     always_allow: t.always_allow.iter().cloned().collect(),
                     transcripts,
                     restarted: t.restarted.clone(),
-                }
+                };
+                (saved, archived)
             };
             let path = self.saved_path(&pid);
             let _ = std::fs::create_dir_all(path.parent().unwrap());
+            // trimmed history first: if the app dies in between, it is at worst written twice, never lost
+            if !archived.is_empty() {
+                append_history(&path.with_extension("history.jsonl"), &archived);
+            }
             if let Ok(text) = serde_json::to_string(&saved) {
                 let tmp = path.with_extension("json.tmp");
                 if std::fs::write(&tmp, text).is_ok() {
@@ -2872,8 +2971,17 @@ impl TeamManager {
                     next_mgr: saved.next_mgr,
                     next_lone: saved.next_lone,
                     always_allow: saved.always_allow.into_iter().collect(),
+                    archived: vec![],
                 },
             );
+            // a file saved before history was trimmed: slim it down now (and save the slimmer one)
+            let mut teams = self.teams.lock().unwrap();
+            if let Some(t) = teams.get_mut(&pid) {
+                t.trim_history();
+                if !t.archived.is_empty() {
+                    self.dirty.lock().unwrap().insert(pid.clone());
+                }
+            }
         }
     }
 
@@ -2903,6 +3011,9 @@ impl TeamManager {
             a.resume_as = None;
         }
         back_to_lounge(&mut team.agents);
+        if let Some(text) = self.lead_catch_up(team) {
+            self.inject(team, "lead", text);
+        }
         team.log(
             match why.as_deref() {
                 Some("update") => "앱이 업데이트로 다시 시작됐다. 팀이 하던 일을 이어서 한다.",
@@ -2938,6 +3049,11 @@ impl TeamManager {
             self.launch_agent(team, aid, None)?;
         }
         team.log(format!("{}이(가) 다시 일을 시작했다.", a.name), None);
+        if aid == "lead" {
+            if let Some(text) = self.lead_catch_up(team) {
+                self.inject(team, "lead", text);
+            }
+        }
         self.emit(team);
         Ok(())
     }
@@ -3006,6 +3122,7 @@ impl TeamManager {
             next_mgr: 0,
             next_lone: 0,
             always_allow: Default::default(),
+            archived: vec![],
         };
         Self::place(&mut team)?;
         for (kind, home) in &homes {
@@ -3150,7 +3267,9 @@ impl TeamManager {
                 if a.status != "done" {
                     a.status = "off".into();
                 }
+                a.stuck = None;
             }
+            self.told.lock().unwrap().retain(|k| !k.starts_with(&format!("{pid}/")));
             let ids: Vec<String> = team.agents.iter().map(|a| a.id.clone()).collect();
             for id in ids {
                 self.kill_driver(pid, &id);
@@ -3204,6 +3323,7 @@ impl TeamManager {
                     if a.status != "done" {
                         a.status = "off".into();
                     }
+                    a.stuck = None;
                 }
                 team.log(if why == "update" { "업데이트를 위해 앱이 다시 시작된다. 하던 일은 다시 켜지면 이어서 한다." } else { "앱이 꺼졌다. 다시 켜지면 하던 일을 이어서 한다." }, None);
                 self.emit(team);
@@ -3549,9 +3669,11 @@ impl TeamManager {
         self.delivered.lock().unwrap().remove(&format!("{pid}/{aid}"));
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
-        // any sign of life clears "응답이 없어요"
-        if let Some(a) = team.agent_mut(aid) {
-            a.stuck = None;
+        // any sign of life clears "응답이 없어요" (the token counts that come with a failed turn aren't one)
+        if !matches!(ev, Event::Context(_) | Event::Tokens { .. }) {
+            if team.agent_mut(aid).is_some_and(|a| a.stuck.take().is_some()) {
+                self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+            }
         }
         match ev {
             Event::Started(sid) => {
@@ -3623,6 +3745,20 @@ impl TeamManager {
                     if a.status != "done" && a.status != "block" && a.status != "off" {
                         a.status = "wait".into();
                         a.status_since = now_ms();
+                    }
+                }
+                // an error turn leaves the card unfinished with nobody working on it: mark it, tell the boss.
+                // (For the 총괄 the mark alone matters: it shows "멈추고 다시" and fails a 묶음 지시.)
+                if error {
+                    let why = format!("오류로 일이 멈췄어요: {}", short(result.as_deref().unwrap_or("알 수 없는 오류"), 200));
+                    let broke = team.agent(aid).is_some_and(|a| a.role == "lead" || crate::faults::on_open_work(a, &team.tasks).is_some() && a.status != "block");
+                    if broke {
+                        if let Some(a) = team.agent_mut(aid) {
+                            a.stuck = Some(why);
+                        }
+                        if role != "lead" {
+                            self.queue_fault(pid, aid);
+                        }
                     }
                 }
                 // the 총괄's answer to "write the hand-over memo": it starts the new conversation, not a chat line
@@ -3730,11 +3866,14 @@ impl TeamManager {
                     Some(0) | None => format!("{name}의 세션이 종료됐다."),
                     Some(c) => format!("{name}의 세션이 종료됐다 (코드 {c}). claude CLI가 설치돼 있는지 확인하세요."),
                 };
-                a.stuck = Some(format!("{name}이(가) 예상치 못하게 꺼졌어요"));
+                // (a failed turn just before may already say why: keep that)
+                a.stuck.get_or_insert_with(|| format!("{name}이(가) 예상치 못하게 꺼졌어요"));
                 let lead = a.role == "lead";
                 team.log(note, Some("block"));
                 if lead {
                     team.say("lead", format!("문제가 생겨 멈췄어요: {name} 프로그램이 꺼졌어요. 아래 '멈추고 다시'를 누르면 하던 대화를 이어서 다시 시작해요."), None);
+                } else {
+                    self.queue_fault(pid, aid);
                 }
             }
         }
@@ -3771,6 +3910,12 @@ impl TeamManager {
             return Ok(format!("{tid}를 하고 있는 {}에게 추가 지시를 바로 전달했어요.", agent.name));
         }
 
+        // work that was taken back is still in the branch's history: merging it again would bring nothing
+        let body = if task.undone {
+            format!("{text}\n(주의: 사용자가 {tid}의 적용을 되돌렸어요. 그 변경이 다시 필요하면 팀 브랜치를 네 브랜치에 merge 한 뒤, 되돌리기 커밋(Revert)을 git revert 해서 살려 두고 작업하세요.)")
+        } else {
+            text.to_string()
+        };
         team.next_task += 1;
         let fid = format!("T-{}", team.next_task);
         let now = now_ms();
@@ -3778,7 +3923,7 @@ impl TeamManager {
         team.tasks.push(Task {
             id: fid.clone(),
             title: short(text, 30),
-            goal: text.into(),
+            goal: body.clone(),
             files: vec![],
             done_when: vec![],
             requested_by: task.requested_by.clone(),
@@ -3792,6 +3937,10 @@ impl TeamManager {
             created_at: now,
             updated_at: now,
             follow_of: Some(tid.into()),
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who,
         });
 
@@ -3854,7 +4003,7 @@ impl TeamManager {
         team.log(format!("{by}가 {tid}에 이어서 {fid}를 {}에게 맡겼다.", agent.name), None);
         if !fresh {
             let branch = team.agent(&aid).and_then(|a| a.branch.clone());
-            let card = prompts::task_card(&fid, &short(text, 30), text, &[], &[], branch.as_deref());
+            let card = prompts::task_card(&fid, &short(text, 30), &body, &[], &[], branch.as_deref());
             self.inject(team, &aid, format!("[Prism 추가 작업 · {tid}에 이어서]\n{card}"));
         }
         Ok(format!("{tid}에 이어서 {fid}를 {}에게 맡겼어요. 끝나면 '[Prism 보고]'가 와요.", agent.name))
@@ -3866,11 +4015,16 @@ impl TeamManager {
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
         let out = self.follow_up(team, tid, text.trim(), true)?;
         team.say("me", format!("{tid}에 이어서: {}", text.trim()), None);
-        // the 총괄 stays in the loop: it reviews and merges when the report comes
+        // the 총괄 stays in the loop. Only with 자동 적용 on does it apply the result itself.
+        let next = if team.project.team.auto_merge {
+            "보고가 오면 평소처럼 확인해 적용(git merge)하고 complete_task 하세요."
+        } else {
+            "보고가 오면 결과만 짧게 알려주세요. 적용은 사용자가 보고 카드의 적용하기 버튼으로 하니 직접 git merge 하거나 complete_task 하지 마세요."
+        };
         self.inject(
             team,
             "lead",
-            format!("[Prism 알림] 사용자가 작업 카드에서 직접 맡겼어요 — {out} 보고가 오면 평소처럼 검토·머지하고 complete_task 하세요. 사용자에게는 접수했다고 한 줄만 답하세요."),
+            format!("[Prism 알림] 사용자가 작업 카드에서 직접 맡겼어요 — {out} {next} 사용자에게는 접수했다고 한 줄만 답하세요."),
         );
         self.emit(team);
         Ok(())
@@ -3969,6 +4123,10 @@ impl TeamManager {
         }
         match self.launch_agent(team, "lead", None) {
             Ok(()) => {
+                let first = match self.lead_catch_up(team) {
+                    Some(more) => format!("{first}\n\n{more}"),
+                    None => first,
+                };
                 self.inject(team, "lead", first);
                 team.log(if memo.is_some() { "총괄 대화를 새로 시작했다 (인수인계 메모 전달)." } else { "총괄 대화를 새로 시작했다 (메모 없이 카드 목록만 전달)." }, None);
             }
@@ -4074,9 +4232,11 @@ impl TeamManager {
             ),
             Err(e) => {
                 if let Some(a) = team.agent_mut(aid) {
-                    a.stuck = Some("새 대화를 시작하지 못했어요".into());
+                    a.stuck = Some(format!("새 대화를 시작하지 못했어요: {}", short(&e, 160)));
+                    a.status = "off".into();
                 }
                 team.log(format!("{name}: 새 대화를 시작하지 못했어요 ({e})."), Some("block"));
+                self.queue_fault(&pid, aid);
             }
         }
     }
@@ -4276,6 +4436,7 @@ impl TeamManager {
         self.settle_stale_members(now);
         self.check_no_reply(now);
         self.close_idle_reviewers(now);
+        self.check_faults(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -4416,12 +4577,234 @@ impl TeamManager {
         Ok(CleanupReport { removed: gone.len(), freed_bytes })
     }
 
+    /// The user's 종료. It is marked off first, so the exit isn't taken for a crash; a member with a
+    /// card left undone shows as broken (with 다시 시작) and its boss hears that the user closed it.
     pub fn kill_agent(&self, pid: &str, aid: &str) {
+        {
+            let mut teams = self.teams.lock().unwrap();
+            if let Some(team) = teams.get_mut(pid) {
+                let unfinished = team.agent(aid).is_some_and(|a| crate::faults::on_open_work(a, &team.tasks).is_some());
+                if let Some(a) = team.agent_mut(aid).filter(|a| a.status != "done" && a.rest_since.is_none()) {
+                    a.status = "off".into();
+                    a.status_since = now_ms();
+                    a.stuck = unfinished.then(|| crate::faults::KILLED_BY_USER.to_string());
+                }
+                if unfinished {
+                    self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+                    self.queue_fault(pid, aid);
+                }
+                self.emit(team);
+            }
+        }
         self.kill_driver(pid, aid);
         let teams = self.teams.lock().unwrap();
         if let Some(pty) = teams.get(pid).and_then(|t| t.agent(aid)).and_then(|a| a.pty_id) {
             self.pty.kill(pty);
         }
+    }
+
+    // ── broken members (see `faults`) ─────────────────
+
+    /// `aid` was just marked broken: its boss is told once, after a moment (so the failed turn and the
+    /// exit that follows it make one notice).
+    fn queue_fault(&self, pid: &str, aid: &str) {
+        if !self.told.lock().unwrap().insert(format!("{pid}/{aid}")) {
+            return;
+        }
+        let app = self.app.clone();
+        let (pid, aid) = (pid.to_string(), aid.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(crate::faults::GATHER);
+            if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                m.tell_fault(&pid, &aid);
+            }
+        });
+    }
+
+    fn tell_fault(&self, pid: &str, aid: &str) {
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        // recovered, finished or restarted meanwhile: nothing to say
+        let found = team.agent(aid).filter(|a| crate::faults::is_broken(a, &team.tasks)).and_then(|a| {
+            let t = team.tasks.iter().find(|t| Some(&t.id) == a.task_id.as_ref())?;
+            Some((a.name.clone(), a.parent_id.clone(), t.id.clone(), t.title.clone(), a.stuck.clone()?))
+        });
+        let Some((name, parent, tid, title, reason)) = found else {
+            self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+            return;
+        };
+        team.log(format!("고장: {name} · {tid} — {}", short(&reason, 80)), Some("block"));
+        let msg = crate::faults::notice(&name, &tid, &short(&title, 40), &reason);
+        self.tell_boss(team, parent.as_deref(), Some(&tid), msg);
+        self.emit(team);
+    }
+
+    /// Sends `msg` to `boss` if it can take it, else to the 총괄. A 총괄 that is off hears it when it returns.
+    fn tell_boss(&self, team: &mut Team, boss: Option<&str>, card: Option<&str>, msg: String) {
+        let pid = team.project.id.clone();
+        let running = |a: &str| self.drivers.lock().unwrap().contains_key(&format!("{pid}/{a}"));
+        let to = boss.filter(|b| *b != "lead" && running(b)).unwrap_or("lead").to_string();
+        // while the 총괄 writes its hand-over memo, anything sent to it is lost with the old conversation
+        let busy_renewing = to == "lead" && self.renewing.lock().unwrap().contains_key(&pid);
+        let up = running(&to) || team.agent(&to).is_some_and(|a| a.pty_id.is_some());
+        if !busy_renewing && up {
+            if let Some(card) = card {
+                self.report_turns.lock().unwrap().insert(format!("{pid}/{to}"), card.to_string());
+            }
+            if self.inject(team, &to, msg.clone()) {
+                return;
+            }
+        }
+        if to == "lead" {
+            self.missed.lock().unwrap().entry(pid).or_default().push(msg);
+        }
+    }
+
+    /// What a 총괄 that just started (again) should know: notices it missed and members still broken.
+    fn lead_catch_up(&self, team: &Team) -> Option<String> {
+        let missed = self.missed.lock().unwrap().remove(&team.project.id).unwrap_or_default();
+        let broken = crate::faults::broken_lines(&team.agents, &team.tasks);
+        let mut out = vec![];
+        if !missed.is_empty() {
+            out.push(format!("[꺼져 있는 동안 온 알림]\n{}", missed.join("\n\n")));
+        }
+        if !broken.is_empty() {
+            out.push(format!("[지금 멈춰 있는 팀원]\n{}\n필요하면 restart_agent로 다시 시작하세요. 사용량 한도·로그인 문제거나 사용자가 끈 팀원은 사용자에게 먼저 알려주세요.", broken.join("\n")));
+        }
+        (!out.is_empty()).then(|| format!("[Prism 고장 알림]\n{}", out.join("\n\n")))
+    }
+
+    /// The watchdog's part: members that broke without an event saying so, long silences, and requests
+    /// left waiting on the user.
+    fn check_faults(&self, now: u64) {
+        let running: HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+        let handing: HashSet<String> = self.handovers.lock().unwrap().keys().cloned().collect();
+        let mut teams = self.teams.lock().unwrap();
+        for team in teams.values_mut() {
+            let pid = team.project.id.clone();
+            // a team nobody is in has nothing to watch
+            if team.agent("lead").is_none_or(|a| a.status == "off") && !running.iter().any(|k| k.starts_with(&format!("{pid}/"))) {
+                continue;
+            }
+            let alive = |a: &str| running.contains(&format!("{pid}/{a}")) || handing.contains(&format!("{pid}/{a}"));
+            let found = crate::faults::silent_faults(&team.agents, &team.tasks, now, &alive);
+            let changed = !found.is_empty();
+            for (aid, why) in found {
+                if let Some(a) = team.agent_mut(&aid) {
+                    a.stuck = Some(why);
+                    if !alive(&aid) {
+                        a.status = "off".into();
+                        a.status_since = now;
+                    }
+                }
+                self.queue_fault(&pid, &aid);
+            }
+            for aid in crate::faults::long_silent(&team.agents, &team.tasks, now) {
+                self.queue_fault(&pid, &aid);
+            }
+            let waiting: Vec<(u64, String, String)> = team
+                .chat
+                .iter()
+                .filter(|m| now.saturating_sub(m.at) > crate::faults::PERMISSION_WAIT_MS)
+                .filter_map(|m| m.permission.as_ref().filter(|p| p.answer.is_none() && p.decider.is_none() && p.agent_id != "lead").map(|p| (m.id, p.agent_id.clone(), p.detail.clone())))
+                .filter(|(id, ..)| self.perm_waiters.lock().unwrap().contains_key(id))
+                .collect();
+            for (id, aid, detail) in waiting {
+                if self.told.lock().unwrap().insert(format!("{pid}/perm/{id}")) {
+                    let parent = team.agent(&aid).and_then(|a| a.parent_id.clone());
+                    let msg = crate::faults::permission_notice(&team.name_of(&aid), &short(&detail, 80));
+                    self.tell_boss(team, parent.as_deref(), None, msg);
+                    self.emit(team);
+                }
+            }
+            if changed {
+                self.emit(team);
+            }
+        }
+    }
+
+    /// Starts a broken (or hung) member again on the same card, folder and branch: its own
+    /// conversation when it's small enough, else (or with `fresh`) a new one that gets the card again.
+    /// `by`: the AI boss asking (limited per card), or None for the user.
+    fn restart_member(&self, team: &mut Team, aid: &str, note: Option<&str>, fresh: bool, by: Option<&str>) -> Result<String, String> {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let a = team.agent(aid).cloned().ok_or("그런 팀원이 없어요.")?;
+        let card_key = format!("{pid}/{}", a.task_id.as_deref().unwrap_or(""));
+        let done = self.restarts.lock().unwrap().get(&card_key).copied().unwrap_or(0);
+        crate::faults::restart_check(&a, &team.tasks, by.is_some(), done)?;
+        if self.handovers.lock().unwrap().contains_key(&key) {
+            return Err("이 팀원은 지금 대화를 이어가는 중이에요. 잠시 뒤에 다시 해 주세요.".into());
+        }
+        let tid = a.task_id.clone().ok_or("맡은 작업 카드가 없어요")?;
+        // requests it was waiting on belong to the program that goes away now
+        let pending: Vec<u64> = team.chat.iter().filter(|m| m.permission.as_ref().is_some_and(|p| p.agent_id == aid && p.answer.is_none())).map(|m| m.id).collect();
+        for id in pending {
+            self.resolve_permission(team, id, "timeout", "다시 시작")?;
+        }
+        // off first, so the old program's exit isn't taken for a crash
+        team.set_status(aid, "off");
+        self.kill_driver(&pid, aid);
+        if let Some(pty) = a.pty_id {
+            self.pty.kill(pty);
+        }
+        self.delivered.lock().unwrap().remove(&key);
+        self.told.lock().unwrap().remove(&key);
+        let resume = (!fresh && !a.session_id.is_empty() && a.context < FRESH_CONTEXT).then(|| a.session_id.clone());
+        let message = crate::faults::restart_message(a.stuck.as_deref(), note, resume.is_none());
+        let now = now_ms();
+        let (Some(m), Some(t)) = (team.agents.iter_mut().find(|x| x.id == aid), team.tasks.iter_mut().find(|x| x.id == tid)) else {
+            return Err("담당 카드나 팀원을 찾을 수 없어요".into());
+        };
+        reopen_on_card(m, t, now);
+        m.pty_id = None;
+        m.thought = None;
+        m.pending.clear();
+        if resume.is_none() {
+            start_fresh_conversation(m, message.clone());
+        }
+        let launched = match &resume {
+            Some(sid) => self.launch_agent(team, aid, Some(sid.clone())).or_else(|_| self.launch_agent(team, aid, None)),
+            None => self.launch_agent(team, aid, None),
+        };
+        if let Err(e) = launched {
+            if let Some(m) = team.agent_mut(aid) {
+                m.status = "off".into();
+                m.status_since = now_ms();
+                m.stuck = Some(format!("다시 시작하지 못했어요: {}", short(&e, 160)));
+            }
+            self.emit(team);
+            return Err(format!("다시 시작하지 못했어요: {e}"));
+        }
+        // a new conversation got the card (with the note) as its first message
+        if resume.is_some() {
+            self.inject(team, aid, message);
+        }
+        if by.is_some() {
+            *self.restarts.lock().unwrap().entry(card_key).or_default() += 1;
+        } else {
+            self.restarts.lock().unwrap().remove(&card_key);
+        }
+        let name = team.name_of(aid);
+        team.log(format!("{}이(가) {name}을(를) 다시 시작했다 ({tid}).", by.unwrap_or("사용자")), None);
+        Ok(format!("{name}을(를) {tid}에서 다시 시작했어요{}. 끝나면 '[Prism 보고]'가 와요.", if resume.is_some() { " (하던 대화를 이어서)" } else { " (새 대화)" }))
+    }
+
+    /// The screen's 다시 시작 on a broken member. Its boss is told, so it doesn't restart it again.
+    pub fn restart_agent(&self, pid: &str, aid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
+        if team.agent("lead").is_none_or(|a| a.status == "off") {
+            return Err("팀이 출근한 뒤에 다시 시작할 수 있어요.".into());
+        }
+        self.restart_member(team, aid, None, false, None)?;
+        let name = team.name_of(aid);
+        let parent = team.agent(aid).and_then(|a| a.parent_id.clone());
+        let card = team.agent(aid).and_then(|a| a.task_id.clone()).unwrap_or_default();
+        let msg = format!("[Prism 알림] 사용자가 멈춘 {name}({card})을(를) 다시 시작했어요. 따로 할 일은 없어요. 이 알림에는 — 한 글자로만 답하세요.");
+        self.tell_boss(team, parent.as_deref(), None, msg);
+        self.emit(team);
+        Ok(())
     }
 
     pub fn set_usage(&self, list: Vec<Usage>) {
@@ -4579,8 +4962,14 @@ impl TeamManager {
                 _ => "",
             });
         }
-        if answer != "timeout" {
+        // answered or timed out, the member goes on either way — unless it's still waiting for another answer
+        let still_waiting = team.chat.iter().any(|m| {
+            m.permission.as_ref().is_some_and(|p| p.agent_id == aid && p.answer.is_none()) || m.escalation.as_ref().is_some_and(|e| e.agent_id == aid && e.answer.is_none())
+        });
+        if !still_waiting && team.agent(&aid).is_some_and(|a| a.status == "block") {
             team.set_status(&aid, "work");
+        }
+        if answer != "timeout" {
             let name = team.name_of(&aid);
             team.log(format!("{by}가 {name}의 요청을 {}했다: {}", if answer == "deny" { "거부" } else { "허락" }, short(&detail, 40)), None);
         }
@@ -4703,14 +5092,16 @@ impl TeamManager {
             "inputSchema": { "type": "object", "properties": { "agent": { "type": "string" }, "message": { "type": "string" } }, "required": ["agent", "message"] }
         });
         let complete = json!({
-            "name": "complete_task", "description": "하위 작업을 검토·머지한 뒤 완료 처리한다. 해당 에이전트 세션이 정리된다.",
+            "name": "complete_task", "description": "하위 작업을 검토·적용한 뒤 완료 처리한다. 해당 에이전트 세션이 정리된다.",
             "inputSchema": { "type": "object", "properties": { "task_id": { "type": "string" }, "note": { "type": "string" } }, "required": ["task_id"] }
         });
         let report = json!({
             "name": "report", "description": "맡은 작업 카드의 결과를 상위에 보고한다.",
             "inputSchema": { "type": "object", "properties": {
                 "status": { "type": "string", "enum": ["done", "failed"] },
-                "summary": { "type": "string", "description": "3줄 이내 요약" }
+                "summary": { "type": "string", "description": "3줄 이내 요약. 첫 두 줄은 무엇이 바뀌었는지 개발을 모르는 사람도 알 수 있게" },
+                "check": { "type": "string", "enum": ["passed", "failed", "none"], "description": "테스트·빌드·타입 검사 결과. 돌리지 않았으면 none" },
+                "shots": { "type": "array", "items": { "type": "string" }, "description": "바뀐 화면을 찍은 이미지 파일 경로 (네 작업 폴더 안, 최대 4장). 화면이 안 바뀌었으면 생략" }
             }, "required": ["status", "summary"] }
         });
         let escalate = json!({
@@ -4719,6 +5110,15 @@ impl TeamManager {
                 "question": { "type": "string" },
                 "options": { "type": "array", "items": { "type": "string" }, "description": "선택지 (최대 3개)" }
             }, "required": ["question"] }
+        });
+        let restart = json!({
+            "name": "restart_agent",
+            "description": "고장 났거나 멈춘 하위 에이전트를 같은 카드·같은 작업 폴더에서 다시 시작한다. 하던 대화를 이어가고, 대화가 너무 길면 새 대화에 카드를 다시 준다. 열린(진행 중·검토 중) 카드만 되고, 한 카드에 3번까지. 사용량 한도·로그인 문제에는 쓰지 말고 사용자에게 알린다.",
+            "inputSchema": { "type": "object", "properties": {
+                "agent": { "type": "string", "description": "팀원 이름 (예: W1)" },
+                "note": { "type": "string", "description": "다시 시작하며 전할 말 (선택)" },
+                "fresh": { "type": "boolean", "description": "true면 이전 대화를 버리고 새 대화로. 같은 오류가 반복될 때만" }
+            }, "required": ["agent"] }
         });
         // used by Claude Code itself (--permission-prompt-tool), not by the model
         let approve = json!({
@@ -4739,8 +5139,8 @@ impl TeamManager {
             }, "required": ["decision"] }
         });
         match role.as_str() {
-            "lead" => vec![delegate, list, message, complete, decide, approve],
-            "mgr" => vec![delegate, list, message, complete, report, escalate, decide, approve],
+            "lead" => vec![delegate, list, message, complete, restart, decide, approve],
+            "mgr" => vec![delegate, list, message, complete, restart, report, escalate, decide, approve],
             "worker" => vec![report, escalate, approve],
             _ => vec![],
         }
@@ -4790,10 +5190,21 @@ impl TeamManager {
                     created_at: now,
                     updated_at: now,
                     follow_of: None,
+                    check: None,
+                    shots: vec![],
+                    applied: None,
+                    undone: false,
                     who: None,
                 });
                 team.log(format!("{}이(가) {id} \"{}\"를 만들었다.", me.name, short(&s("title").unwrap_or_default(), 30)), None);
-                self.process_queue(team);
+                let failed = self.start_queued(team);
+                for (tid, parent, why) in failed.iter().filter(|f| f.0 != id) {
+                    self.tell_boss(team, Some(parent), Some(tid), start_failed_notice(tid, why));
+                }
+                if let Some((_, _, why)) = failed.iter().find(|f| f.0 == id) {
+                    self.emit(team);
+                    return Err(format!("{id}의 작업자를 시작하지 못했어요: {why}. 카드는 실패로 남았어요. 같은 문제가 반복되면 사용자에게 쉬운 말로 알려주세요."));
+                }
                 let t = team.tasks.iter().find(|t| t.id == id).unwrap();
                 match &t.assignee {
                     Some(a) => format!("{id} 배정 → {} ({}). 끝나면 '[Prism 보고]'가 옵니다. 기다리지 말고 다음 일을 하세요.", team.name_of(a), team.agent(a).map(|x| x.model.clone()).unwrap_or_default()),
@@ -4849,7 +5260,8 @@ impl TeamManager {
                 }
             }
             "list_tasks" => {
-                task_lines(team)
+                let broken = crate::faults::broken_lines(&team.agents, &team.tasks);
+                if broken.is_empty() { task_lines(team) } else { format!("{}\n\n[멈춰 있는 팀원 — restart_agent로 다시 시작할 수 있어요]\n{}", task_lines(team), broken.join("\n")) }
             }
             "message_agent" => {
                 let target = s("agent").ok_or("agent 필요")?;
@@ -4868,6 +5280,21 @@ impl TeamManager {
                     Delivery::Reopen => format!("{name}에게 전달했어요. 끝났던 카드를 다시 진행하게 했어요. 끝나면 '[Prism 보고]'가 와요."),
                 }
             }
+            "restart_agent" => {
+                if me.role != "lead" && me.role != "mgr" {
+                    return Err("팀원을 다시 시작할 수 있는 건 총괄과 팀장뿐이에요".into());
+                }
+                let target = s("agent").ok_or("agent 필요")?;
+                let running: HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+                let alive = |a: &str| running.contains(&format!("{pid}/{a}"));
+                let target = member_by_name(&team.agents, &team.tasks, &target, &alive).ok_or("그런 에이전트가 없어요")?;
+                // a 팀장 restarts only the members under it
+                if target == aid || (me.role == "mgr" && !team.agent(&target).is_some_and(|a| a.parent_id.as_deref() == Some(aid))) {
+                    return Err("네 아래 팀원만 다시 시작할 수 있어요".into());
+                }
+                let fresh = args.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+                self.restart_member(team, &target, s("note").as_deref(), fresh, Some(&me.name))?
+            }
             "complete_task" => {
                 let tid = s("task_id").ok_or("task_id 필요")?;
                 let log = format!("{}이(가) {tid}를 완료 처리했다.{}", me.name, s("note").map(|n| format!(" {}", short(&n, 40))).unwrap_or_default());
@@ -4879,7 +5306,11 @@ impl TeamManager {
                 let ok = s("status").as_deref() != Some("failed");
                 let summary = s("summary").unwrap_or_default();
                 let branch = me.branch.clone();
+                let check = s("check").filter(|c| c == "passed" || c == "failed");
+                let shots = report_shots(&me.cwd, &v("shots"));
                 if let Some(t) = team.task_mut(&tid) {
+                    t.check = check;
+                    t.shots = shots;
                     t.stage = if ok { "review".into() } else { "failed".into() };
                     t.summary = Some(summary.clone());
                     t.branch = branch.clone();
@@ -4901,12 +5332,12 @@ impl TeamManager {
                     let auto = team.project.team.auto_merge && to_lead;
                     let mut msg = format!("[Prism 보고] {tid} ({}) {}: {summary}", me.name, if ok { "완료" } else { "실패" });
                     if closed {
-                        msg += " — 바뀐 파일이 없어 이미 완료 처리했어요. 합치거나 complete_task 할 필요 없이 사용자에게 결과만 알려주세요.";
+                        msg += " — 바뀐 파일이 없어 이미 완료 처리했어요. 적용하거나 complete_task 할 필요 없이 사용자에게 결과만 알려주세요.";
                     } else if let Some(b) = branch {
                         if auto {
                             msg += &format!(" — 브랜치 {b} 를 확인한 뒤 사용자에게 묻지 말고 팀 브랜치에 git merge 하고 complete_task(\"{tid}\")를 호출하세요. 충돌이나 검사 실패가 있을 때만 사용자에게 물어보세요.");
                         } else if to_lead {
-                            msg += " — 사용자가 화면의 합치기 버튼으로 합칠 거예요. 직접 합치거나 complete_task 하지 말고 결과만 알려주세요.";
+                            msg += " — 사용자가 보고 카드의 적용하기 버튼으로 적용할 거예요. 직접 git merge 하거나 complete_task 하지 말고, '적용할까요?'라고 묻지도 말고, 무엇이 바뀌었는지 1~2줄만 알려주세요.";
                         } else {
                             msg += &format!(" — 브랜치 {b} 를 확인·머지한 뒤 complete_task(\"{tid}\")를 호출하세요.");
                         }
@@ -4919,7 +5350,9 @@ impl TeamManager {
                         self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
                     }
                     team.set_status(&parent, "work");
-                    self.inject(team, &parent, msg);
+                    if !self.inject(team, &parent, msg.clone()) && to_lead {
+                        self.missed.lock().unwrap().entry(team.project.id.clone()).or_default().push(msg);
+                    }
                 }
                 "보고를 전달했어요. 이제 멈추고 기다리세요.".into()
             }
@@ -5010,57 +5443,86 @@ impl TeamManager {
         }
     }
 
-    /// The user's 합치기: each card's branch goes into the team's branch, one after another. A clean
+    /// The user's 적용하기: each card's branch goes into the team's branch, one after another. A clean
     /// merge completes the card; a conflict is taken back out and handed to the 총괄 to resolve.
     pub fn merge_cards(&self, pid: &str, tids: &[String]) -> Result<Vec<MergeOutcome>, String> {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
-        let into = team.branch.clone().ok_or("팀 브랜치가 없어서 합칠 수 없어요")?;
-        // the merge happens where the team's branch is checked out, with nothing unsaved in the way
-        let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
-        if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
-            return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
-        }
-        if !sys::changes(&dir).is_empty() {
-            return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
-        }
+        let (dir, into) = ready_dir(team)?;
         let out = tids.iter().map(|tid| self.merge_card(team, &dir, &into, tid)).collect();
         self.emit(team);
         Ok(out)
+    }
+
+    /// 되돌리기 on work the user applied: the merge is undone by a new commit (history stays). If the
+    /// same lines changed again since, nothing is touched.
+    pub fn undo_card(&self, pid: &str, tid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let sha = team.tasks.iter().find(|t| t.id == tid).and_then(|t| t.applied.clone()).ok_or("되돌릴 수 있는 적용이 없어요")?;
+        let (dir, _) = ready_dir(team)?;
+        git_undo(&dir, &sha)?;
+        if let Some(t) = team.task_mut(tid) {
+            t.applied = None;
+            t.undone = true;
+            t.updated_at = now_ms();
+        }
+        team.log(format!("사용자가 {tid}의 적용을 되돌렸다."), None);
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 적용했던 {tid}를 되돌렸어요. 이 알림에는 — 한 글자로만 답하세요."));
+        self.emit(team);
+        Ok(())
     }
 
     fn merge_card(&self, team: &mut Team, dir: &str, into: &str, tid: &str) -> MergeOutcome {
         let outcome = |result: &str, message: String| MergeOutcome { task_id: tid.into(), result: result.into(), message };
         let Some(t) = team.tasks.iter().find(|t| t.id == tid) else { return outcome("failed", "그런 작업 카드가 없어요".into()) };
         if t.stage != "review" {
-            return outcome("failed", "합치기를 기다리는 보고만 합칠 수 있어요".into());
+            return outcome("failed", "적용을 기다리는 보고만 적용할 수 있어요".into());
         }
-        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "합칠 브랜치가 없어요".into()) };
+        // a redo works on the same branch: applying the older report would take in its half-done work
+        if let Some(next) = redo_of(&team.tasks, tid) {
+            return outcome("failed", format!("{next}에서 다시 하고 있어요. 그 보고에서 적용해 주세요."));
+        }
+        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "적용할 변경이 없어요".into()) };
         match merge_scope(dir, into, &branch) {
-            Ok((0, _)) => return outcome("nothing", "합칠 변경이 없어요".into()),
+            Ok((0, _)) => return outcome("nothing", "적용할 변경이 없어요".into()),
             Ok(_) => {}
             Err(e) => return outcome("failed", e),
         }
         match git_merge(dir, &branch) {
             Merge::Merged => {
-                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 합쳐 완료 처리했다.")) {
+                let sha = sys::git(dir, &["rev-parse", "HEAD"]).ok();
+                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 적용해 완료 처리했다.")) {
                     return outcome("failed", e);
                 }
-                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 합쳤어요. 이 알림에는 — 한 글자로만 답하세요."));
-                outcome("merged", format!("{tid}를 합쳤어요."))
+                if let Some(t) = team.task_mut(tid) {
+                    t.applied = sha;
+                }
+                // the earlier reports this one redid came in with it
+                let mut up = team.tasks.iter().find(|t| t.id == tid).and_then(|t| t.follow_of.clone());
+                while let Some(id) = up {
+                    let Some(t) = team.tasks.iter().find(|t| t.id == id) else { break };
+                    up = t.follow_of.clone();
+                    let in_too = t.stage == "review" && card_branch(team, t).is_some_and(|b| matches!(merge_scope(dir, into, &b), Ok((0, _))));
+                    if in_too {
+                        let _ = self.finish_card(team, &id, format!("{id}는 {tid}와 함께 적용됐다."));
+                    }
+                }
+                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 적용했어요. 이 알림에는 — 한 글자로만 답하세요."));
+                outcome("merged", "적용했어요".into())
             }
             Merge::Conflict => {
-                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 합치기를 취소했다."), Some("block"));
+                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 적용을 취소했다."), Some("block"));
                 let told = self.inject(team, "lead", format!(
-                    "[Prism 알림] 사용자가 {tid}를 합치려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 합치기를 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
+                    "[Prism 알림] 사용자가 {tid}를 적용하려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 적용을 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
                 ));
                 if told {
                     outcome("conflict", "겹치는 부분이 있어 총괄에게 맡겼어요.".into())
                 } else {
-                    outcome("conflict", "겹치는 부분이 있어 합치지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
+                    outcome("conflict", "겹치는 부분이 있어 적용하지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
                 }
             }
-            Merge::Failed(e) => outcome("failed", format!("합치지 못했어요: {e}")),
+            Merge::Failed(e) => outcome("failed", format!("적용하지 못했어요: {e}")),
         }
     }
 
@@ -5073,13 +5535,21 @@ impl TeamManager {
             return Err("보고가 온 카드만 완료할 수 있어요".into());
         }
         self.finish_card(team, tid, format!("사용자가 {tid}를 완료 처리했다."))?;
-        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(합칠 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(적용할 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
         self.emit(team);
         Ok(())
     }
 
-    /// Starts queued cards while the role and team limits allow.
+    /// Starts queued cards while the role and team limits allow; whoever asked hears of one that couldn't start.
     fn process_queue(&self, team: &mut Team) {
+        for (tid, parent, why) in self.start_queued(team) {
+            self.tell_boss(team, Some(&parent), Some(&tid), start_failed_notice(&tid, &why));
+        }
+    }
+
+    /// `process_queue` without the notices: returns the cards that couldn't start `(card, requester, why)`.
+    fn start_queued(&self, team: &mut Team) -> Vec<(String, String, String)> {
+        let mut failed = vec![];
         let cfg = team.project.team.clone();
         let queued: Vec<(String, String, String)> = team
             .tasks
@@ -5088,6 +5558,7 @@ impl TeamManager {
             .map(|t| (t.id.clone(), t.role.clone(), t.requested_by.clone()))
             .collect();
         for (tid, role, parent) in queued {
+            let asked_by = parent.clone();
             let max = if role == "mgr" { cfg.managers.max } else { cfg.workers.max } as usize;
             let busy = team.active("mgr") + team.active("worker");
             if team.active(&role) >= max || busy >= cfg.concurrent as usize {
@@ -5120,10 +5591,16 @@ impl TeamManager {
                         t.summary = Some(format!("에이전트 시작 실패: {e}"));
                     }
                     team.log(format!("{tid} 에이전트 시작 실패: {}", short(&e, 60)), Some("block"));
+                    failed.push((tid, asked_by, short(&e, 200)));
                 }
             }
         }
+        failed
     }
+}
+
+fn start_failed_notice(tid: &str, why: &str) -> String {
+    format!("[Prism 고장 알림] {tid}의 작업자를 시작하지 못해 카드가 실패했어요: {why}\n원인을 확인한 뒤 필요하면 다시 맡기고, 해결할 수 없으면 사용자에게 쉬운 말로 알려주세요.")
 }
 
 /// One short line for a finished tool call, for the live activity feed.
@@ -5340,6 +5817,11 @@ pub fn agent_resume(teams: Teams<'_>, project_id: String, agent_id: String) -> R
 }
 
 #[tauri::command]
+pub fn agent_restart(teams: Teams<'_>, project_id: String, agent_id: String) -> Result<(), String> {
+    teams.restart_agent(&project_id, &agent_id)
+}
+
+#[tauri::command]
 pub fn usage_get(teams: Teams<'_>) -> Vec<Usage> {
     teams.usage.lock().unwrap().values().cloned().collect()
 }
@@ -5514,7 +5996,7 @@ pub struct MergeCheck {
     pub files: usize,
 }
 
-/// One card's outcome of 합치기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
+/// One card's outcome of 적용하기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeOutcome {
@@ -5526,6 +6008,57 @@ pub struct MergeOutcome {
 /// The branch a card's work is on: the card's own, else its member's.
 fn card_branch(team: &Team, t: &Task) -> Option<String> {
     t.branch.clone().or_else(|| t.assignee.as_deref().and_then(|a| team.agent(a)).and_then(|a| a.branch.clone()))
+}
+
+/// Where the team's branch is checked out, with nothing unsaved in the way: (folder, branch).
+fn ready_dir(team: &Team) -> Result<(String, String), String> {
+    let into = team.branch.clone().ok_or("팀 작업 공간이 없어서 적용할 수 없어요")?;
+    let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
+    if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
+        return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
+    }
+    if !sys::changes(&dir).is_empty() {
+        return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
+    }
+    Ok((dir, into))
+}
+
+/// The newest unfinished follow-up of a card (directly or further down), if any.
+fn redo_of(tasks: &[Task], tid: &str) -> Option<String> {
+    let after = |t: &Task| {
+        let mut up = t.follow_of.as_deref();
+        for _ in 0..tasks.len() {
+            match up {
+                Some(id) if id == tid => return true,
+                Some(id) => up = tasks.iter().find(|x| x.id == id).and_then(|x| x.follow_of.as_deref()),
+                None => break,
+            }
+        }
+        false
+    };
+    tasks.iter().rev().find(|t| matches!(t.stage.as_str(), "queued" | "running" | "review") && after(t)).map(|t| t.id.clone())
+}
+
+/// The most screen captures one report keeps.
+const REPORT_SHOTS_MAX: usize = 4;
+
+/// The captures a report named that really are images inside the member's work copy, as paths relative to it.
+fn report_shots(cwd: &str, named: &[String]) -> Vec<String> {
+    if !sys::is_work_copy(cwd) {
+        return vec![];
+    }
+    let root = std::path::Path::new(cwd);
+    named
+        .iter()
+        .filter_map(|p| {
+            let p = std::path::Path::new(p.trim());
+            let rel = rel_path(&p.strip_prefix(root).unwrap_or(p).to_string_lossy()).ok()?;
+            let name = rel.to_string_lossy().replace('\\', "/");
+            let image = [".png", ".jpg", ".jpeg", ".webp"].iter().any(|x| name.to_lowercase().ends_with(x));
+            (image && matches!(disk_file(root, &rel), Ok(Some(_)))).then_some(name)
+        })
+        .take(REPORT_SHOTS_MAX)
+        .collect()
 }
 
 /// Commits on `branch` that `into` doesn't have yet, and the files they change (outside `.prism/`).
@@ -5550,7 +6083,8 @@ enum Merge {
 }
 
 fn git_merge(dir: &str, branch: &str) -> Merge {
-    match sys::git(dir, &["merge", "--no-edit", branch]) {
+    // always a merge commit, so 되돌리기 can take back exactly this one
+    match sys::git(dir, &["merge", "--no-ff", "--no-edit", branch]) {
         Ok(_) => Merge::Merged,
         Err(e) => {
             // a conflict leaves MERGE_HEAD behind; any other refusal leaves nothing to undo
@@ -5560,10 +6094,31 @@ fn git_merge(dir: &str, branch: &str) -> Merge {
             }
             match sys::git(dir, &["merge", "--abort"]) {
                 Ok(_) => Merge::Conflict,
-                Err(a) => Merge::Failed(format!("합치기를 취소하지 못했어요: {a}")),
+                Err(a) => Merge::Failed(format!("적용을 취소하지 못했어요: {a}")),
             }
         }
     }
+}
+
+/// Reverts the merge commit `sha`. A clash is taken back out, so the folder is as it was.
+fn git_undo(dir: &str, sha: &str) -> Result<(), String> {
+    if sys::git(dir, &["merge-base", "--is-ancestor", sha, "HEAD"]).is_err() {
+        return Err("지금 작업에는 그 적용이 없어서 되돌릴 수 없어요".into());
+    }
+    sys::git(dir, &["revert", "--no-edit", "-m", "1", sha]).map(|_| ()).map_err(|e| {
+        if sys::git(dir, &["rev-parse", "-q", "--verify", "REVERT_HEAD"]).is_err() {
+            return format!("되돌리지 못했어요: {e}");
+        }
+        match sys::git(dir, &["revert", "--abort"]) {
+            Ok(_) => "그 뒤에 같은 곳이 또 바뀌어서 바로 되돌릴 수 없어요. 총괄에게 되돌려 달라고 말해 주세요.".into(),
+            Err(a) => format!("되돌리기를 취소하지 못했어요: {a}"),
+        }
+    })
+}
+
+#[tauri::command]
+pub async fn task_undo(app: AppHandle, project_id: String, task_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().undo_card(&project_id, &task_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5639,6 +6194,31 @@ mod merge_tests {
         assert!(sys::git(&dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err());
         assert!(sys::changes(&dir).is_empty());
         assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "team\n");
+    }
+
+    #[test]
+    fn undo_takes_back_exactly_the_applied_card() {
+        let (dir, team) = repo("undo");
+        card(&dir, &team, "prism/t-4", "b.txt", "two\n");
+        assert!(matches!(git_merge(&dir, "prism/t-4"), Merge::Merged));
+        let sha = sys::git(&dir, &["rev-parse", "HEAD"]).unwrap();
+        git_undo(&dir, &sha).unwrap();
+        assert!(!std::path::Path::new(&dir).join("b.txt").exists());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "one\n");
+        assert!(sys::changes(&dir).is_empty());
+    }
+
+    #[test]
+    fn undo_that_clashes_leaves_the_folder_as_it_was() {
+        let (dir, team) = repo("undo-clash");
+        card(&dir, &team, "prism/t-5", "a.txt", "card\n");
+        assert!(matches!(git_merge(&dir, "prism/t-5"), Merge::Merged));
+        let sha = sys::git(&dir, &["rev-parse", "HEAD"]).unwrap();
+        write(&dir, "a.txt", "later\n");
+        sys::git(&dir, &["commit", "-q", "-am", "later edit"]).unwrap();
+        assert!(git_undo(&dir, &sha).is_err());
+        assert!(sys::changes(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "later\n");
     }
 
     #[test]
@@ -6082,6 +6662,10 @@ mod restart_tests {
             created_at: 0,
             updated_at: 0,
             follow_of: None,
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who: None,
         }
     }
@@ -6616,6 +7200,7 @@ mod windows_path_tests {
             next_mgr: 0,
             next_lone: 0,
             always_allow: Default::default(),
+            archived: vec![],
         };
         let listed = removable_copies(&r, Some(&team), now_ms(), false);
         let _ = std::fs::remove_dir_all(&root);
@@ -6676,6 +7261,10 @@ mod handover_tests {
             created_at: 0,
             updated_at: 0,
             follow_of: None,
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who: None,
         };
         (agent, vec![task])
@@ -6773,5 +7362,137 @@ mod handover_tests {
         assert!(!on_running_card(&a, &tasks), "일시정지된 팀원은 아니다");
         let (b, _) = worker("worker", "work", "running", 0);
         assert!(!on_running_card(&b, &[]), "카드가 없으면 아니다");
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn team() -> Team {
+        Team {
+            restarted: None,
+            project: serde_json::from_value(json!({ "id": "p", "name": "p", "path": "/tmp/p", "isGit": false })).unwrap(),
+            homes: HashMap::new(),
+            run: "run".into(),
+            cwd: "/tmp/p".into(),
+            branch: None,
+            home: None,
+            agents: vec![],
+            tasks: vec![],
+            chat: vec![],
+            events: vec![],
+            next_task: 0,
+            next_msg: 0,
+            next_mgr: 0,
+            next_lone: 0,
+            always_allow: Default::default(),
+            archived: vec![],
+        }
+    }
+
+    fn card(id: &str, stage: &str, at: u64) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "title": id, "goal": "", "files": [], "doneWhen": [], "requestedBy": "lead", "assignee": null,
+            "role": "worker", "model": null, "stage": stage, "summary": "끝냈어요", "branch": null, "base": null,
+            "createdAt": at, "updatedAt": at
+        }))
+        .unwrap()
+    }
+
+    const REPORT: &str = "## 결과\n\n- 바꾼 파일: `src/page.tsx`, `src/table.tsx`\n- 확인: 화면을 열어 표가 잘 보이는지 봤어요.\n\n표 정렬과 색을 다듬었고, 좁은 화면에서도 줄이 넘치지 않게 했어요. 다음 단계는 결제 모듈 연결이에요.";
+
+    /// One long working session: `n` messages, a card every 3 messages.
+    fn long_session(t: &mut Team, n: usize) {
+        for i in 0..n {
+            if i % 3 == 0 {
+                t.next_task += 1;
+                t.tasks.push(card(&format!("T-{}", t.next_task), "running", i as u64));
+                let prev = format!("T-{}", t.next_task - 1);
+                if let Some(prev) = t.task_mut(&prev) {
+                    prev.stage = "done".into();
+                }
+            }
+            let text = format!("T-{} {REPORT}", t.next_task);
+            t.say(if i % 2 == 0 { "lead" } else { "report" }, text, None);
+        }
+    }
+
+    #[test]
+    fn a_long_conversation_stays_bounded_and_keeps_open_questions() {
+        let mut t = team();
+        // an old question nobody answered yet
+        t.say("escalation", "어느 색으로 할까요?".into(), Some(Escalation { agent_id: "w1".into(), task_id: None, path: vec![], options: vec![], answer: None }));
+        let question = t.next_msg;
+        t.tasks.push(card("T-OPEN", "running", 0));
+        long_session(&mut t, 5000);
+        assert!(t.chat.len() <= CHAT_KEEP + TRIM_SLACK, "chat kept {}", t.chat.len());
+        assert!(t.chat.iter().any(|m| m.id == question), "a waiting question must stay");
+        assert_eq!(t.chat.last().unwrap().id, t.next_msg, "the newest message stays");
+        let done = t.tasks.iter().filter(|x| finished_task(x)).count();
+        assert!(done <= DONE_TASKS_KEEP + TRIM_SLACK + CHAT_KEEP, "finished cards kept {done}");
+        assert!(t.tasks.len() < 1667, "cards were trimmed: {}", t.tasks.len());
+        assert!(t.tasks.iter().any(|x| x.id == "T-OPEN"), "an open card stays");
+        // every card the kept conversation points at is still there
+        for id in t.chat.iter().flat_map(|m| m.task_ids.iter()) {
+            assert!(t.tasks.iter().any(|x| &x.id == id), "{id} is mentioned but gone");
+        }
+        // nothing is lost: what left the team waits for the history file
+        let chats = t.archived.iter().filter(|a| matches!(a, Archived::Chat(_))).count();
+        assert_eq!(chats + t.chat.len(), 5001);
+    }
+
+    #[test]
+    fn trimmed_history_is_appended_to_the_history_file() {
+        let dir = std::env::temp_dir().join(format!("prism-history-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.history.jsonl");
+        let mut t = team();
+        long_session(&mut t, CHAT_KEEP + TRIM_SLACK + 1);
+        let lines = std::mem::take(&mut t.archived);
+        assert!(!lines.is_empty());
+        append_history(&path, &lines);
+        append_history(&path, &lines[..1]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), lines.len() + 1);
+        let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["chat"]["id"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Before/after figures for T-137: how big one save is and how long making it takes, after a
+    /// long session. `cargo test --lib save_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn save_cost_over_a_long_session() {
+        let cost = |t: &Team| {
+            let start = std::time::Instant::now();
+            let mut bytes = 0;
+            for _ in 0..10 {
+                // what `flush` copies under the lock and writes, every couple of seconds while working
+                let saved = json!({ "agents": t.agents.clone(), "tasks": t.tasks.clone(), "chat": t.chat.clone(), "events": t.events.clone() });
+                bytes = serde_json::to_string(&saved).unwrap().len();
+            }
+            (bytes, start.elapsed().as_secs_f64() * 100.0)
+        };
+        for n in [1_000, 5_000, 20_000, 50_000] {
+            // before: nothing was ever trimmed
+            let mut old = team();
+            long_session(&mut old, n);
+            let mut untrimmed = team();
+            for a in std::mem::take(&mut old.archived) {
+                match a {
+                    Archived::Chat(m) => untrimmed.chat.push(m),
+                    Archived::Task(x) => untrimmed.tasks.push(x),
+                }
+            }
+            untrimmed.chat.append(&mut old.chat);
+            untrimmed.tasks.append(&mut old.tasks);
+            let (b0, ms0) = cost(&untrimmed);
+            let mut now = team();
+            long_session(&mut now, n);
+            let (b1, ms1) = cost(&now);
+            println!("메시지 {n:>6}개: 전 대화 {:>6}개 · 저장 1번 {:>7.1}KB · {:>6.2}ms  →  후 대화 {:>5}개 · 카드 {:>4}개 · {:>6.1}KB · {:>5.2}ms", untrimmed.chat.len(), b0 as f64 / 1024.0, ms0, now.chat.len(), now.tasks.len(), b1 as f64 / 1024.0, ms1);
+        }
     }
 }

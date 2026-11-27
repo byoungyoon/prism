@@ -137,6 +137,14 @@ export interface Task {
   followOf: string | null;
   /** the assignee's name, kept after a finished member is cleared from the team */
   who?: string | null;
+  /** the checks (tests, build) the report said it ran; null: none were told */
+  check?: "passed" | "failed" | null;
+  /** screen captures the report named: image paths inside the member's work copy */
+  shots?: string[];
+  /** the commit that brought this card's work in when the user applied it (되돌리기 takes it back) */
+  applied?: string | null;
+  /** the user took the applied work back */
+  undone?: boolean;
 }
 
 export interface Escalation {
@@ -260,7 +268,7 @@ export interface MergeCheck {
   files: number;
 }
 
-/** One card's outcome of 합치기 */
+/** One card's outcome of 적용하기 */
 export interface MergeOutcome {
   taskId: string;
   result: "merged" | "nothing" | "conflict" | "failed";
@@ -550,8 +558,10 @@ export const api = {
   setTeamBranch: (projectId: string, branch: string, create: boolean) => call<void>("team_set_branch", { projectId, branch, create }),
   /** what merging this report's card would bring in (commits, files) */
   taskMergeCheck: (projectId: string, taskId: string) => call<MergeCheck>("task_merge_check", { projectId, taskId }),
-  /** 합치기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
+  /** 적용하기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
   taskMerge: (projectId: string, taskIds: string[]) => call<MergeOutcome[]>("task_merge", { projectId, taskIds }),
+  /** 되돌리기 on work the user applied */
+  taskUndo: (projectId: string, taskId: string) => call<void>("task_undo", { projectId, taskId }),
   /** 완료 on a report with nothing to merge */
   taskComplete: (projectId: string, taskId: string) => call<void>("task_complete", { projectId, taskId }),
   /** disk used by the work folders and the shared build folder, and what the cleanup would remove */
@@ -583,6 +593,8 @@ export const api = {
   killAgent: (projectId: string, agentId: string) => call<void>("agent_kill", { projectId, agentId }),
   pauseAgent: (projectId: string, agentId: string) => call<void>("agent_pause", { projectId, agentId }),
   resumeAgent: (projectId: string, agentId: string) => call<void>("agent_resume", { projectId, agentId }),
+  /** a broken member starts again on the same card */
+  restartAgent: (projectId: string, agentId: string) => call<void>("agent_restart", { projectId, agentId }),
 
   transcript: (projectId: string, agentId: string) => call<TranscriptEntry[]>("agent_transcript", { projectId, agentId }),
   onEntry: (fn: (e: { projectId: string; agentId: string; entry: TranscriptEntry }) => void): Promise<UnlistenFn> =>
@@ -663,6 +675,13 @@ export interface SlackStatus {
   team: string | null;
 }
 
+/** [슬랙으로 연결] 버튼 설정. clientId가 없으면 아직 슬랙 앱이 정해지지 않은 것 */
+export interface SlackOAuthConfig {
+  clientId: string | null;
+  /** 사용자가 직접 넣은 값이면 true */
+  custom: boolean;
+}
+
 export interface SlackChannel {
   id: string;
   name: string;
@@ -701,6 +720,12 @@ export const dashboardApi = {
     on<{ widgetId: string; path: string }>("dashboard://sheet-changed", fn),
 
   // slack: 토큰은 백엔드에만 머문다 (프론트 상태·저장소에 넣지 않는다). 읽기 전용.
+  slackOAuthConfig: () => call<SlackOAuthConfig>("slack_oauth_config"),
+  slackClientIdSet: (clientId: string) => call<SlackOAuthConfig>("slack_client_id_set", { clientId }),
+  /** 브라우저에서 허용할 때까지 끝나지 않는다 */
+  slackOAuthConnect: () => call<{ team: string; user: string }>("slack_oauth_connect"),
+  slackOAuthReopen: () => call<void>("slack_oauth_reopen"),
+  slackOAuthCancel: () => call<void>("slack_oauth_cancel"),
   slackTokenSet: (token: string) => call<{ team: string; user: string }>("slack_token_set", { token }),
   slackTokenStatus: () => call<SlackStatus>("slack_token_status"),
   slackTokenClear: () => call<void>("slack_token_clear"),

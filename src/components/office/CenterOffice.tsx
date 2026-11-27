@@ -78,7 +78,7 @@ export function CenterOffice() {
             const review = count(team, "review");
             const blocked = blockedCount(team);
             const on = pick === project.id;
-            const detail = [`진행 ${running} · 합치기 대기 ${review} · 완료 ${count(team, "done")}`, blocked > 0 && `막힘 ${blocked}명`, asks > 0 && `답해야 할 일 ${asks}건`].filter(Boolean).join("\n");
+            const detail = [`진행 ${running} · 적용 대기 ${review} · 완료 ${count(team, "done")}`, blocked > 0 && `막힘 ${blocked}명`, asks > 0 && `답해야 할 일 ${asks}건`].filter(Boolean).join("\n");
             return (
               <button key={project.id} role="tab" aria-selected={on} onClick={() => setOpen(on ? null : project.id)} className={`of-tab${on ? " on" : ""}`} title={`${project.name}\n${detail}`}>
                 <span className="of-tab-name">{project.name}</span>
@@ -88,7 +88,7 @@ export function CenterOffice() {
                   </span>
                 )}
                 {review > 0 && (
-                  <span className="of-tab-review" aria-label={`합치기 대기 ${review}`}>
+                  <span className="of-tab-review" aria-label={`적용 대기 ${review}`}>
                     대기 {review}
                   </span>
                 )}

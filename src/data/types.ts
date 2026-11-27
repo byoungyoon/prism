@@ -3,8 +3,8 @@ import { modelLabel } from "./models";
 import type { Agent, AgentStatus, Bucket, Role, Task } from "../lib/api";
 
 export type { Role } from "../lib/api";
-export type Column = "대기" | "배정" | "진행중" | "합치기 대기" | "완료";
-export const COLUMNS: Column[] = ["대기", "배정", "진행중", "합치기 대기", "완료"];
+export type Column = "대기" | "배정" | "진행중" | "적용 대기" | "완료";
+export const COLUMNS: Column[] = ["대기", "배정", "진행중", "적용 대기", "완료"];
 
 export const STATUS: Record<AgentStatus, { label: string; cls: string; color: string; ink: string }> = {
   work: { label: "진행 중", cls: "s-work", color: "var(--work)", ink: "var(--work-ink)" },
@@ -63,9 +63,9 @@ export function cardView(t: Task, agents: Agent[]): CardView {
       return { task: t, column, status: st === "done" || st === "off" ? "wait" : st, side, agent };
     }
     case "review":
-      return { task: t, column: "합치기 대기", status: "wait", side: agent ? `${agent.name} 보고` : "합치기 대기", agent };
+      return { task: t, column: "적용 대기", status: "wait", side: agent ? `${agent.name} 보고` : "적용 대기", agent };
     case "failed":
-      return { task: t, column: "합치기 대기", status: "block", side: "실패", agent };
+      return { task: t, column: "적용 대기", status: "block", side: "실패", agent };
     default:
       return { task: t, column: "완료", status: "done", side: agent ? usd(agent.costUsd) : "", agent };
   }

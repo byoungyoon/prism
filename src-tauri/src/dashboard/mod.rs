@@ -4,12 +4,14 @@
 //! - `web`: 웹사이트 칸 (메인 창 안의 자식 웹뷰)
 //! - `sheet`: 엑셀/CSV 칸 (읽기, 파일 변경 감시)
 //! - `slack`: 슬랙 칸 (읽기 전용, 토큰은 키체인에만)
+//! - `slack_oauth`: [슬랙으로 연결] 버튼 (PKCE, client secret 없음)
 //! - `ai`: AI로 보기 바꾸기, 말로 설명한 대시보드 초안
 
 pub mod ai;
 pub mod layout;
 pub mod sheet;
 pub mod slack;
+pub mod slack_oauth;
 pub mod web;
 
 use std::fs;

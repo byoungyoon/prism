@@ -2,6 +2,7 @@
 //!
 //! 토큰은 맥 키체인(keyring, service "prism.slack")에만 저장한다. 파일·로그·에러·반환값에 넣지 않는다.
 //! 키체인에는 토큰 말고 팀/사용자 이름(JSON)도 따로 둔다. 상태 확인은 키체인만 보고 네트워크를 쓰지 않는다.
+//! 버튼 연결(OAuth)은 `slack_oauth`에 있다. 슬랙이 만료되는 토큰을 주면 갱신용 값도 키체인에 두고 쓰기 직전에 새로 받는다.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -10,15 +11,34 @@ use std::time::Duration;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tauri_plugin_opener::OpenerExt;
+
+use super::slack_oauth::{self as oauth, Grant};
 
 const SERVICE: &str = "prism.slack";
 const TOKEN_KEY: &str = "token";
 const INFO_KEY: &str = "info";
+const REFRESH_KEY: &str = "refresh";
+const CLIENT_ID_KEY: &str = "client_id";
 const API: &str = "https://slack.com/api/";
+/// 만료가 이만큼 남으면 미리 새 토큰을 받는다 (초)
+const REFRESH_MARGIN: i64 = 300;
 const CHANNEL_CAP: usize = 1000;
 const NET_ERR: &str = "슬랙에 연결하지 못했어요. 인터넷 연결을 확인해 주세요";
 const KEYCHAIN_ERR: &str = "키체인에 접근하지 못했어요. 맥 설정에서 키체인 접근을 허용해 주세요";
-const NOT_CONNECTED: &str = "슬랙이 연결되어 있지 않아요. 토큰을 먼저 넣어 주세요";
+const NOT_CONNECTED: &str = "슬랙이 연결되어 있지 않아요. [슬랙으로 연결]을 먼저 눌러 주세요";
+
+/// 키체인의 토큰을 바꾸는 일(저장·갱신·삭제)은 한 번에 하나만. 갱신용 값은 한 번만 쓸 수 있다.
+static TOKEN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 만료되는 토큰을 새로 받는 데 필요한 값
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Refresh {
+    token: String,
+    expires_at: i64,
+    client_id: String,
+}
 
 /// 사용자 id → 표시 이름. users.info 호출을 줄이려고 캐시한다.
 static NAMES: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
@@ -86,6 +106,58 @@ fn delete_key(key: &str) -> Result<(), String> {
     }
 }
 
+fn write_key(key: &str, value: &str) -> Result<(), String> {
+    entry(key)?.set_password(value).map_err(|_| KEYCHAIN_ERR.to_string())
+}
+
+/// 갱신용 값을 먼저 저장한다. 슬랙은 새 값을 주면서 예전 값을 못 쓰게 하므로 잃어버리면 다시 연결해야 한다.
+fn store_grant(client_id: &str, grant: &Grant) -> Result<(), String> {
+    match (&grant.refresh_token, grant.expires_in) {
+        (Some(token), Some(secs)) => {
+            let r = Refresh { token: token.clone(), expires_at: now() + secs, client_id: client_id.to_string() };
+            let text = serde_json::to_string(&r).map_err(|_| "연결 정보를 저장하지 못했어요".to_string())?;
+            write_key(REFRESH_KEY, &text)?;
+        }
+        _ => delete_key(REFRESH_KEY)?,
+    }
+    write_key(TOKEN_KEY, &grant.access_token)
+}
+
+fn store_info(info: &TokenInfo) -> Result<(), String> {
+    let text = serde_json::to_string(info).map_err(|_| "연결 정보를 저장하지 못했어요".to_string())?;
+    write_key(INFO_KEY, &text)?;
+    NAMES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    Ok(())
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// API에 쓸 토큰. 곧 만료되면 새로 받아 저장한다.
+async fn fresh_token() -> Result<String, String> {
+    let _guard = TOKEN_LOCK.lock().await;
+    let token = read_token()?;
+    let refresh = match entry(REFRESH_KEY)?.get_password() {
+        Ok(text) => serde_json::from_str::<Refresh>(&text).ok(),
+        Err(e) if is_no_entry(&e) => None,
+        Err(_) => return Err(KEYCHAIN_ERR.into()),
+    };
+    let Some(r) = refresh else { return Ok(token) };
+    if r.expires_at - now() > REFRESH_MARGIN {
+        return Ok(token);
+    }
+    match oauth::refresh(API, &r.client_id, &r.token).await {
+        Ok(grant) => {
+            store_grant(&r.client_id, &grant)?;
+            Ok(grant.access_token)
+        }
+        // 아직 만료 전이면 잠깐의 실패는 넘기고 지금 토큰을 쓴다
+        Err(_) if r.expires_at > now() => Ok(token),
+        Err(e) => Err(e),
+    }
+}
+
 // ── 슬랙 API (GET만) ──────────────────────────────────
 
 /// 슬랙 에러 코드를 쉬운 한국어로 바꾼다.
@@ -100,7 +172,7 @@ pub fn slack_error(code: &str) -> String {
     }
 }
 
-fn client() -> Result<reqwest::Client, String> {
+pub(super) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -109,8 +181,12 @@ fn client() -> Result<reqwest::Client, String> {
 
 /// 슬랙 메서드를 GET으로 부른다. 토큰은 Authorization 헤더로만 보낸다.
 async fn slack_get(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, String> {
+    slack_get_at(API, token, method, query).await
+}
+
+async fn slack_get_at(api: &str, token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, String> {
     let resp = client()?
-        .get(format!("{API}{method}"))
+        .get(format!("{api}{method}"))
         .bearer_auth(token)
         .query(query)
         .send()
@@ -174,16 +250,83 @@ pub async fn slack_token_set(token: String) -> Result<TokenInfo, String> {
     if !token.starts_with("xox") {
         return Err("토큰이 맞지 않아요".into());
     }
-    let v = slack_get(&token, "auth.test", &[]).await?;
-    let info = TokenInfo {
+    let info = token_info(API, &token).await?;
+    // 기다리는 중인 버튼 연결이 있으면 그만둔다 (나중에 덮어쓰지 않게)
+    oauth::cancel();
+    let _guard = TOKEN_LOCK.lock().await;
+    store_grant("", &Grant { access_token: token, refresh_token: None, expires_in: None, team: String::new() })?;
+    store_info(&info)?;
+    Ok(info)
+}
+
+/// 토큰이 살아 있는지 확인하고 팀·사용자 이름을 읽는다.
+pub(super) async fn token_info(api: &str, token: &str) -> Result<TokenInfo, String> {
+    let v = slack_get_at(api, token, "auth.test", &[]).await?;
+    Ok(TokenInfo {
         team: v.get("team").and_then(Value::as_str).unwrap_or("").to_string(),
         user: v.get("user").and_then(Value::as_str).unwrap_or("").to_string(),
-    };
-    entry(TOKEN_KEY)?.set_password(&token).map_err(|_| KEYCHAIN_ERR.to_string())?;
-    let info_text = serde_json::to_string(&info).map_err(|_| "연결 정보를 저장하지 못했어요".to_string())?;
-    entry(INFO_KEY)?.set_password(&info_text).map_err(|_| KEYCHAIN_ERR.to_string())?;
-    NAMES.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    })
+}
+
+// ── 버튼 한 번으로 연결 ───────────────────────────────
+
+/// Client ID는 비밀값이 아니지만, 토큰과 같은 곳에 두면 데이터 폴더를 건드리지 않아도 된다.
+fn client_id_override() -> Option<String> {
+    entry(CLIENT_ID_KEY).ok()?.get_password().ok()
+}
+
+#[tauri::command]
+pub fn slack_oauth_config() -> oauth::OAuthConfig {
+    oauth::config(client_id_override())
+}
+
+/// 직접 만든 슬랙 앱의 Client ID를 넣는다. 빈 값이면 Prism에 들어 있는 값으로 되돌린다.
+#[tauri::command]
+pub fn slack_client_id_set(client_id: String) -> Result<oauth::OAuthConfig, String> {
+    let id = client_id.trim();
+    if id.is_empty() {
+        delete_key(CLIENT_ID_KEY)?;
+    } else if oauth::valid_client_id(id) {
+        write_key(CLIENT_ID_KEY, id)?;
+    } else {
+        return Err("Client ID는 숫자.숫자 모양이에요 (예: 1234567890.1234567890). Client Secret이 아닌지 확인해 주세요".into());
+    }
+    Ok(slack_oauth_config())
+}
+
+/// 브라우저에서 슬랙 허락 화면을 열고, 허용하면 토큰을 키체인에 저장한다. 끝날 때까지 기다린다.
+#[tauri::command]
+pub async fn slack_oauth_connect(app: tauri::AppHandle) -> Result<TokenInfo, String> {
+    let client_id = slack_oauth_config().client_id.ok_or_else(|| oauth::NOT_CONFIGURED.to_string())?;
+    let attempt = oauth::begin();
+    let endpoints = oauth::Endpoints::slack(API);
+    let grant = oauth::authorize(&endpoints, &client_id, attempt, |url| {
+        app.opener().open_url(url, None::<&str>).map_err(|_| "브라우저를 열지 못했어요".to_string())
+    })
+    .await?;
+    // 이름을 못 읽어도 연결은 살린다 (코드는 한 번만 쓸 수 있다)
+    let info = token_info(API, &grant.access_token)
+        .await
+        .unwrap_or_else(|_| TokenInfo { team: grant.team.clone(), user: String::new() });
+    let _guard = TOKEN_LOCK.lock().await;
+    if !oauth::is_current(attempt) {
+        return Err(oauth::CANCELLED.into());
+    }
+    store_grant(&client_id, &grant)?;
+    store_info(&info)?;
     Ok(info)
+}
+
+/// 브라우저 창을 닫았을 때 허락 화면을 다시 연다.
+#[tauri::command]
+pub fn slack_oauth_reopen(app: tauri::AppHandle) -> Result<(), String> {
+    let url = oauth::pending_url().ok_or("기다리는 연결이 없어요. [슬랙으로 연결]을 다시 눌러 주세요")?;
+    app.opener().open_url(url, None::<&str>).map_err(|_| "브라우저를 열지 못했어요".to_string())
+}
+
+#[tauri::command]
+pub fn slack_oauth_cancel() {
+    oauth::cancel();
 }
 
 #[tauri::command]
@@ -194,7 +337,10 @@ pub fn slack_token_status() -> TokenStatus {
 }
 
 #[tauri::command]
-pub fn slack_token_clear() -> Result<(), String> {
+pub async fn slack_token_clear() -> Result<(), String> {
+    oauth::cancel();
+    let _guard = TOKEN_LOCK.lock().await;
+    delete_key(REFRESH_KEY)?;
     delete_key(TOKEN_KEY)?;
     delete_key(INFO_KEY)?;
     NAMES.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -204,7 +350,7 @@ pub fn slack_token_clear() -> Result<(), String> {
 /// 공개·비공개 채널 목록(보관된 채널 제외), 최대 1000개.
 #[tauri::command]
 pub async fn slack_channels() -> Result<Vec<Channel>, String> {
-    let token = read_token()?;
+    let token = fresh_token().await?;
     let mut out: Vec<Channel> = vec![];
     let mut cursor = String::new();
     loop {
@@ -244,7 +390,7 @@ pub async fn slack_history(channel_id: String, limit: u32) -> Result<Vec<Message
     if !valid_channel_id(&channel_id) {
         return Err("채널 번호가 맞지 않아요".into());
     }
-    let token = read_token()?;
+    let token = fresh_token().await?;
     let limit = limit.clamp(1, 200);
     let v = slack_get(&token, "conversations.history", &[("channel", channel_id), ("limit", limit.to_string())]).await?;
     let mut out = vec![];

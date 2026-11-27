@@ -143,6 +143,13 @@ export function dashMock(dash, cmd, args) {
       return "고객센터 홈 · 자주 묻는 질문 · 1:1 문의";
     case "slack_token_status":
       return dash?.slack ?? { connected: false, team: null };
+    case "slack_oauth_config":
+      return { clientId: "1234567890.1234567890", custom: false };
+    case "slack_oauth_connect":
+      return new Promise(() => {}); // 브라우저에서 허용을 기다리는 모습
+    case "slack_oauth_reopen":
+    case "slack_oauth_cancel":
+      return null;
     case "slack_token_set":
       return { team: "고객센터팀", user: "demo" };
     case "slack_token_clear":
@@ -325,6 +332,24 @@ const SCENARIOS = {
       // 편집 화면용: 엔진(figcraft 등)이 설치돼 있지 않으면 "설치 필요" 안내가 보인다
       edit: { projectId: "demo", taskId: "T-3", path: "가격표.figcraft" },
     };
+  },
+
+  // 고장 난 작업자: 하나는 프로그램이 꺼졌고(off), 하나는 사용량 한도 오류로 멈췄다. 작업 보드·사무실에 '고장'과 다시 시작.
+  broken: (now) => {
+    const agents = [
+      agent(now, "lead", "총괄", "lead", "wait", null),
+      agent(now, "m1", "팀장 A", "mgr", "wait", "T-1"),
+      agent(now, "w1", "W1", "worker", "work", "T-2"),
+      agent(now, "w2", "W2", "worker", "off", "T-3", { stuck: "프로그램이 꺼졌는데 일하는 중으로 남아 있었어요" }),
+      agent(now, "w3", "W3", "worker", "wait", "T-4", { parentId: "lead", stuck: "You've hit your usage limit · resets 6pm" }),
+    ];
+    const tasks = [
+      task(now, "T-1", "가격표 페이지 개편", "m1", "running", "lead"),
+      task(now, "T-2", "표 컴포넌트 만들기", "w1", "running", "m1"),
+      task(now, "T-3", "요금 데이터 정리", "w2", "running", "m1"),
+      task(now, "T-4", "결제 모듈 설치", "w3", "running", "lead"),
+    ];
+    return { prefs: prefs(), projects: [project(now, "demo", "데모팀")], teams: { demo: team(now, "demo", "데모팀", agents, tasks) }, focus: "demo", edit: null };
   },
 
   // 팀이 많을 때: 팀 요약 탭이 가로로 넘치는 경우

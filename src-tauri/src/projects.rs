@@ -39,7 +39,7 @@ pub struct TeamConfig {
     #[serde(default = "yes")]
     pub safe: bool,
     /// The 총괄 merges finished work into the team branch by itself (asking only on a clash or a
-    /// failing check). Off: the user presses 합치기 on each report.
+    /// failing check). Off: the user presses 적용하기 on each report.
     #[serde(default = "yes")]
     pub auto_merge: bool,
 }
@@ -121,7 +121,7 @@ pub struct Settings {
     /// 사용자 허락이 필요하면 데스크톱 알림을 띄운다
     #[serde(default = "yes")]
     pub ask_alert: bool,
-    /// 일이 끝나거나(합치기 포함) 실패·막히면 데스크톱 알림을 띄운다
+    /// 일이 끝나거나(적용 포함) 실패·막히면 데스크톱 알림을 띄운다
     #[serde(default = "yes")]
     pub work_alert: bool,
     /// 처음 한 번의 안내 알림(macOS가 알림 허용을 묻게 하는 것)을 보냈는가

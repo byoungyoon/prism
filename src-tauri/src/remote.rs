@@ -352,6 +352,7 @@ async fn dispatch(app: &AppHandle, cmd: &str, a: Value) -> Result<Value, String>
         "agent_set_model" => ok(t::agent_set_model(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?, arg(&a, "model")?)?),
         "agent_kill" => ok(t::agent_kill(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?)),
         "agent_pause" => ok(t::agent_pause(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?)?),
+        "agent_restart" => ok(t::agent_restart(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?)?),
         "agent_resume" => ok(t::agent_resume(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?)?),
         "agent_transcript" => ok(t::agent_transcript(teams(), arg(&a, "projectId")?, arg(&a, "agentId")?)),
         "task_files" => ok(t::task_files(app.clone(), arg(&a, "projectId")?, arg(&a, "taskId")?).await?),

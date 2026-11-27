@@ -1,6 +1,6 @@
 // Small safe markdown renderer for chat bubbles: tables, bold, italic, lists, headings,
 // inline code, code blocks, links. Never inserts raw HTML — everything is built as React nodes.
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 const INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+?\*\*|__[^_\n]+?__)|(\[[^\]\n]+\]\([^)\s]+\))|(https?:\/\/[^\s<>)]+)|(\*[^*\s][^*\n]*?\*)/g;
@@ -163,12 +163,16 @@ function parse(src: string): Block[] {
   return blocks;
 }
 
-/** Renders chat markdown as React nodes (no raw HTML). Put it inside the bubble element. */
-export function Markdown({ text }: { text: string }) {
+/**
+ * Renders chat markdown as React nodes (no raw HTML). Put it inside the bubble element.
+ * Memoized on the text: every team update redraws the whole conversation, and the messages
+ * themselves don't change, so they aren't parsed again each time.
+ */
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const blocks = parse(text);
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-2 break-words select-text">
       {blocks.map((b, i) => <Fragment key={i}>{b}</Fragment>)}
     </div>
   );
-}
+});

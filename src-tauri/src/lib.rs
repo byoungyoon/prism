@@ -4,6 +4,7 @@ mod batch;
 mod clis;
 mod dashboard;
 mod engines;
+mod faults;
 mod install;
 mod launch;
 mod projects;
@@ -279,6 +280,7 @@ pub fn run() {
             team::usage_get,
             team::agent_pause,
             team::agent_resume,
+            team::agent_restart,
             team::agent_transcript,
             team::usage_refresh,
             launch::models_list,
@@ -298,6 +300,7 @@ pub fn run() {
             team::task_diff,
             team::task_merge_check,
             team::task_merge,
+            team::task_undo,
             team::task_complete,
             team::task_file,
             team::task_file_bytes,
@@ -322,6 +325,11 @@ pub fn run() {
             dashboard::sheet::sheet_read,
             dashboard::sheet::sheet_watch,
             dashboard::sheet::sheet_unwatch,
+            dashboard::slack::slack_oauth_config,
+            dashboard::slack::slack_client_id_set,
+            dashboard::slack::slack_oauth_connect,
+            dashboard::slack::slack_oauth_reopen,
+            dashboard::slack::slack_oauth_cancel,
             dashboard::slack::slack_token_set,
             dashboard::slack::slack_token_status,
             dashboard::slack::slack_token_clear,

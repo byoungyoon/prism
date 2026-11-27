@@ -8,8 +8,9 @@ import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
-import { currentCard, finishedCrew, liveCrew, useDismissed } from "../lib/crew";
-import { MergeActions, MergeAllButton } from "./MergeActions";
+import { currentCard, finishedCrew, isBroken, liveCrew, useDismissed } from "../lib/crew";
+import { MergeActions, MergeAllButton, redoOf } from "./MergeActions";
+import { RestartButton } from "./RestartButton";
 import { TeamUsageBox } from "./TokenUse";
 import { catName, givenName } from "./critters/pixel/coats";
 
@@ -19,13 +20,14 @@ const FLOORS: { role: Role; name: string }[] = [
   { role: "worker", name: "작업자" },
 ];
 
-const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
+const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "적용 대기", done: "완료", failed: "실패" };
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
   // its card now (a card that is already over is not shown next to a member still at work)
   const task = currentCard(team, a);
   if (a.restSince) return { task: undefined, word: "휴게실", problem: false };
+  if (isBroken(a, team.tasks)) return { task, word: "고장", problem: true };
   if (a.status === "block") return { task, word: "막힘", problem: true };
   if (task?.stage === "failed") return { task, word: "실패", problem: true };
   if (a.role === "lead") return { task, word: a.status === "work" ? "지시를 나누는 중" : a.status === "off" ? "퇴근" : "지시를 기다려요", problem: false };
@@ -40,7 +42,8 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
   // 팀이 여럿이면 총괄 줄이 팀 제목이다: 제목은 팀 이름 그대로, 지어 준 고양이 이름은 그 옆에 따로 적는다
   const isTitle = a.role === "lead" && multi;
   const leadName = isTitle ? givenName(a) : undefined;
-  return (
+  const broken = isBroken(a, team.tasks);
+  const row = (
     <button
       data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}
@@ -63,6 +66,19 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
         {st.word}
       </span>
     </button>
+  );
+  if (!broken) return row;
+  // why, and 다시 시작, under the row (a button can't sit inside the row, itself a button)
+  return (
+    <div className="flex min-w-0 flex-col">
+      {row}
+      <div className="flex min-w-0 items-center gap-2 pb-1 pl-2">
+        <span className="line-clamp-2 min-w-0 flex-auto text-[11.5px] leading-snug" style={{ color: "var(--block-ink)" }} title={a.stuck ?? undefined}>
+          {a.stuck}
+        </span>
+        <RestartButton projectId={project.id} agentId={a.id} name={catName(a)} />
+      </div>
+    </div>
   );
 }
 
@@ -138,7 +154,7 @@ export function TaskBoard() {
   // one rule for "who is on the team" (lib/crew): the same people the office and the team tabs show
   const members = (team: TeamSnapshot, role: Role) => liveCrew(team, { withLead: true }).filter((a) => a.role === role);
   // only who is at work (or the 총괄) shows by default; idle and finished members fold into one line
-  const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
+  const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || isBroken(a, team.tasks) || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
   const crewOf = (team: TeamSnapshot) => FLOORS.flatMap((f) => members(team, f.role));
   const trees = shown.map(({ project, team }) => ({ project, team, ...teamTree(team, crewOf(team).filter((a) => isActive(a, team))) }));
   const activeN = trees.reduce((k, t) => k + t.ids.size, 0);
@@ -147,7 +163,7 @@ export function TaskBoard() {
     .map(({ project, team, ids }) => ({ project, team, list: [...crewOf(team).filter((a) => !isActive(a, team)), ...finishedCrew(team)].filter((a) => !ids.has(a.id)) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
-  // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
+  // reports waiting in the 보고함: each one can be applied (적용하기) or closed (완료) right here
   const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(reportKey(project.id, t))).map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
@@ -161,7 +177,7 @@ export function TaskBoard() {
         <h2 className="m-0 text-sm font-semibold">작업 보드</h2>
         <span className="text-[11.5px] text-ink-2">
           진행 <b className="font-semibold text-[var(--text)]">{count("running")}</b>
-          {count("review") > 0 && <> · 합치기 대기 <b className="font-semibold text-[var(--text)]">{count("review")}</b></>}
+          {count("review") > 0 && <> · 적용 대기 <b className="font-semibold text-[var(--text)]">{count("review")}</b></>}
           {count("queued") > 0 && <> · 대기 {count("queued")}</>}
         </span>
       </div>
@@ -177,7 +193,7 @@ export function TaskBoard() {
             {reports.length > 1 && (
               <button
                 onClick={() => reports.forEach(({ t, project }) => dismiss(reportKey(project.id, t)))}
-                title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)"
+                title="적용하지 않고 목록에서만 치워요 (카드는 그대로)"
                 className="mx-2 min-h-7 self-start rounded-full border-0 px-3 text-[12px] text-ink-2 hover:bg-[var(--chip)]"
                 style={{ background: "var(--chip)" }}
               >
@@ -185,7 +201,7 @@ export function TaskBoard() {
               </button>
             )}
             {[...new Set(reports.map((r) => r.project))].map((p) => (
-              <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p).map((r) => r.t)} />
+              <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p && !redoOf(shown.find((x) => x.project.id === p.id)!.team.tasks, r.t.id)).map((r) => r.t)} />
             ))}
             {reports.map(({ t, project }) => (
               <div key={`${project.id}-${t.id}`} className="flex flex-col gap-1 rounded-lg px-2 py-1.5" style={{ background: "var(--glass2)" }}>
@@ -193,7 +209,7 @@ export function TaskBoard() {
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
                   <span className="min-w-0 flex-auto truncate">{t.title}</span>
                   {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
-                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
+                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="적용하지 않고 목록에서만 치워요 (카드는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
                     ✕
                   </button>
                 </span>

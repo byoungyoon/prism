@@ -18,7 +18,7 @@ const PRESETS: { id: Exclude<PresetName, "custom">; label: string; note: string;
 type RoleKey = "lead" | "managers" | "workers";
 const ROLES: { key: RoleKey; name: string; desc: string; Icon: typeof Tower }[] = [
   { key: "lead", name: "총괄", desc: "나와 대화하고 일을 나눠요", Icon: Tower },
-  { key: "managers", name: "팀장", desc: "작업을 나누고 결과를 확인해 합쳐요", Icon: Briefcase },
+  { key: "managers", name: "팀장", desc: "작업을 나누고 결과를 확인해 적용해요", Icon: Briefcase },
   { key: "workers", name: "작업자", desc: "실제 작업을 하고 결과를 저장해요", Icon: Bot },
 ];
 
@@ -189,7 +189,7 @@ function WorkCopies({ projectId }: { projectId: string }) {
             작업 폴더 {info.copies}개 · <b className="font-semibold">{fmtBytes(info.copiesBytes)}</b> · 공용 빌드 폴더 {fmtBytes(info.buildBytes)}
           </span>
           <span className="text-[12px] leading-relaxed text-ink-2">
-            합쳐진 작업 폴더는 자동으로 지워요. 쉬는 작업자가 이어서 쓸 폴더는 남겨둬요. 합쳐지지 않은 건 끝난 뒤 7일이 지나면 정리 대상이 돼요. 브랜치는 지우지 않아요.
+            적용된 작업 폴더는 자동으로 지워요. 쉬는 작업자가 이어서 쓸 폴더는 남겨둬요. 적용되지 않은 건 끝난 뒤 7일이 지나면 정리 대상이 돼요. 브랜치는 지우지 않아요.
           </span>
           <div className="flex items-center gap-3">
             <span className="text-[12.5px] text-ink-2">
@@ -391,21 +391,21 @@ export function SettingsScreen() {
             <span className="text-[12px] leading-relaxed text-ink-2">
               {draft.safe
                 ? "팀은 프로젝트를 복사한 작업 공간에서 팀 전용 브랜치로 일해요. 원래 폴더는 그대로고, 결과는 총괄에게 \"PR 올려줘\"라고 하면 PR로 보내요. 기존 프로젝트를 가져왔다면 켜두세요."
-                : "팀이 원래 폴더에서 바로 일하고, 결과도 바로 합쳐져요. 처음부터 Prism으로 만든 프로젝트처럼 부담 없는 경우에만 꺼두세요."}
+                : "팀이 원래 폴더에서 바로 일하고, 결과도 바로 적용돼요. 처음부터 Prism으로 만든 프로젝트처럼 부담 없는 경우에만 꺼두세요."}
             </span>
           </Card>
 
-          <Card title="끝난 일 자동으로 합치기" aside={<Switch on={draft.autoMerge} onChange={(autoMerge) => setDraft({ ...draft, autoMerge })} label="끝난 일 자동으로 합치기" />}>
+          <Card title="끝난 일 자동으로 적용하기" aside={<Switch on={draft.autoMerge} onChange={(autoMerge) => setDraft({ ...draft, autoMerge })} label="끝난 일 자동으로 적용하기" />}>
             <span className="text-[12px] leading-relaxed text-ink-2">
               {draft.autoMerge
-                ? "팀원이 일을 마치고 보고하면 총괄이 확인한 뒤 알아서 팀 작업에 합쳐요. 겹치는 부분이 있거나 검사에 실패할 때만 물어봐요. main에 올리기와 배포는 언제나 먼저 물어봐요."
-                : "보고가 오면 '합치기 대기'에 쌓이고, 사용자가 합치기 버튼을 눌러야 합쳐져요."}
+                ? "팀원이 일을 마치고 보고하면 총괄이 확인한 뒤 알아서 적용해요. 겹치는 부분이 있거나 검사에 실패할 때만 물어봐요. main에 올리기와 배포는 언제나 먼저 물어봐요."
+                : "보고가 오면 '적용 대기'에 쌓이고, 보고 카드의 적용하기 버튼을 눌러야 적용돼요."}
             </span>
           </Card>
 
           <Card title="작업 공간 분리" aside={<Switch on={draft.isolate} onChange={(isolate) => setDraft({ ...draft, isolate })} label="작업 공간 분리" />}>
             <span className="text-[12px] leading-relaxed text-ink-2">
-              팀장과 작업자가 각자 따로 복사한 작업 공간에서 일하고, 끝나면 윗선이 확인해서 합쳐요. 끄면 같은 폴더를 함께 써서 서로 덮어쓸 수 있어요.
+              팀장과 작업자가 각자 따로 복사한 작업 공간에서 일하고, 끝나면 윗선이 확인해서 적용해요. 끄면 같은 폴더를 함께 써서 서로 덮어쓸 수 있어요.
             </span>
           </Card>
         </div>
@@ -438,7 +438,7 @@ export function SettingsScreen() {
             </Card>
             <Card title="일이 끝나면 알림" aside={<Switch on={workAlert} onChange={(on) => void setAlert("work", on)} label="일이 끝나면 알림" />}>
               <span className="text-[12px] leading-relaxed text-ink-2">
-                총괄에게 일이 끝났다는 보고가 오거나 마무리(합치기)되면 알려줘요. 일이 실패하거나 막혔을 때도 알려줘요. 알림을 누르면 그 팀이 열려요. 그 팀을 보고 있을 때는 알리지 않아요.
+                총괄에게 일이 끝났다는 보고가 오거나 마무리(적용)되면 알려줘요. 일이 실패하거나 막혔을 때도 알려줘요. 알림을 누르면 그 팀이 열려요. 그 팀을 보고 있을 때는 알리지 않아요.
               </span>
             </Card>
           </>
