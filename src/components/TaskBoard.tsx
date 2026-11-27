@@ -37,6 +37,9 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
   const openIn = useApp((s) => s.openIn);
   const st = stateOf(a, team);
   const waiting = a.role === "lead" ? team.chat.filter(waitsForMe).length : 0;
+  // 팀이 여럿이면 총괄 줄이 팀 제목이다: 제목은 팀 이름 그대로, 지어 준 고양이 이름은 그 옆에 따로 적는다
+  const isTitle = a.role === "lead" && multi;
+  const leadName = isTitle ? givenName(a) : undefined;
   return (
     <button
       data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
@@ -45,8 +48,9 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
       className="flex min-h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12.5px] hover:bg-[var(--chip)]"
     >
       {/* in the tree the indent already takes width, so the name takes only what it needs */}
-      <span className={`${tree ? "max-w-[68px]" : "w-[68px]"} shrink-0 truncate font-medium`}>{a.role === "lead" && multi ? (givenName(a) ?? project.name) : catName(a)}</span>
+      <span className={`${tree ? "max-w-[68px]" : "w-[68px]"} shrink-0 truncate font-medium`}>{isTitle ? project.name : catName(a)}</span>
       <span className="flex min-w-0 flex-auto items-baseline gap-1.5 text-ink-2">
+        {leadName && <span className="shrink-0">{leadName}</span>}
         {st.task && <span className="shrink-0 font-mono text-[11px] font-semibold text-[var(--text)]">{st.task.id}</span>}
         <span className="truncate">{st.task ? st.task.title : a.role === "lead" ? "" : (a.lastNote ?? "")}</span>
       </span>
