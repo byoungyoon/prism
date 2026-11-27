@@ -2,7 +2,7 @@
 //   node --test scripts/test/   (pnpm test)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { actsFor, emptyPlay, leavePlay, PLAY_MAX, quota, SCRIPTS, tickPlay } from "../../src/components/office/playRules.ts";
+import { actsFor, emptyPlay, dropRoom, leavePlay, passageRoute, placeInPlay, PLAY_MAX, quota, SCRIPTS, tickPlay } from "../../src/components/office/playRules.ts";
 
 const now = 1_000_000;
 const keys = ["a", "b", "c", "d", "e"];
@@ -59,4 +59,42 @@ test("들어 올린 고양이는 놀이를 그만두고 바로 다시 불려 가
   const s = leavePlay({ ...emptyPlay(), cats: { a: { act: "rod", step: 0, until: now + 5000 } } }, "a", now);
   assert.equal(s.cats.a, undefined);
   assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + 1000 }).cats.a, undefined);
+});
+
+test("사람이 놀이방에 놓은 고양이는 그 자리에 남고, 시간이 지나면 다시 놀이 규칙을 따른다", () => {
+  const spot = { x: 100, y: 200 };
+  const s = placeInPlay(leavePlay(emptyPlay(), "a", now), "a", spot, now);
+  assert.deepEqual(s.cats.a.spot, spot);
+  assert.equal(s.rest.a, undefined);
+  assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + 1000, random: first }), s);
+  assert.equal(tickPlay(s, { keys: ["a"], acts, now: now + SCRIPTS.stay[0].ms, random: first }).cats.a, undefined);
+  assert.ok(!actsFor(() => true).includes("stay"));
+});
+
+test("놓은 곳의 방을 고른다: 방 밖이면 가까운 방", () => {
+  const lounge = { x: 0, y: 0, w: 400, h: 400 };
+  const play = { x: 0, y: 422, w: 400, h: 390 };
+  assert.equal(dropRoom({ x: 200, y: 200 }, lounge, play), "lounge");
+  assert.equal(dropRoom({ x: 200, y: 600 }, lounge, play), "play");
+  assert.equal(dropRoom({ x: 200, y: 405 }, lounge, play), "lounge");
+  assert.equal(dropRoom({ x: 200, y: 418 }, lounge, play), "play");
+  assert.equal(dropRoom({ x: -300, y: 700 }, lounge, play), "play");
+});
+
+test("놀이방을 드나드는 걸음은 벽의 통로를 지난다", () => {
+  const p = { x: 200, half: 60, top: 400, bottom: 460, left: 0, right: 400, end: 850 };
+  const lounge = { x: 40, y: 300 };
+  const play = { x: 350, y: 700 };
+  const upper = { x: 200, y: 396 };
+  const lower = { x: 200, y: 500 };
+  assert.deepEqual(passageRoute(lounge, play, p, 50), [upper, lower]);
+  assert.deepEqual(passageRoute(play, lounge, p, 50), [lower, upper]);
+  // 책상이나 사무실 문(두 방 밖)에서 오가는 걸음도 마찬가지
+  assert.deepEqual(passageRoute({ x: -100, y: 700 }, play, p, 50), [upper, lower]);
+  // 같은 방 안에서는 바로 간다
+  assert.deepEqual(passageRoute(lounge, { x: 380, y: 120 }, p, 50), []);
+  assert.deepEqual(passageRoute(play, { x: 20, y: 600 }, p, 50), []);
+  // 통로 안에서 갈 곳이 바뀌면 가는 쪽 출구로 먼저 나간다
+  assert.deepEqual(passageRoute({ x: 210, y: 430 }, lounge, p, 50), [upper]);
+  assert.deepEqual(passageRoute({ x: 210, y: 430 }, play, p, 50), [lower]);
 });

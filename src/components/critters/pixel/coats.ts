@@ -102,8 +102,28 @@ export const temperOf = (coat: Coat): Temper => TEMPER[coat.id] ?? "docile";
 /** 코트 색과 어울리는 한국어 고양이 이름 (COATS와 같은 순서) */
 const CAT_NAMES = ["두부", "안개", "모모", "치즈", "보리", "은비", "까망이", "나비", "호두", "라떼", "솜이", "턱시"];
 
-/** 화면에 보이는 이름: 작업자·팀장의 W1/M1 같은 내부 이름은 털색에 맞는 고양이 별명으로. 내부 ID는 그대로. */
-export function catName(a: { name: string; role: "lead" | "mgr" | "worker"; projectId?: string }): string {
+/** 사용자가 지어 준 고양이 이름 (Prefs.catNames, 키는 coatKey) */
+let NAMED: Record<string, string> = {};
+export function setCatNames(names: Record<string, string>) {
+  NAMED = names;
+}
+
+/** 지어 줄 수 있는 이름의 글자 수 상한 (projects.rs `CAT_NAME_MAX`와 같게) */
+export const CAT_NAME_MAX = 12;
+
+type Member = { name: string; role: "lead" | "mgr" | "worker"; projectId?: string };
+
+/** 지어 준 이름 (없으면 undefined) */
+export const givenName = (a: Member): string | undefined => NAMED[coatKey(a) ?? ""];
+
+/** 팀원이 정리되고 카드에 내부 이름(task.who)만 남았을 때: 지어 준 이름이 있으면 그 이름, 없으면 그대로 */
+export const leftName = (projectId: string, who: string): string =>
+  (["worker", "mgr", "lead"] as const).map((role) => givenName({ projectId, role, name: who })).find(Boolean) ?? who;
+
+/** 화면에 보이는 이름: 지어 준 이름이 먼저. 없으면 작업자·팀장의 W1/M1 같은 내부 이름은 털색에 맞는 고양이 별명으로. 내부 ID는 그대로. */
+export function catName(a: Member): string {
+  const given = givenName(a);
+  if (given) return given;
   if (a.role === "lead" || !/^[A-Za-z]+\d+$/.test(a.name)) return a.name;
   return CAT_NAMES[COATS.indexOf(coatOf(a.name, a.role, coatKey(a)))] ?? a.name;
 }

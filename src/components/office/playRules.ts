@@ -4,10 +4,10 @@
 // (scripts/test/playroom.test.mjs). 그림과 자리 재기는 Playroom.tsx · Office.tsx.
 import type { Pose } from "../critters/state";
 
-export type Act = "tower" | "hammock" | "ball" | "rod" | "house" | "wheel" | "tunnel";
+export type Act = "tower" | "hammock" | "ball" | "rod" | "house" | "wheel" | "tunnel" | "stay";
 
 export interface PlayStep {
-  /** 설 자리: 놀이방의 data-play 이름. "ball"은 공 옆 (공 위치로 계산) */
+  /** 설 자리: 놀이방의 data-play 이름. "ball"은 공 옆 (공 위치로 계산), "stay"는 사람이 놓은 자리 */
   at: string;
   /** 걷지 않을 때의 자세 */
   pose: Pose;
@@ -55,6 +55,8 @@ export const SCRIPTS: Record<Act, PlayStep[]> = {
     { at: "tunnel-a", pose: "sit", ms: 2600, speed: 150, say: "까꿍" },
     { at: "tunnel-b", pose: "coffee", ms: 6000, speed: 150 },
   ],
+  // 사람이 놀이방에 놓은 고양이: 그 자리에 한동안 앉아 있다 (놀이 목록에는 없어 스스로 고르지 않는다)
+  stay: [{ at: "stay", pose: "sit", ms: 30000 }],
 };
 
 /** 처음부터 놀이방에 있는 놀이 */
@@ -68,6 +70,8 @@ export interface PlayCat {
   step: number;
   /** 다음 단계로 넘어가는 때 */
   until: number;
+  /** "stay": 사람이 놓은 자리 (놀이방 왼쪽 위에서 px) */
+  spot?: { x: number; y: number };
 }
 
 export interface PlayState {
@@ -120,7 +124,7 @@ export function tickPlay(s: PlayState, { keys, acts, now, busy = () => false, fi
     if (!keys.includes(k)) {
       delete cats[k];
       changed = true;
-    } else if (!acts.includes(c.act)) goHome(k);
+    } else if (c.act !== "stay" && !acts.includes(c.act)) goHome(k);
   for (const k of Object.keys(rest))
     if (!keys.includes(k)) {
       delete rest[k];
@@ -136,7 +140,7 @@ export function tickPlay(s: PlayState, { keys, acts, now, busy = () => false, fi
     if (now < c.until || busy(k)) continue;
     const next = SCRIPTS[c.act][c.step + 1];
     if (next) {
-      cats[k] = { act: c.act, step: c.step + 1, until: now + next.ms };
+      cats[k] = { ...c, step: c.step + 1, until: now + next.ms };
       if (next.roll) {
         // 길 끝에 닿으면 반대로 굴린다
         ballDir = ball > 0.7 ? -1 : ball < 0.3 ? 1 : random() < 0.7 ? ballDir : ((-ballDir) as 1 | -1);
@@ -174,4 +178,47 @@ export function leavePlay(s: PlayState, key: string, now: number): PlayState {
   const cats = { ...s.cats };
   delete cats[key];
   return { ...s, cats, rest: { ...s.rest, [key]: now + REST_MIN + REST_MORE } };
+}
+
+/** 사람이 놀이방에 놓은 고양이는 그 자리에 남는다 (정원이 차 있어도) */
+export function placeInPlay(s: PlayState, key: string, spot: { x: number; y: number }, now: number): PlayState {
+  const rest = { ...s.rest };
+  delete rest[key];
+  return { ...s, cats: { ...s.cats, [key]: { act: "stay", step: 0, until: now + SCRIPTS.stay[0].ms, spot } }, rest };
+}
+
+export type RoomName = "lounge" | "play";
+type Rect = { x: number; y: number; w: number; h: number };
+const away = (p: { x: number; y: number }, r: Rect) => Math.hypot(Math.max(r.x - p.x, 0, p.x - r.x - r.w), Math.max(r.y - p.y, 0, p.y - r.y - r.h));
+/** 고양이를 놓은 곳의 방: 방 밖(두 방 사이, 책상 쪽)이면 가까운 방 */
+export const dropRoom = (p: { x: number; y: number }, lounge: Rect, play: Rect): RoomName => (away(p, play) < away(p, lounge) ? "play" : "lounge");
+
+type Point = { x: number; y: number };
+/** 두 방 사이 벽의 통로 (화면에서 잰 px) */
+export interface Passage {
+  /** 통로 가운데와, 문틀 폭의 절반 */
+  x: number;
+  half: number;
+  /** 벽의 윗선과 아랫선 */
+  top: number;
+  bottom: number;
+  /** 놀이방(벽 아래)의 왼쪽·오른쪽·아래 끝 */
+  left: number;
+  right: number;
+  end: number;
+}
+
+/**
+ * 벽 너머로 걸어갈 때 거쳐 가는 곳. 놀이방을 드나드는 길은 통로 하나뿐이라, 놀이방 안과 밖을 오가는
+ * 걸음은 통로 앞뒤의 두 점을 지난다 (같은 쪽이면 바로 간다). size는 고양이 크기: 벽 아래쪽 점은
+ * 고양이 그림이 벽을 다 빠져나온 자리다.
+ */
+export function passageRoute(from: Point, to: Point, p: Passage, size: number): Point[] {
+  const upper = { x: p.x, y: p.top - 4 };
+  const lower = { x: p.x, y: p.bottom + size * 0.8 };
+  const inPlay = (q: Point) => q.y > p.bottom && q.y <= p.end + 20 && q.x >= p.left && q.x <= p.right;
+  // 통로 한가운데에서 갈 곳이 바뀌었으면: 가는 쪽 출구로 먼저 빠져나간다
+  if (Math.abs(from.x - p.x) <= p.half && from.y >= upper.y && from.y <= p.bottom) return [inPlay(to) ? lower : upper];
+  if (inPlay(from) === inPlay(to)) return [];
+  return inPlay(to) ? [upper, lower] : [lower, upper];
 }

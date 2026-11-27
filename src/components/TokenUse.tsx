@@ -4,6 +4,8 @@ import { useState } from "react";
 import type { Bucket, ModelUse, TeamSnapshot, UsageAlert } from "../lib/api";
 import { bucketTotal, clock, tokensText } from "../data/types";
 import { ChevronDown } from "./icons";
+import { leftName } from "./critters/pixel/coats";
+import { useApp } from "../store";
 import { useDismissed } from "../lib/crew";
 
 const MODEL_NAME: Record<string, string> = { fable: "Fable", opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
@@ -27,8 +29,9 @@ export function ModelChips({ models }: { models: ModelUse[] }) {
   );
 }
 
-function alertText(a: UsageAlert) {
-  const who = a.taskId ? `${a.agentName} (${a.taskId})` : a.agentName;
+function alertText(a: UsageAlert, projectId: string) {
+  const name = leftName(projectId, a.agentName);
+  const who = a.taskId ? `${name} (${a.taskId})` : name;
   if (a.kind === "big") return `${who} — 한 번에 문맥 ${tokensText(a.peakTokens ?? 0)}을 보냈어요. 대화가 길수록 매번 비싸요. 새 대화를 생각해 보세요.`;
   return `${who} — 짧은 시간에 ${a.turns ?? 0}번 연달아 차례를 썼어요. 반복되는 일이 없는지 봐 주세요.`;
 }
@@ -45,7 +48,7 @@ export function UsageWarnings({ alerts, teamKey }: { alerts: UsageAlert[]; teamK
       {alerts.map((a, i) => (
         <li key={`${a.at}-${i}`} className="flex gap-2 rounded-lg px-2 py-1.5 text-[12px] leading-normal" style={{ background: "var(--block-bg)", color: "var(--block-ink)" }}>
           <span className="shrink-0 font-mono text-[11px]">{clock(a.at)}</span>
-          <span className="min-w-0 flex-auto">{alertText(a)}</span>
+          <span className="min-w-0 flex-auto">{alertText(a, teamKey)}</span>
           <button onClick={() => dismiss(alertId(teamKey, a))} aria-label="경고 닫기" title="이 경고 닫기" className="size-5 shrink-0 cursor-pointer rounded border-0 bg-transparent p-0 text-[12px] leading-none hover:bg-[var(--chip)]" style={{ color: "inherit" }}>
             ✕
           </button>
@@ -59,6 +62,7 @@ export function UsageWarnings({ alerts, teamKey }: { alerts: UsageAlert[]; teamK
 export function TeamUsageBox({ team, label, projectId }: { team: TeamSnapshot; label?: string; projectId: string }) {
   const [open, setOpen] = useState(false);
   const { has } = useDismissed();
+  useApp((s) => s.catNames); // 이름을 바꾸면 다시 그린다
   const u = team.usage;
   if (!u) return null;
   const teamKey = projectId;
@@ -89,7 +93,7 @@ export function TeamUsageBox({ team, label, projectId }: { team: TeamSnapshot; l
           {u.members.map((m) => (
             <div key={m.agentId} className="flex flex-col gap-1 text-[12px]">
               <span className="flex items-baseline gap-2">
-                <span className="font-medium">{m.name}</span>
+                <span className="font-medium">{leftName(projectId, m.name)}</span>
                 <span className="ml-auto text-ink-2">{tokensText(bucketTotal(m))}</span>
               </span>
               <ModelChips models={m.models} />

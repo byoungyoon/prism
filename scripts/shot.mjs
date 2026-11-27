@@ -61,10 +61,18 @@ const SCREENS = {
   gift: "기념 선물을 받은 순간: 잔액 옆 '+250 새 버전 기념'과 안내 문구",
   arrange: "꾸민 휴게실: 소품 몇 개를 마우스로 끌어다 옮긴 모습",
   lift: "휴게실: 쉬던 고양이를 들어 올린 모습 (잡고 있는 상태)",
-  grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
+  grab: "고양이 잡기 검사: 책상·휴게실·걸어가는 고양이를 하나씩 눌러 끌어 보고, 휴게실·놀이방 사이에 놓아 보고 결과를 출력 (실패하면 오류로 끝남; -s multi)",
   "coat-menu": "휴게실 고양이를 우클릭해 털색 메뉴를 띄운 모습",
   "coat-done": "털색 메뉴에서 다른 색을 고른 뒤의 모습",
-  dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
+  "name-edit": "고양이 우클릭 메뉴에서 '이름 바꾸기'를 눌러 이름을 적는 모습",
+  "name-done": "이름을 바꾼 뒤의 모습 (이름표에 반영)",
+  "name-menu": "이름을 바꾼 고양이를 다시 우클릭한 모습 ('원래 이름으로')",
+  "name-long": "너무 긴 이름을 적고 Enter를 눌렀을 때",
+  "name-hold": "터치로 고양이를 길게 눌러 메뉴를 띄운 모습",
+  ext: "확장 메뉴를 연 모습 (-s dash-multi 는 슬랙 연결됨, dash-empty 는 연결 필요)",
+  "ext-slack": "확장 메뉴에서 슬랙 카드를 펼친 모습 (연결 설정 / 연결 끊기)",
+  "ext-web": "확장 메뉴에서 웹사이트 카드를 펼친 모습",
+  dashboard: "대시보드 화면 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
   account: "계정 화면 (맨 아래에 지금 버전 표시)",
   "account-end": "계정 화면을 맨 아래까지 내린 모습",
   "install-old": "안내: 예전 Prism이 아직 켜져 있음",
@@ -183,10 +191,17 @@ function fakeApi(cmd, args, data) {
     case "install_check":
       return data.install ?? null;
     case "prefs_set_coat": {
-      const coats = { ...data.prefs.coats };
+      const coats = { ...data.prefs?.coats };
       if (args.coat) coats[args.member] = args.coat;
       else delete coats[args.member];
       data.prefs = { ...data.prefs, coats };
+      return data.prefs;
+    }
+    case "prefs_set_cat_name": {
+      const catNames = { ...data.prefs?.catNames }; // 시나리오에 prefs가 없을 수도 있다
+      if (args.name) catNames[args.member] = args.name;
+      else delete catNames[args.member];
+      data.prefs = { ...data.prefs, catNames };
       return data.prefs;
     }
     case "gacha_info":
@@ -385,9 +400,75 @@ async function grabCats(page, o) {
     await page.locator(`.of-cats [data-critter="${walker}"]`).evaluate((el) => el.scrollIntoView({ block: "center" }));
     results.push(await grabOnce(page, walker, "걸어가는 중", null, shot("walking")));
   }
+  results.push(...(await dragRooms(page, o, shot)));
   const failed = results.filter((r) => !r).length;
   console.log(`  고양이 잡기: ${results.length - failed}/${results.length} 성공`);
   if (failed) throw new Error(`고양이 잡기 ${failed}건 실패`);
+}
+
+/** 놀이방 끌기 검사: 놀이방 안에서, 놀이방 → 휴게실, 휴게실 → 놀이방. 놓은 뒤 그 방에 남아 있어야 한다.
+ *  (성격에 따라 순순히 앉거나 "하악!" 하고 같은 방 안에서 달아난다: 어느 쪽이든 놓은 방이어야 한다) */
+async function dragRooms(page, o, shot) {
+  const size = page.viewportSize();
+  // 두 방이 한 화면에 들어오게 잠깐 키운다 (좁은 화면은 위아래로 놓인다)
+  await page.setViewportSize({ width: size.width, height: 1800 });
+  await page.waitForTimeout(1500);
+  await page.locator(".of-playroom").evaluate((el) => el.scrollIntoView({ block: "end" }));
+  await page.waitForTimeout(1500);
+  /** 고양이 발이 있는 방 */
+  const roomOf = (id) =>
+    page.evaluate((id) => {
+      const f = document.querySelector(`.of-cats [data-critter="${id}"]`).getBoundingClientRect();
+      for (const [name, sel] of [["놀이방", ".of-playroom"], ["휴게실", ".of-lounge"]]) {
+        const r = document.querySelector(sel).getBoundingClientRect();
+        if (f.left >= r.left && f.left <= r.right && f.top >= r.top && f.top <= r.bottom + 12) return name;
+      }
+      return "방 밖";
+    }, id);
+  const results = [];
+  const used = new Set();
+  const plan = [
+    ["놀이방", "놀이방"],
+    ["놀이방", "휴게실"],
+    ["휴게실", "놀이방"],
+    ["휴게실", "휴게실"],
+  ];
+  for (const [from, to] of plan) {
+    await page.waitForTimeout(2600);
+    let id = null;
+    for (const c of await catsNow(page)) if (!used.has(c.id) && (await roomOf(c.id)) === from) id ??= c.id;
+    // 처음 보는 고양이가 없으면 이미 옮겨 본 고양이도 쓴다
+    for (const c of await catsNow(page)) if ((await roomOf(c.id)) === from) id ??= c.id;
+    if (!id) {
+      console.log(`  FAIL ${from} → ${to}: ${from}에 고양이가 없음`);
+      results.push(false);
+      continue;
+    }
+    used.add(id);
+    const c = (await catsNow(page)).find((x) => x.id === id);
+    const room = await page.locator(to === "놀이방" ? ".of-playroom" : ".of-lounge").boundingBox();
+    // 같은 방 안에서는 방 반대쪽으로 옮긴다
+    const fx = c.x < room.x + room.width / 2 ? 0.72 : 0.28;
+    const tx = room.x + room.width * fx;
+    const ty = room.y + room.height * 0.7;
+    await page.mouse.move(c.x, c.y);
+    await page.mouse.down();
+    await page.mouse.move(tx, ty, { steps: 10 });
+    await page.waitForTimeout(120);
+    const lifted = (await catsNow(page)).find((x) => x.id === id).held;
+    const tag = `${from === "놀이방" ? "play" : "lounge"}-to-${to === "놀이방" ? "play" : "lounge"}`;
+    await shot(`${tag}-drag`)();
+    await page.mouse.up();
+    // 달아나는 고양이도 도착할 만큼 (놓인 고양이는 이보다 오래 그 방에 남는다)
+    await page.waitForTimeout(6000);
+    const now = await roomOf(id);
+    const ok = lifted && now === to;
+    console.log(`  ${ok ? "OK  " : "FAIL"} ${from} → ${to}  ${id}  놓은 뒤 6초: ${now}`);
+    await shot(`${tag}-after`)();
+    results.push(ok);
+  }
+  await page.setViewportSize(size);
+  return results;
 }
 
 /** 털색 메뉴 시연: 휴게실에서 쉬는 고양이 하나를 (없으면 아무 고양이나) 우클릭한다 */
@@ -400,6 +481,53 @@ async function rightClickCat(page) {
   const box = await ((await resting.count()) ? resting : cats).first().boundingBox();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.65, { button: "right" });
   await page.getByRole("menu").waitFor({ timeout: 5000 });
+  return box;
+}
+
+/** 이름 바꾸기 시연: 휴게실 고양이의 메뉴에서 이름을 적는다 */
+async function renameCat(page, screen) {
+  const cats = page.locator(".of-cats .cr-mover .critter[data-coat-key]");
+  if (screen === "name-hold") {
+    // 터치(CDP)로 길게 누른다: 손가락을 뗀 뒤에도 메뉴가 남고 작업 화면이 열리지 않아야 한다
+    await cats.first().waitFor({ timeout: 15000 });
+    await page.waitForTimeout(2500);
+    const box = await cats.first().boundingBox();
+    const touch = await page.context().newCDPSession(page);
+    await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height * 0.65 }] });
+    await page.waitForTimeout(800);
+    await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForTimeout(400);
+    const view = await page.evaluate(() => window.__app.getState().view.name);
+    if (!(await page.getByRole("menu").isVisible()) || view !== "main") throw new Error(`길게 누르기 실패 (화면: ${view})`);
+    console.log("  OK   길게 눌러 메뉴 열림");
+    return;
+  }
+  await rightClickCat(page);
+  const key = await page.getByRole("menu").getAttribute("aria-label");
+  await page.getByRole("menuitem", { name: "이름 바꾸기" }).click();
+  if (screen === "name-edit") return page.getByRole("textbox", { name: "새 이름" }).fill("콩떡이");
+  const input = page.getByRole("textbox", { name: "새 이름" });
+  if (screen === "name-long") {
+    await input.fill("아주아주긴고양이이름이에요");
+    await input.press("Enter");
+    return page.getByRole("alert").waitFor({ timeout: 5000 });
+  }
+  // Esc는 입력만 취소한다
+  await input.fill("취소할 이름");
+  await input.press("Escape");
+  await page.getByRole("menuitem", { name: "이름 바꾸기" }).click();
+  await input.fill("콩떡이");
+  await input.press("Enter");
+  await page.getByRole("menu").waitFor({ state: "detached", timeout: 5000 });
+  const tag = page.locator(".of-cats .cr-name, .of-plate").filter({ hasText: "콩떡이" });
+  await tag.first().waitFor({ timeout: 5000 });
+  console.log(`  OK   이름표에 반영됨 (${key})`);
+  if (screen === "name-menu") {
+    // 같은 고양이를 다시 고른다 (휴게실 고양이는 이름표가 없어 메뉴 이름으로 확인한다)
+    await rightClickCat(page);
+    await page.getByRole("menu", { name: "콩떡이 이름·털색 바꾸기" }).waitFor({ timeout: 5000 });
+    await page.getByRole("menuitem", { name: "원래 이름으로" }).waitFor({ timeout: 5000 });
+  }
 }
 
 /** 화면마다 앱을 여는 동작. 새로 열 때마다 호출된다 (이전 화면의 탭 선택 등이 남지 않게). */
@@ -410,7 +538,7 @@ async function openScreen(page, screen, o, data) {
   await page.evaluate(
     ({ screen, focus, dark, edit }) => {
       const app = window.__app;
-      const set = { dark, critters: true, error: null, mainTab: screen === "dashboard" || screen === "draft" ? "dashboard" : "office" };
+      const set = { dark, critters: true, error: null, dashboardOpen: screen === "dashboard" || screen === "draft" };
       if (screen === "home") set.view = { name: "home" };
       else if (screen === "settings") Object.assign(set, { view: { name: "settings" }, projectId: focus });
       else Object.assign(set, { view: { name: "main" }, projectId: focus ?? app.getState().projectId });
@@ -424,6 +552,12 @@ async function openScreen(page, screen, o, data) {
     if (screen === "office" || screen === "team") await phoneTab("사무실").click();
     if (screen === "board") await phoneTab("보드").click();
     if (screen === "chat") await phoneTab("총괄").click();
+  }
+  if (screen === "ext" || screen.startsWith("ext-")) {
+    await page.getByRole("button", { name: "확장", exact: true }).click();
+    const menu = page.getByRole("dialog", { name: "확장" });
+    await menu.waitFor();
+    if (screen !== "ext") await menu.getByRole("button", { name: screen === "ext-slack" ? /^슬랙/ : /^웹사이트/ }).click();
   }
   if (screen.startsWith("account")) {
     await page.evaluate(() => window.__app.getState().openAccounts());
@@ -449,6 +583,10 @@ async function openScreen(page, screen, o, data) {
       const other = page.getByRole("menu").locator('[role="menuitemradio"][aria-checked="false"]');
       if (await other.count()) await other.last().click();
     }
+  }
+  if (screen.startsWith("name-")) {
+    if (narrow) await phoneTab("사무실").click();
+    await renameCat(page, screen);
   }
   if (screen.startsWith("shop")) {
     await page.getByRole("button", { name: /츄르 상점/ }).click();
@@ -507,8 +645,9 @@ async function capture(browser, base, o, data, log) {
     const stem = `${o.name || o.scenario}-${screen}-${o.width}-${o.theme}`;
     for (let i = 0; i < o.frames; i++) {
       if (i > 0) await page.waitForTimeout(o.interval);
-      // 백엔드 연결 배지("다시 연결 중…")는 가짜 데이터라 항상 뜬다. 화면에서만 치운다
-      await page.evaluate(() => document.querySelectorAll('[role="status"]').forEach((el) => el.textContent?.includes("다시 연결") && el.remove()));
+      // 백엔드 연결 배지("다시 연결 중…")는 가짜 데이터라 항상 뜬다. 화면에서만 가린다.
+      // React가 만든 노드는 지우지 않는다: 지우면 그 앞에 새 창(고양이 메뉴 등)을 넣을 때 insertBefore 오류로 화면 전체가 하얘진다
+      await page.evaluate(() => document.querySelectorAll('[role="status"]').forEach((el) => el.textContent?.includes("다시 연결") && (el.style.display = "none")));
       const suffix = o.frames > 1 ? `-${String(i + 1).padStart(2, "0")}` : "";
       const file = path.join(o.out, `${stem}${suffix}.png`);
       await page.screenshot({ path: file, animations: "allow", timeout: 60000 });

@@ -9,6 +9,7 @@ import { Book, Moon, PanelLeft, PanelRight, Phone, Plus, Sun } from "./icons";
 import { KnowledgeSheet } from "./KnowledgeSheet";
 import { ShopSheet } from "./ShopSheet";
 import { RemoteCard } from "./RemoteCard";
+import { ExtensionButton } from "./extensions/ExtensionMenu";
 import { useShallow } from "zustand/react/shallow";
 
 
@@ -88,7 +89,7 @@ function UsageMeter() {
         }}
         aria-expanded={open}
         aria-label={failed ? "구독 사용량을 못 가져왔어요. 다시 시도" : "구독 남은 사용량"}
-        className="glass flex min-h-9 max-w-full items-center gap-x-3 rounded-full px-3.5 max-[820px]:gap-x-2 max-[820px]:px-3"
+        className="glass flex min-h-9 max-w-full items-center gap-x-3 rounded-full px-3.5 max-[820px]:gap-x-2 max-[820px]:px-3 max-[480px]:px-2"
       >
         {shown.length ? (
           <>
@@ -98,19 +99,19 @@ function UsageMeter() {
               return (
                 <span key={w.id} className={`items-center gap-1.5 ${i > 0 ? "flex max-[820px]:hidden" : "flex"}`}>
                   <span className="text-[11.5px] text-ink-2 max-[820px]:hidden">{w.label}</span>
-                  <Bar left={left} />
+                  <span className="flex max-[480px]:hidden"><Bar left={left} /></span>
                   <span className="font-mono text-[12px] font-medium">{Math.round(left)}%</span>
                 </span>
               );
             })}
           </>
         ) : pending ? (
-          <span className="text-xs text-ink-2">구독 사용량 확인 중…</span>
+          <span className="text-xs whitespace-nowrap text-ink-2"><span className="max-[480px]:hidden">구독 사용량 </span>확인 중…</span>
         ) : (
           <span className="flex items-center gap-1 text-xs whitespace-nowrap text-ink-2">
             <span aria-hidden="true" style={{ color: "var(--block)" }}>⚠</span>
             <span className="max-[820px]:hidden">사용량을 못 가져왔어요</span>
-            <span className="min-[821px]:hidden">사용량 실패</span>
+            <span className="min-[821px]:hidden max-[480px]:hidden">사용량 실패</span>
             <span className="font-semibold underline">(다시 시도)</span>
           </span>
         )}
@@ -222,7 +223,7 @@ function KnowledgeButton() {
       <button
         onClick={() => setOpen(true)}
         title="모든 AI가 참고할 메모 (서버 정보, 규칙…)" aria-label="지식"
-        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 max-[480px]:px-2 text-[12.5px] font-medium"
         style={{ border: "1px solid var(--line)" }}
       >
         <Book size={15} />
@@ -242,7 +243,7 @@ function ChurruButton() {
         onClick={() => useApp.getState().openShop(true)}
         aria-label={`츄르 상점 (잔액 ${churu}개)`}
         title="츄르로 고양이 털색과 휴게실 물건을 사요"
-        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium"
+        className="flex min-h-9 items-center gap-1.5 rounded-full px-3 max-[480px]:px-2 text-[12.5px] font-medium"
         style={{ border: "1px solid var(--line)" }}
       >
         <span aria-hidden="true">🐟</span>
@@ -289,40 +290,11 @@ function RewardFlash() {
   );
 }
 
-/** 관제탑 맨 위 탭: 사무실 · 대시보드 (사무실 탭 옆) */
-function MainTabs() {
-  const tab = useApp((s) => s.mainTab);
-  const setMainTab = useApp((s) => s.setMainTab);
-  const items = [
-    { id: "office", label: "🏢 사무실" },
-    { id: "dashboard", label: "📊 대시보드" },
-  ] as const;
-  return (
-    <div role="tablist" aria-label="보기 방식" className="glass flex gap-0.5 rounded-full p-1">
-      {items.map((t) => {
-        const on = tab === t.id;
-        return (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={on}
-            onClick={() => setMainTab(t.id)}
-            className="min-h-8 rounded-full border-0 px-3.5 text-[12.5px] font-medium"
-            style={on ? { background: "var(--amber)", color: "#2B2520" } : { background: "transparent", color: "var(--text)" }}
-          >
-            {t.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 /** Clock in another team: its 총괄 joins the stack on the left. */
 function AddTeam() {
   const go = useApp((s) => s.go);
   return (
-    <button onClick={() => go({ name: "home" })} title="다른 팀도 출근시키기" aria-label="팀 추가" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)]">
+    <button onClick={() => go({ name: "home" })} title="다른 팀도 출근시키기" aria-label="팀 추가" className="flex min-h-[34px] items-center gap-1 rounded-full px-2.5 max-[480px]:px-1.5 text-[12.5px] font-medium text-ink-2 hover:bg-[var(--chip)]">
       <Plus size={15} />
       <span className="max-[820px]:hidden">팀 추가</span>
     </button>
@@ -352,7 +324,7 @@ export function TopBar() {
     // left padding keeps clear of the macOS traffic lights
     <header
       data-tauri-drag-region
-      className={`relative flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 max-[820px]:flex-nowrap max-[820px]:gap-1 py-1.5 pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.375rem,env(safe-area-inset-top))] ${isRemote ? "pl-[max(1rem,env(safe-area-inset-left))]" : "pl-[88px]"}`}
+      className={`relative flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 max-[820px]:gap-1 max-[480px]:gap-0.5 py-1.5 pr-[max(0.75rem,env(safe-area-inset-right))] pt-[max(0.375rem,env(safe-area-inset-top))] ${isRemote ? "pl-[max(1rem,env(safe-area-inset-left))]" : "pl-[88px]"}`}
       style={{ borderBottom: "1px solid var(--line)" }}
     >
       {!onHome && (
@@ -362,10 +334,10 @@ export function TopBar() {
       )}
       {hasProject && !onHome && <AddTeam />}
       {!onHome && <ClockInAll />}
-      {view.name === "main" && <MainTabs />}
 
       <div data-tauri-drag-region className="flex-auto self-stretch" />
 
+      <ExtensionButton />
       <ChurruButton />
       <KnowledgeButton />
       {!isRemote && <PhoneAccess />}
