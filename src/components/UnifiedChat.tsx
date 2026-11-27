@@ -15,7 +15,7 @@ import { ArrowUp, ChevronDown, Gear } from "./icons";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
-import { MergeGroup, ReportMerge } from "./MergeActions";
+import { MergeGroup, ReportMerge, redoOf } from "./MergeActions";
 import { BatchCard, absorbKey, batchHasReport, groupBatches, type BatchItem } from "./BatchCard";
 import { Markdown } from "./Markdown";
 
@@ -105,14 +105,14 @@ export function UnifiedChat() {
   // only the newest RECENT_STEP are drawn (older on request)
   const recent = useRecent(shownItems, scrollRef, view);
 
-  // 팀별 합치기 대기 카드(보고가 채팅에 있는 것만)와, 묶음 카드가 들어갈 마지막 보고 자리
+  // 팀별 적용 대기 카드(보고가 채팅에 있는 것만)와, 묶음 카드가 들어갈 마지막 보고 자리
   const pendingOf = (pid: string, team: { tasks: Task[] }) =>
-    team.tasks.filter((t) => t.stage === "review" && items.some((i) => "m" in i && i.pid === pid && i.m.kind === "report" && i.m.taskIds[0] === t.id));
+    team.tasks.filter((t) => t.stage === "review" && !redoOf(team.tasks, t.id) && items.some((i) => "m" in i && i.pid === pid && i.m.kind === "report" && i.m.taskIds[0] === t.id));
   const lastPendingKey: Record<string, string> = {};
   for (const it of shownItems) {
     if (!("m" in it) || it.m.kind !== "report" || !it.m.taskIds[0]) continue;
     const t = byId[it.pid]?.team.tasks.find((x) => x.id === it.m.taskIds[0]);
-    if (t?.stage === "review") lastPendingKey[it.pid] = it.key;
+    if (t?.stage === "review" && !redoOf(byId[it.pid].team.tasks, t.id)) lastPendingKey[it.pid] = it.key;
   }
 
   useEffect(() => {
@@ -317,7 +317,7 @@ export function UnifiedChat() {
             const team = byId[it.pid];
             if (!team) return null;
             if (it.m.kind === "report" && it.m.taskIds[0]) {
-              // 같은 팀의 합치기 대기 카드가 2장 이상이면 마지막 보고 자리에 한 카드로 묶는다 (팀이 다르면 따로)
+              // 같은 팀의 적용 대기 카드가 2장 이상이면 마지막 보고 자리에 한 카드로 묶는다 (팀이 다르면 따로)
               const tid = it.m.taskIds[0];
               const pend = pendingOf(it.pid, team.team);
               if (pend.length >= 2 && pend.some((t) => t.id === tid)) {
@@ -352,9 +352,9 @@ export function UnifiedChat() {
                   <FoldCard
                     id={it.m.taskIds[0]}
                     failed={team.team.tasks.find((t) => t.id === it.m.taskIds[0])?.stage === "failed"}
-                    line={firstLine(it.m.text)}
+                    line={team.team.tasks.find((t) => t.id === it.m.taskIds[0])?.stage === "review" ? "" : firstLine(it.m.text)}
                     text={it.m.text}
-                    footer={<ReportMerge project={team.project} team={team.team} taskId={it.m.taskIds[0]} />}
+                    footer={<ReportMerge project={team.project} team={team.team} taskId={it.m.taskIds[0]} text={it.m.text} />}
                   />
                 ) : (
                   <div className="glass-soft rounded-[4px_14px_14px_14px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={it.m.text} /></div>

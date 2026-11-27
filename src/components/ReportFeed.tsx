@@ -14,7 +14,7 @@ import { ENGINE_EXTS, engineFor } from "../engines/registry";
 import type { EngineDef } from "../engines/types";
 import { useEngineEdit } from "../engines/editing";
 import { EngineFileCard } from "../engines/EngineFileCard";
-import { MergeActions, MergeBulk, type Pick } from "./MergeActions";
+import { MergeActions, MergeBulk, brief, hasDecision, redoOf, type Pick } from "./MergeActions";
 import { CardUsageText } from "./TokenUse";
 import { catName, leftName } from "./critters/pixel/coats";
 
@@ -282,7 +282,7 @@ function Results({ task, pid, who }: { task: Task; pid: string; who: string }) {
 
 // ── one piece of work ─────────────────────────────
 
-const WORD: Record<Task["stage"], string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
+const WORD: Record<Task["stage"], string> = { queued: "대기", running: "진행 중", review: "적용 대기", done: "완료", failed: "실패" };
 
 /** State in plain words; only problems get color. */
 function stateOf(task: Task, team: TeamSnapshot) {
@@ -472,7 +472,7 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
         {!finished && !last && task.stage === "running" && <span>· 시작하는 중</span>}
       </div>
 
-      {shut && firstLine && (
+      {shut && firstLine && task.stage !== "review" && (
         <p className="m-0 truncate pl-0.5 text-[13px]" style={{ color: task.stage === "failed" ? "var(--block-ink)" : "var(--text2)" }}>
           {firstLine}
         </p>
@@ -488,8 +488,17 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
         </div>
       )}
       {(task.stage === "running" || (finished && task.stage !== "failed")) && !shut && <Results task={task} pid={project.id} who={(assignee && catName(assignee)) ?? (task.who ? leftName(project.id, task.who) : "작업자")} />}
-      {/* a report waiting for review: 합치기 into the team's branch, or 완료 when there's nothing to merge */}
-      <MergeActions project={project} task={task} pick={pick} />
+      {/* the decision: what changed, checks, captures, 적용하기 / 다시 해줘. Open cards already show the words above. */}
+      <MergeActions project={project} task={task} pick={pick} what={shut ? brief(leadNote?.text ?? task.summary) : null} />
+      {/* a redo (or more work) on this card reports back here too */}
+      {subs.filter((t) => t.followOf && hasDecision(t)).map((t) => (
+        <div key={t.id} className="flex flex-col gap-1 pt-1.5" style={{ borderTop: "1px solid var(--line)" }}>
+          <span className="min-w-0 truncate text-[12px] font-semibold">
+            <span className="font-mono text-[11px]">{t.id}</span> {t.title}
+          </span>
+          <MergeActions project={project} task={t} />
+        </div>
+      ))}
 
       {subs.length > 0 && !shut && (
         <div className="flex flex-col gap-1 pt-1" style={{ borderTop: "1px solid var(--line)" }}>
@@ -504,7 +513,8 @@ function TaskCard({ task, subs, team, project, fold, pick }: { task: Task; subs:
           ))}
         </div>
       )}
-      {canFollow && !shut && <FollowUp project={project} target={target} who={(() => { const a = team.agents.find((x) => x.id === target.assignee); return a ? catName(a) : "담당자"; })()} />}
+      {/* a card waiting to be applied has 다시 해줘 instead */}
+      {canFollow && !shut && target.stage !== "review" && <FollowUp project={project} target={target} who={(() => { const a = team.agents.find((x) => x.id === target.assignee); return a ? catName(a) : "담당자"; })()} />}
     </motion.article>
   );
 }
@@ -541,9 +551,9 @@ function TeamSection({ project, team, multi }: { project: Project; team: TeamSna
   const isSettled = (t: Task) => settled(t) && subsOf(t).every(settled);
   // 여러 장 고르기: picked report cards merge together (null: not picking)
   const [picking, setPicking] = useState<string[] | null>(null);
-  const toMerge = sorted.filter((t) => t.stage === "review");
+  const toMerge = sorted.filter((t) => t.stage === "review" && !redoOf(team.tasks, t.id));
   const pickOf = (t: Task): Pick | undefined =>
-    picking && t.stage === "review"
+    picking && toMerge.includes(t)
       ? { on: picking.includes(t.id), toggle: () => setPicking((p) => (p ?? []).includes(t.id) ? (p ?? []).filter((x) => x !== t.id) : [...(p ?? []), t.id]) }
       : undefined;
   const [opened, setOpened] = useState<Record<string, boolean>>({});

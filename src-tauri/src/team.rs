@@ -122,6 +122,18 @@ pub struct Task {
     /// member is cleared from the team (see `prune_finished`)
     #[serde(default)]
     pub who: Option<String>,
+    /// the checks (tests, build) the report said it ran: "passed" | "failed" (None: none were told)
+    #[serde(default)]
+    pub check: Option<String>,
+    /// screen captures the report named: image paths inside the work copy
+    #[serde(default)]
+    pub shots: Vec<String>,
+    /// the merge commit the user's 적용하기 made, while it can still be taken back
+    #[serde(default)]
+    pub applied: Option<String>,
+    /// the user took the applied work back (되돌리기)
+    #[serde(default)]
+    pub undone: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -3808,6 +3820,12 @@ impl TeamManager {
             return Ok(format!("{tid}를 하고 있는 {}에게 추가 지시를 바로 전달했어요.", agent.name));
         }
 
+        // work that was taken back is still in the branch's history: merging it again would bring nothing
+        let body = if task.undone {
+            format!("{text}\n(주의: 사용자가 {tid}의 적용을 되돌렸어요. 그 변경이 다시 필요하면 팀 브랜치를 네 브랜치에 merge 한 뒤, 되돌리기 커밋(Revert)을 git revert 해서 살려 두고 작업하세요.)")
+        } else {
+            text.to_string()
+        };
         team.next_task += 1;
         let fid = format!("T-{}", team.next_task);
         let now = now_ms();
@@ -3815,7 +3833,7 @@ impl TeamManager {
         team.tasks.push(Task {
             id: fid.clone(),
             title: short(text, 30),
-            goal: text.into(),
+            goal: body.clone(),
             files: vec![],
             done_when: vec![],
             requested_by: task.requested_by.clone(),
@@ -3829,6 +3847,10 @@ impl TeamManager {
             created_at: now,
             updated_at: now,
             follow_of: Some(tid.into()),
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who,
         });
 
@@ -3891,7 +3913,7 @@ impl TeamManager {
         team.log(format!("{by}가 {tid}에 이어서 {fid}를 {}에게 맡겼다.", agent.name), None);
         if !fresh {
             let branch = team.agent(&aid).and_then(|a| a.branch.clone());
-            let card = prompts::task_card(&fid, &short(text, 30), text, &[], &[], branch.as_deref());
+            let card = prompts::task_card(&fid, &short(text, 30), &body, &[], &[], branch.as_deref());
             self.inject(team, &aid, format!("[Prism 추가 작업 · {tid}에 이어서]\n{card}"));
         }
         Ok(format!("{tid}에 이어서 {fid}를 {}에게 맡겼어요. 끝나면 '[Prism 보고]'가 와요.", agent.name))
@@ -3903,11 +3925,16 @@ impl TeamManager {
         let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
         let out = self.follow_up(team, tid, text.trim(), true)?;
         team.say("me", format!("{tid}에 이어서: {}", text.trim()), None);
-        // the 총괄 stays in the loop: it reviews and merges when the report comes
+        // the 총괄 stays in the loop. Only with 자동 적용 on does it apply the result itself.
+        let next = if team.project.team.auto_merge {
+            "보고가 오면 평소처럼 확인해 적용(git merge)하고 complete_task 하세요."
+        } else {
+            "보고가 오면 결과만 짧게 알려주세요. 적용은 사용자가 보고 카드의 적용하기 버튼으로 하니 직접 git merge 하거나 complete_task 하지 마세요."
+        };
         self.inject(
             team,
             "lead",
-            format!("[Prism 알림] 사용자가 작업 카드에서 직접 맡겼어요 — {out} 보고가 오면 평소처럼 검토·머지하고 complete_task 하세요. 사용자에게는 접수했다고 한 줄만 답하세요."),
+            format!("[Prism 알림] 사용자가 작업 카드에서 직접 맡겼어요 — {out} {next} 사용자에게는 접수했다고 한 줄만 답하세요."),
         );
         self.emit(team);
         Ok(())
@@ -4975,14 +5002,16 @@ impl TeamManager {
             "inputSchema": { "type": "object", "properties": { "agent": { "type": "string" }, "message": { "type": "string" } }, "required": ["agent", "message"] }
         });
         let complete = json!({
-            "name": "complete_task", "description": "하위 작업을 검토·머지한 뒤 완료 처리한다. 해당 에이전트 세션이 정리된다.",
+            "name": "complete_task", "description": "하위 작업을 검토·적용한 뒤 완료 처리한다. 해당 에이전트 세션이 정리된다.",
             "inputSchema": { "type": "object", "properties": { "task_id": { "type": "string" }, "note": { "type": "string" } }, "required": ["task_id"] }
         });
         let report = json!({
             "name": "report", "description": "맡은 작업 카드의 결과를 상위에 보고한다.",
             "inputSchema": { "type": "object", "properties": {
                 "status": { "type": "string", "enum": ["done", "failed"] },
-                "summary": { "type": "string", "description": "3줄 이내 요약" }
+                "summary": { "type": "string", "description": "3줄 이내 요약. 첫 두 줄은 무엇이 바뀌었는지 개발을 모르는 사람도 알 수 있게" },
+                "check": { "type": "string", "enum": ["passed", "failed", "none"], "description": "테스트·빌드·타입 검사 결과. 돌리지 않았으면 none" },
+                "shots": { "type": "array", "items": { "type": "string" }, "description": "바뀐 화면을 찍은 이미지 파일 경로 (네 작업 폴더 안, 최대 4장). 화면이 안 바뀌었으면 생략" }
             }, "required": ["status", "summary"] }
         });
         let escalate = json!({
@@ -5071,6 +5100,10 @@ impl TeamManager {
                     created_at: now,
                     updated_at: now,
                     follow_of: None,
+                    check: None,
+                    shots: vec![],
+                    applied: None,
+                    undone: false,
                     who: None,
                 });
                 team.log(format!("{}이(가) {id} \"{}\"를 만들었다.", me.name, short(&s("title").unwrap_or_default(), 30)), None);
@@ -5183,7 +5216,11 @@ impl TeamManager {
                 let ok = s("status").as_deref() != Some("failed");
                 let summary = s("summary").unwrap_or_default();
                 let branch = me.branch.clone();
+                let check = s("check").filter(|c| c == "passed" || c == "failed");
+                let shots = report_shots(&me.cwd, &v("shots"));
                 if let Some(t) = team.task_mut(&tid) {
+                    t.check = check;
+                    t.shots = shots;
                     t.stage = if ok { "review".into() } else { "failed".into() };
                     t.summary = Some(summary.clone());
                     t.branch = branch.clone();
@@ -5205,12 +5242,12 @@ impl TeamManager {
                     let auto = team.project.team.auto_merge && to_lead;
                     let mut msg = format!("[Prism 보고] {tid} ({}) {}: {summary}", me.name, if ok { "완료" } else { "실패" });
                     if closed {
-                        msg += " — 바뀐 파일이 없어 이미 완료 처리했어요. 합치거나 complete_task 할 필요 없이 사용자에게 결과만 알려주세요.";
+                        msg += " — 바뀐 파일이 없어 이미 완료 처리했어요. 적용하거나 complete_task 할 필요 없이 사용자에게 결과만 알려주세요.";
                     } else if let Some(b) = branch {
                         if auto {
                             msg += &format!(" — 브랜치 {b} 를 확인한 뒤 사용자에게 묻지 말고 팀 브랜치에 git merge 하고 complete_task(\"{tid}\")를 호출하세요. 충돌이나 검사 실패가 있을 때만 사용자에게 물어보세요.");
                         } else if to_lead {
-                            msg += " — 사용자가 화면의 합치기 버튼으로 합칠 거예요. 직접 합치거나 complete_task 하지 말고 결과만 알려주세요.";
+                            msg += " — 사용자가 보고 카드의 적용하기 버튼으로 적용할 거예요. 직접 git merge 하거나 complete_task 하지 말고, '적용할까요?'라고 묻지도 말고, 무엇이 바뀌었는지 1~2줄만 알려주세요.";
                         } else {
                             msg += &format!(" — 브랜치 {b} 를 확인·머지한 뒤 complete_task(\"{tid}\")를 호출하세요.");
                         }
@@ -5316,57 +5353,86 @@ impl TeamManager {
         }
     }
 
-    /// The user's 합치기: each card's branch goes into the team's branch, one after another. A clean
+    /// The user's 적용하기: each card's branch goes into the team's branch, one after another. A clean
     /// merge completes the card; a conflict is taken back out and handed to the 총괄 to resolve.
     pub fn merge_cards(&self, pid: &str, tids: &[String]) -> Result<Vec<MergeOutcome>, String> {
         let mut teams = self.teams.lock().unwrap();
         let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
-        let into = team.branch.clone().ok_or("팀 브랜치가 없어서 합칠 수 없어요")?;
-        // the merge happens where the team's branch is checked out, with nothing unsaved in the way
-        let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
-        if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
-            return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
-        }
-        if !sys::changes(&dir).is_empty() {
-            return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
-        }
+        let (dir, into) = ready_dir(team)?;
         let out = tids.iter().map(|tid| self.merge_card(team, &dir, &into, tid)).collect();
         self.emit(team);
         Ok(out)
+    }
+
+    /// 되돌리기 on work the user applied: the merge is undone by a new commit (history stays). If the
+    /// same lines changed again since, nothing is touched.
+    pub fn undo_card(&self, pid: &str, tid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 없어요")?;
+        let sha = team.tasks.iter().find(|t| t.id == tid).and_then(|t| t.applied.clone()).ok_or("되돌릴 수 있는 적용이 없어요")?;
+        let (dir, _) = ready_dir(team)?;
+        git_undo(&dir, &sha)?;
+        if let Some(t) = team.task_mut(tid) {
+            t.applied = None;
+            t.undone = true;
+            t.updated_at = now_ms();
+        }
+        team.log(format!("사용자가 {tid}의 적용을 되돌렸다."), None);
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 적용했던 {tid}를 되돌렸어요. 이 알림에는 — 한 글자로만 답하세요."));
+        self.emit(team);
+        Ok(())
     }
 
     fn merge_card(&self, team: &mut Team, dir: &str, into: &str, tid: &str) -> MergeOutcome {
         let outcome = |result: &str, message: String| MergeOutcome { task_id: tid.into(), result: result.into(), message };
         let Some(t) = team.tasks.iter().find(|t| t.id == tid) else { return outcome("failed", "그런 작업 카드가 없어요".into()) };
         if t.stage != "review" {
-            return outcome("failed", "합치기를 기다리는 보고만 합칠 수 있어요".into());
+            return outcome("failed", "적용을 기다리는 보고만 적용할 수 있어요".into());
         }
-        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "합칠 브랜치가 없어요".into()) };
+        // a redo works on the same branch: applying the older report would take in its half-done work
+        if let Some(next) = redo_of(&team.tasks, tid) {
+            return outcome("failed", format!("{next}에서 다시 하고 있어요. 그 보고에서 적용해 주세요."));
+        }
+        let Some(branch) = card_branch(team, t) else { return outcome("nothing", "적용할 변경이 없어요".into()) };
         match merge_scope(dir, into, &branch) {
-            Ok((0, _)) => return outcome("nothing", "합칠 변경이 없어요".into()),
+            Ok((0, _)) => return outcome("nothing", "적용할 변경이 없어요".into()),
             Ok(_) => {}
             Err(e) => return outcome("failed", e),
         }
         match git_merge(dir, &branch) {
             Merge::Merged => {
-                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 합쳐 완료 처리했다.")) {
+                let sha = sys::git(dir, &["rev-parse", "HEAD"]).ok();
+                if let Err(e) = self.finish_card(team, tid, format!("사용자가 {tid}를 {into}에 적용해 완료 처리했다.")) {
                     return outcome("failed", e);
                 }
-                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 합쳤어요. 이 알림에는 — 한 글자로만 답하세요."));
-                outcome("merged", format!("{tid}를 합쳤어요."))
+                if let Some(t) = team.task_mut(tid) {
+                    t.applied = sha;
+                }
+                // the earlier reports this one redid came in with it
+                let mut up = team.tasks.iter().find(|t| t.id == tid).and_then(|t| t.follow_of.clone());
+                while let Some(id) = up {
+                    let Some(t) = team.tasks.iter().find(|t| t.id == id) else { break };
+                    up = t.follow_of.clone();
+                    let in_too = t.stage == "review" && card_branch(team, t).is_some_and(|b| matches!(merge_scope(dir, into, &b), Ok((0, _))));
+                    if in_too {
+                        let _ = self.finish_card(team, &id, format!("{id}는 {tid}와 함께 적용됐다."));
+                    }
+                }
+                self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 적용했어요. 이 알림에는 — 한 글자로만 답하세요."));
+                outcome("merged", "적용했어요".into())
             }
             Merge::Conflict => {
-                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 합치기를 취소했다."), Some("block"));
+                team.log(format!("{tid}는 {into}와 겹치는 부분이 있어 적용을 취소했다."), Some("block"));
                 let told = self.inject(team, "lead", format!(
-                    "[Prism 알림] 사용자가 {tid}를 합치려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 합치기를 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
+                    "[Prism 알림] 사용자가 {tid}를 적용하려 했는데 팀 브랜치 {into}와 겹치는 부분이 있어 적용을 취소했어요. 브랜치 {branch}를 {into}에 git merge 해서 충돌을 해결하고, 끝나면 complete_task(\"{tid}\")를 호출하세요. 사용자에게는 겹치는 부분을 맡겼다고 한 줄만 답하세요."
                 ));
                 if told {
                     outcome("conflict", "겹치는 부분이 있어 총괄에게 맡겼어요.".into())
                 } else {
-                    outcome("conflict", "겹치는 부분이 있어 합치지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
+                    outcome("conflict", "겹치는 부분이 있어 적용하지 않았어요. 총괄이 없어서 넘기지 못했어요.".into())
                 }
             }
-            Merge::Failed(e) => outcome("failed", format!("합치지 못했어요: {e}")),
+            Merge::Failed(e) => outcome("failed", format!("적용하지 못했어요: {e}")),
         }
     }
 
@@ -5379,7 +5445,7 @@ impl TeamManager {
             return Err("보고가 온 카드만 완료할 수 있어요".into());
         }
         self.finish_card(team, tid, format!("사용자가 {tid}를 완료 처리했다."))?;
-        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(합칠 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
+        self.inject(team, "lead", format!("[Prism 알림] 사용자가 {tid}를 완료 처리했어요(적용할 변경은 없었어요). 이 알림에는 — 한 글자로만 답하세요."));
         self.emit(team);
         Ok(())
     }
@@ -5840,7 +5906,7 @@ pub struct MergeCheck {
     pub files: usize,
 }
 
-/// One card's outcome of 합치기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
+/// One card's outcome of 적용하기, as the UI shows it. `result`: "merged" | "nothing" | "conflict" | "failed".
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeOutcome {
@@ -5852,6 +5918,57 @@ pub struct MergeOutcome {
 /// The branch a card's work is on: the card's own, else its member's.
 fn card_branch(team: &Team, t: &Task) -> Option<String> {
     t.branch.clone().or_else(|| t.assignee.as_deref().and_then(|a| team.agent(a)).and_then(|a| a.branch.clone()))
+}
+
+/// Where the team's branch is checked out, with nothing unsaved in the way: (folder, branch).
+fn ready_dir(team: &Team) -> Result<(String, String), String> {
+    let into = team.branch.clone().ok_or("팀 작업 공간이 없어서 적용할 수 없어요")?;
+    let dir = if team.home.is_some() { team.cwd.clone() } else { team.project.path.clone() };
+    if sys::current_branch(&dir).as_deref() != Some(into.as_str()) {
+        return Err(format!("팀 브랜치 '{into}'가 지금 열려 있지 않아요. 브랜치를 맞춘 뒤 다시 해주세요."));
+    }
+    if !sys::changes(&dir).is_empty() {
+        return Err("저장하지 않은 수정이 있어요. 팀원이 일을 마치거나 정리한 뒤 다시 해주세요.".into());
+    }
+    Ok((dir, into))
+}
+
+/// The newest unfinished follow-up of a card (directly or further down), if any.
+fn redo_of(tasks: &[Task], tid: &str) -> Option<String> {
+    let after = |t: &Task| {
+        let mut up = t.follow_of.as_deref();
+        for _ in 0..tasks.len() {
+            match up {
+                Some(id) if id == tid => return true,
+                Some(id) => up = tasks.iter().find(|x| x.id == id).and_then(|x| x.follow_of.as_deref()),
+                None => break,
+            }
+        }
+        false
+    };
+    tasks.iter().rev().find(|t| matches!(t.stage.as_str(), "queued" | "running" | "review") && after(t)).map(|t| t.id.clone())
+}
+
+/// The most screen captures one report keeps.
+const REPORT_SHOTS_MAX: usize = 4;
+
+/// The captures a report named that really are images inside the member's work copy, as paths relative to it.
+fn report_shots(cwd: &str, named: &[String]) -> Vec<String> {
+    if !sys::is_work_copy(cwd) {
+        return vec![];
+    }
+    let root = std::path::Path::new(cwd);
+    named
+        .iter()
+        .filter_map(|p| {
+            let p = std::path::Path::new(p.trim());
+            let rel = rel_path(&p.strip_prefix(root).unwrap_or(p).to_string_lossy()).ok()?;
+            let name = rel.to_string_lossy().replace('\\', "/");
+            let image = [".png", ".jpg", ".jpeg", ".webp"].iter().any(|x| name.to_lowercase().ends_with(x));
+            (image && matches!(disk_file(root, &rel), Ok(Some(_)))).then_some(name)
+        })
+        .take(REPORT_SHOTS_MAX)
+        .collect()
 }
 
 /// Commits on `branch` that `into` doesn't have yet, and the files they change (outside `.prism/`).
@@ -5876,7 +5993,8 @@ enum Merge {
 }
 
 fn git_merge(dir: &str, branch: &str) -> Merge {
-    match sys::git(dir, &["merge", "--no-edit", branch]) {
+    // always a merge commit, so 되돌리기 can take back exactly this one
+    match sys::git(dir, &["merge", "--no-ff", "--no-edit", branch]) {
         Ok(_) => Merge::Merged,
         Err(e) => {
             // a conflict leaves MERGE_HEAD behind; any other refusal leaves nothing to undo
@@ -5886,10 +6004,31 @@ fn git_merge(dir: &str, branch: &str) -> Merge {
             }
             match sys::git(dir, &["merge", "--abort"]) {
                 Ok(_) => Merge::Conflict,
-                Err(a) => Merge::Failed(format!("합치기를 취소하지 못했어요: {a}")),
+                Err(a) => Merge::Failed(format!("적용을 취소하지 못했어요: {a}")),
             }
         }
     }
+}
+
+/// Reverts the merge commit `sha`. A clash is taken back out, so the folder is as it was.
+fn git_undo(dir: &str, sha: &str) -> Result<(), String> {
+    if sys::git(dir, &["merge-base", "--is-ancestor", sha, "HEAD"]).is_err() {
+        return Err("지금 작업에는 그 적용이 없어서 되돌릴 수 없어요".into());
+    }
+    sys::git(dir, &["revert", "--no-edit", "-m", "1", sha]).map(|_| ()).map_err(|e| {
+        if sys::git(dir, &["rev-parse", "-q", "--verify", "REVERT_HEAD"]).is_err() {
+            return format!("되돌리지 못했어요: {e}");
+        }
+        match sys::git(dir, &["revert", "--abort"]) {
+            Ok(_) => "그 뒤에 같은 곳이 또 바뀌어서 바로 되돌릴 수 없어요. 총괄에게 되돌려 달라고 말해 주세요.".into(),
+            Err(a) => format!("되돌리기를 취소하지 못했어요: {a}"),
+        }
+    })
+}
+
+#[tauri::command]
+pub async fn task_undo(app: AppHandle, project_id: String, task_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<Arc<TeamManager>>().undo_card(&project_id, &task_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -5965,6 +6104,31 @@ mod merge_tests {
         assert!(sys::git(&dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_err());
         assert!(sys::changes(&dir).is_empty());
         assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "team\n");
+    }
+
+    #[test]
+    fn undo_takes_back_exactly_the_applied_card() {
+        let (dir, team) = repo("undo");
+        card(&dir, &team, "prism/t-4", "b.txt", "two\n");
+        assert!(matches!(git_merge(&dir, "prism/t-4"), Merge::Merged));
+        let sha = sys::git(&dir, &["rev-parse", "HEAD"]).unwrap();
+        git_undo(&dir, &sha).unwrap();
+        assert!(!std::path::Path::new(&dir).join("b.txt").exists());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "one\n");
+        assert!(sys::changes(&dir).is_empty());
+    }
+
+    #[test]
+    fn undo_that_clashes_leaves_the_folder_as_it_was() {
+        let (dir, team) = repo("undo-clash");
+        card(&dir, &team, "prism/t-5", "a.txt", "card\n");
+        assert!(matches!(git_merge(&dir, "prism/t-5"), Merge::Merged));
+        let sha = sys::git(&dir, &["rev-parse", "HEAD"]).unwrap();
+        write(&dir, "a.txt", "later\n");
+        sys::git(&dir, &["commit", "-q", "-am", "later edit"]).unwrap();
+        assert!(git_undo(&dir, &sha).is_err());
+        assert!(sys::changes(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&dir).join("a.txt")).unwrap(), "later\n");
     }
 
     #[test]
@@ -6408,6 +6572,10 @@ mod restart_tests {
             created_at: 0,
             updated_at: 0,
             follow_of: None,
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who: None,
         }
     }
@@ -7002,6 +7170,10 @@ mod handover_tests {
             created_at: 0,
             updated_at: 0,
             follow_of: None,
+            check: None,
+            shots: vec![],
+            applied: None,
+            undone: false,
             who: None,
         };
         (agent, vec![task])

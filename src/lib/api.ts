@@ -137,6 +137,14 @@ export interface Task {
   followOf: string | null;
   /** the assignee's name, kept after a finished member is cleared from the team */
   who?: string | null;
+  /** the checks (tests, build) the report said it ran; null: none were told */
+  check?: "passed" | "failed" | null;
+  /** screen captures the report named: image paths inside the member's work copy */
+  shots?: string[];
+  /** the commit that brought this card's work in when the user applied it (되돌리기 takes it back) */
+  applied?: string | null;
+  /** the user took the applied work back */
+  undone?: boolean;
 }
 
 export interface Escalation {
@@ -260,7 +268,7 @@ export interface MergeCheck {
   files: number;
 }
 
-/** One card's outcome of 합치기 */
+/** One card's outcome of 적용하기 */
 export interface MergeOutcome {
   taskId: string;
   result: "merged" | "nothing" | "conflict" | "failed";
@@ -550,8 +558,10 @@ export const api = {
   setTeamBranch: (projectId: string, branch: string, create: boolean) => call<void>("team_set_branch", { projectId, branch, create }),
   /** what merging this report's card would bring in (commits, files) */
   taskMergeCheck: (projectId: string, taskId: string) => call<MergeCheck>("task_merge_check", { projectId, taskId }),
-  /** 합치기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
+  /** 적용하기: each card's branch goes into the team's branch; a conflict is taken back and handed to the 총괄 */
   taskMerge: (projectId: string, taskIds: string[]) => call<MergeOutcome[]>("task_merge", { projectId, taskIds }),
+  /** 되돌리기 on work the user applied */
+  taskUndo: (projectId: string, taskId: string) => call<void>("task_undo", { projectId, taskId }),
   /** 완료 on a report with nothing to merge */
   taskComplete: (projectId: string, taskId: string) => call<void>("task_complete", { projectId, taskId }),
   /** disk used by the work folders and the shared build folder, and what the cleanup would remove */

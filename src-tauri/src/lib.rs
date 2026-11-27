@@ -300,6 +300,7 @@ pub fn run() {
             team::task_diff,
             team::task_merge_check,
             team::task_merge,
+            team::task_undo,
             team::task_complete,
             team::task_file,
             team::task_file_bytes,

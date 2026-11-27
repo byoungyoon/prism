@@ -9,7 +9,7 @@ import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
 import { currentCard, finishedCrew, isBroken, liveCrew, useDismissed } from "../lib/crew";
-import { MergeActions, MergeAllButton } from "./MergeActions";
+import { MergeActions, MergeAllButton, redoOf } from "./MergeActions";
 import { RestartButton } from "./RestartButton";
 import { TeamUsageBox } from "./TokenUse";
 import { catName, givenName } from "./critters/pixel/coats";
@@ -20,7 +20,7 @@ const FLOORS: { role: Role; name: string }[] = [
   { role: "worker", name: "작업자" },
 ];
 
-const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "합치기 대기", done: "완료", failed: "실패" };
+const WORD: Record<string, string> = { queued: "대기", running: "진행 중", review: "적용 대기", done: "완료", failed: "실패" };
 
 /** What a member is on, in plain words; only problems get color. */
 function stateOf(a: Agent, team: TeamSnapshot) {
@@ -163,7 +163,7 @@ export function TaskBoard() {
     .map(({ project, team, ids }) => ({ project, team, list: [...crewOf(team).filter((a) => !isActive(a, team)), ...finishedCrew(team)].filter((a) => !ids.has(a.id)) }))
     .filter((g) => g.list.length);
   const doneN = doneGroups.reduce((k, g) => k + g.list.length, 0);
-  // reports waiting in the 보고함: each one can be merged (합치기) or closed (완료) right here
+  // reports waiting in the 보고함: each one can be applied (적용하기) or closed (완료) right here
   const reports = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "review" && !isDismissed(reportKey(project.id, t))).map((t) => ({ t, project })));
   const unassigned = shown.flatMap(({ project, team }) => team.tasks.filter((t) => t.stage === "queued").map((t) => ({ t, project, team })));
   const events = shown
@@ -177,7 +177,7 @@ export function TaskBoard() {
         <h2 className="m-0 text-sm font-semibold">작업 보드</h2>
         <span className="text-[11.5px] text-ink-2">
           진행 <b className="font-semibold text-[var(--text)]">{count("running")}</b>
-          {count("review") > 0 && <> · 합치기 대기 <b className="font-semibold text-[var(--text)]">{count("review")}</b></>}
+          {count("review") > 0 && <> · 적용 대기 <b className="font-semibold text-[var(--text)]">{count("review")}</b></>}
           {count("queued") > 0 && <> · 대기 {count("queued")}</>}
         </span>
       </div>
@@ -193,7 +193,7 @@ export function TaskBoard() {
             {reports.length > 1 && (
               <button
                 onClick={() => reports.forEach(({ t, project }) => dismiss(reportKey(project.id, t)))}
-                title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)"
+                title="적용하지 않고 목록에서만 치워요 (카드는 그대로)"
                 className="mx-2 min-h-7 self-start rounded-full border-0 px-3 text-[12px] text-ink-2 hover:bg-[var(--chip)]"
                 style={{ background: "var(--chip)" }}
               >
@@ -201,7 +201,7 @@ export function TaskBoard() {
               </button>
             )}
             {[...new Set(reports.map((r) => r.project))].map((p) => (
-              <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p).map((r) => r.t)} />
+              <MergeAllButton key={p.id} project={p} tasks={reports.filter((r) => r.project === p && !redoOf(shown.find((x) => x.project.id === p.id)!.team.tasks, r.t.id)).map((r) => r.t)} />
             ))}
             {reports.map(({ t, project }) => (
               <div key={`${project.id}-${t.id}`} className="flex flex-col gap-1 rounded-lg px-2 py-1.5" style={{ background: "var(--glass2)" }}>
@@ -209,7 +209,7 @@ export function TaskBoard() {
                   <span className="shrink-0 font-mono text-[11px] font-semibold">{t.id}</span>
                   <span className="min-w-0 flex-auto truncate">{t.title}</span>
                   {multi && <span className="max-w-[90px] shrink-0 truncate text-[11px] text-ink-2">{project.name}</span>}
-                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="합치지 않고 목록에서만 치워요 (카드와 브랜치는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
+                  <button onClick={() => dismiss(reportKey(project.id, t))} aria-label="보고함에서 치우기" title="적용하지 않고 목록에서만 치워요 (카드는 그대로)" className="size-5 shrink-0 cursor-pointer self-center rounded border-0 bg-transparent p-0 text-[12px] leading-none text-ink-2 hover:bg-[var(--chip)]">
                     ✕
                   </button>
                 </span>
