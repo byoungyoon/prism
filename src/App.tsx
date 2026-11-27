@@ -86,7 +86,6 @@ const PHONE_TABS = [
 
 function MainView() {
   const { left, right } = useApp(useShallow((s) => ({ left: s.left, right: s.right })));
-  const dash = useApp((s) => s.mainTab === "dashboard");
   const narrow = useNarrow();
   const [tab, setTab] = useState<(typeof PHONE_TABS)[number]["id"]>("chat");
   // a clicked notification: the 허락 칸 sits in the chat tab
@@ -100,8 +99,7 @@ function MainView() {
     0,
   );
 
-  // 사무실은 가려만 두고 계속 떠 있게 (고양이·휴게실 상태 유지). 대시보드는 열 때만 붙여서 웹 칸이 사무실 위에 남지 않게 한다.
-  const office = narrow ? (
+  return narrow ? (
       <div className="relative flex min-h-0 min-w-0 flex-auto flex-col gap-2 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         <div role="tablist" aria-label="화면" className="glass flex max-w-full gap-0.5 self-center rounded-full p-1">
           {PHONE_TABS.map((t) => {
@@ -131,19 +129,6 @@ function MainView() {
       {right && <TaskBoard />}
     </div>
     );
-
-  return (
-    <div className="relative flex min-h-0 min-w-0 flex-auto flex-col">
-      <div hidden={dash} className="relative flex min-h-0 min-w-0 flex-auto flex-col">
-        {office}
-      </div>
-      {dash && (
-        <div className="relative flex min-h-0 min-w-0 flex-auto flex-col p-3 max-[820px]:p-2">
-          <Dashboard />
-        </div>
-      )}
-    </div>
-  );
 }
 
 function Screen({ view }: { view: View }) {
@@ -241,7 +226,9 @@ export default function App() {
   // an outside editor (figcraft…) open on a team's file: it takes the main area while the main view shows
   const editTarget = useEngineEdit((s) => s.target);
   const tucked = useEngineEdit((s) => s.tucked);
-  const editing = !!editTarget && !tucked && view.name === "main";
+  // 확장의 대시보드: 지금 화면 자리를 대신 차지한다
+  const dash = useApp((s) => s.dashboardOpen);
+  const editing = !!editTarget && !tucked && view.name === "main" && !dash;
 
   useVisibleHeight();
 
@@ -274,15 +261,21 @@ export default function App() {
       <TopBar />
 
       <AnimatePresence mode="wait">
-        {/* hidden, not unmounted, while editing: chat drafts and open panels keep their state */}
-        <motion.div key={viewKey(view)} {...page} hidden={editing} className="relative flex min-h-0 flex-auto flex-col">
+        {/* hidden, not unmounted, while editing or on the 대시보드: 사무실(고양이·휴게실), chat drafts and open panels keep their state */}
+        <motion.div key={viewKey(view)} {...page} hidden={editing || dash} className="relative flex min-h-0 flex-auto flex-col">
           <Screen view={view} />
         </motion.div>
       </AnimatePresence>
+      {/* 대시보드는 열 때만 붙여서 웹 칸이 사무실 위에 남지 않게 한다 */}
+      {dash && (
+        <div className="relative flex min-h-0 min-w-0 flex-auto flex-col p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] max-[820px]:p-2">
+          <Dashboard />
+        </div>
+      )}
       {/* kept mounted while a file is open, so the editor's unsaved edits survive a trip to another screen */}
       {editTarget && <EngineStage target={editTarget} hidden={!editing} />}
 
-      {editTarget && tucked && view.name === "main" && (
+      {editTarget && tucked && view.name === "main" && !dash && (
         <button onClick={() => useEngineEdit.setState({ tucked: false })} className="glass mx-auto mb-2 min-h-8 max-w-[calc(100%-24px)] shrink-0 truncate rounded-full px-4 text-[12.5px] font-semibold" style={{ border: "1.5px solid var(--amber)" }}>
           열어 둔 파일 편집으로 돌아가기
         </button>

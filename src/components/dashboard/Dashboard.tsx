@@ -1,18 +1,16 @@
-// 대시보드 탭 본체: 칸 격자(추가 · 끌어 옮기기 · 모서리로 크기 · 지우기), 칸이 없을 때의 안내 화면.
+// 대시보드 화면 본체 (확장 메뉴에서 연다): 칸 격자(추가 · 끌어 옮기기 · 모서리로 크기 · 지우기), 칸이 없을 때의 안내 화면.
 // 칸이 바뀌면 state.ts 가 설계도 형식으로 잠깐 뒤에 저장한다.
 import { useEffect, useRef, useState, type PointerEvent as RPE } from "react";
 import { DraftBox } from "./Draft";
 import { CONNECTORS, connectorOf } from "./connectors/registry.ts";
-import { specOf } from "./connectors/specs.ts";
-import { arrange, boxPx, clampBox, deltaCells, findFreeSpot, GAP_PX, ROW_PX, type Box } from "./grid.ts";
+import { arrange, boxPx, clampBox, deltaCells, GAP_PX, ROW_PX, type Box } from "./grid.ts";
 import { WidgetCard } from "./WidgetCard";
-import { loadDashboard, useDash } from "./state.ts";
+import { addWidget, loadDashboard, useDash } from "./state.ts";
+import { useApp } from "../../store";
 import { dashboardApi, type Widget, type WidgetKind } from "../../lib/api";
 
 /** 화면 폭을 아직 못 쟀을 때 쓰는 값 */
 const FALLBACK_W = 960;
-
-const newId = () => `w-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** 칸이 하나도 없을 때: 안내 · 설명으로 만들기 · 세 가지 큰 카드 */
 function EmptyState({ onAdd }: { onAdd: (kind: WidgetKind) => void }) {
@@ -41,8 +39,10 @@ export function Dashboard() {
   const [width, setWidth] = useState(0);
   const canvas = useRef<HTMLDivElement>(null);
   const stopDrag = useRef<(() => void) | null>(null);
+  // 닫으면 돌아갈 곳: 팀 화면에서 열었으면 사무실
+  const fromOffice = useApp((s) => s.view.name === "main");
 
-  // 처음 열 때 저장된 대시보드를 읽는다 (탭을 오가도 메모리에 남아 있어서 한 번만)
+  // 처음 열 때 저장된 대시보드를 읽는다 (닫았다 다시 열어도 메모리에 남아 있어서 한 번만)
   useEffect(() => {
     if (!loaded) void loadDashboard();
   }, [loaded]);
@@ -57,18 +57,14 @@ export function Dashboard() {
     return () => ro.disconnect();
   }, []);
 
-  // 대시보드 탭을 떠나면 웹 칸을 모두 숨긴다 (칸마다 숨기지만 하나도 남지 않게 한 번 더)
+  // 대시보드를 닫으면 웹 칸을 모두 숨긴다 (칸마다 숨기지만 하나도 남지 않게 한 번 더)
   useEffect(() => () => void dashboardApi.webHideAll().catch(() => {}), []);
 
   // 화면을 떠날 때 끌기가 남아 있으면 걷는다
   useEffect(() => () => stopDrag.current?.(), []);
 
   const add = (kind: WidgetKind) => {
-    const spec = specOf(kind);
-    if (!spec) return;
-    const box = findFreeSpot(useDash.getState().widgets, spec.size.w, spec.size.h);
-    const w: Widget = { id: newId(), kind, title: spec.name, ...box, config: {} };
-    useDash.getState().update((ws) => [...ws, w]);
+    addWidget(kind);
     setMenu(false);
   };
 
@@ -116,26 +112,31 @@ export function Dashboard() {
 
   return (
     <div className="dash-root">
-      {widgets.length > 0 && (
-        <div className="dash-toolbar">
-          <div className="dash-title">
-            <b>📊 대시보드</b>
-            <small>칸을 끌어서 옮기고, 오른쪽 아래 모서리로 크기를 바꿔요. 바뀌면 자동으로 저장돼요.</small>
-          </div>
-          <div className="dash-add">
-            <button className="dash-primary" aria-expanded={menu} onClick={() => setMenu((o) => !o)}>+ 칸 추가</button>
-            {menu && (
-              <div className="dash-menu" role="menu">
-                {CONNECTORS.map((c) => (
-                  <button key={c.kind} role="menuitem" onClick={() => add(c.kind)}>
-                    <span aria-hidden="true">{c.emoji}</span> {c.name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      <div className="dash-toolbar">
+        <div className="dash-title">
+          <b>📊 대시보드</b>
+          {widgets.length > 0 && <small>칸을 끌어서 옮기고, 오른쪽 아래 모서리로 크기를 바꿔요. 바뀌면 자동으로 저장돼요.</small>}
         </div>
-      )}
+        <div className="dash-actions">
+          {widgets.length > 0 && (
+            <div className="dash-add">
+              <button className="dash-primary" aria-expanded={menu} onClick={() => setMenu((o) => !o)}>+ 칸 추가</button>
+              {menu && (
+                <div className="dash-menu" role="menu">
+                  {CONNECTORS.map((c) => (
+                    <button key={c.kind} role="menuitem" onClick={() => add(c.kind)}>
+                      <span aria-hidden="true">{c.emoji}</span> {c.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button className="dash-close" onClick={() => useApp.getState().setDashboardOpen(false)}>
+            ✕ {fromOffice ? "닫고 사무실로" : "닫기"}
+          </button>
+        </div>
+      </div>
 
       <div
         ref={canvas}

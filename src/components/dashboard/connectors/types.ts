@@ -11,7 +11,22 @@ export interface BodyProps {
   widget: Widget;
 }
 
+/** 확장 메뉴 카드에 보이는 짧은 상태 */
+export interface LinkStatus {
+  text: string;
+  /** on: 연결됨 · need: 연결이 필요함 · idle: 그 밖 */
+  tone: "on" | "need" | "idle";
+}
+
+/** 칸과 상관없이 계정을 한 번 연결해 두는 서비스 (예: 슬랙 토큰) */
+export interface ConnectorAccount {
+  useStatus(): LinkStatus;
+  /** 연결 · 연결 끊기 화면 */
+  Panel: ComponentType;
+}
+
 export interface ConnectorUI {
+  account?: ConnectorAccount;
   /** 설정 폼 (칸 안에서 연결·로그인·고르기) */
   Form: ComponentType<FormProps>;
   /** 원본 본문 */

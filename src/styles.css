@@ -288,7 +288,7 @@ textarea {
   }
 }
 
-/* ── 대시보드 탭 ───────────────────────────────────────
+/* ── 대시보드 · 확장 ───────────────────────────────────────
    차트 3색: 참조 팔레트(dataviz 검증). 라이트/다크 각각. 앱 자체 색(navy 등)은 차트에 쓰지 않는다. */
 .t-light { --viz-1: #257de0; --viz-2: #f47230; --viz-3: #00b894; }
 .t-dark { --viz-1: #338ced; --viz-2: #e76624; --viz-3: #00a888; }
@@ -298,6 +298,9 @@ textarea {
 .dash-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dash-title b { font-size: 15px; }
 .dash-title small, .dash-hint { color: var(--text2); font-size: 12px; line-height: 1.5; }
+.dash-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.dash-close { min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--tile); color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; }
+.dash-close:hover { border-color: var(--amber); }
 .dash-add { position: relative; }
 .dash-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; display: flex; flex-direction: column; min-width: 180px; padding: 6px; border-radius: 12px; background: var(--bg2); border: 1px solid var(--glass-border); box-shadow: var(--shadow); }
 .dash-menu button { text-align: left; border: 0; background: transparent; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
@@ -380,3 +383,18 @@ textarea {
 .dash-mini-cell { position: absolute; border-radius: 4px; background: var(--tile); border: 1px solid var(--line); font-size: 10px; overflow: hidden; white-space: nowrap; padding: 1px 4px; box-sizing: border-box; }
 .dash-draft-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .dash-draft-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+.ext-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.ext-card { border-radius: 14px; background: var(--glass2); border: 1px solid var(--glass-border); box-shadow: var(--shadow-sm); }
+.ext-card:hover, .ext-card[data-open="true"] { border-color: var(--amber); }
+.ext-head { display: flex; width: 100%; align-items: center; gap: 10px; padding: 11px 12px; border: 0; background: transparent; text-align: left; color: var(--text); cursor: pointer; }
+.ext-emoji { flex: 0 0 auto; font-size: 22px; }
+.ext-text { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.ext-text b { font-size: 13.5px; }
+.ext-text small { color: var(--text2); font-size: 11.5px; line-height: 1.45; }
+.ext-status { flex: 0 0 auto; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--text2); white-space: nowrap; }
+.ext-status[data-tone="on"] { background: color-mix(in srgb, var(--work) 20%, transparent); color: var(--work-ink); }
+.ext-status[data-tone="need"] { background: color-mix(in srgb, var(--wait) 24%, transparent); color: var(--wait-ink); }
+.ext-arrow { flex: 0 0 auto; color: var(--text2); font-size: 12px; }
+.ext-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+.ext-panel .dash-primary { align-self: flex-start; }

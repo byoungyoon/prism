@@ -58,9 +58,9 @@ interface AppState {
   selectedNode: string;
   selectedCard: string | null;
   error: string | null;
-  /** 관제탑 화면 종류: 사무실(기본) 또는 대시보드 탭 */
-  mainTab: "office" | "dashboard";
-  setMainTab(mainTab: "office" | "dashboard"): void;
+  /** 확장 '대시보드'를 사무실(기본 화면) 위에 열어 둔 상태. 다른 화면으로 가면 닫힌다 */
+  dashboardOpen: boolean;
+  setDashboardOpen(open: boolean): void;
 
   // accounts
   accounts: Account[];
@@ -308,8 +308,8 @@ export const useApp = create<AppState>((set, get) => {
         .then((r) => r && get().showReward(r))
         .catch(() => {});
     },
-    mainTab: "office",
-    setMainTab: (mainTab) => set({ mainTab }),
+    dashboardOpen: false,
+    setDashboardOpen: (dashboardOpen) => set({ dashboardOpen }),
     startGacha: async () => {
       holding = true;
       try {
@@ -670,3 +670,8 @@ export const useCurrent = () => {
   const team = useApp((s) => (projectId ? s.teams[projectId] : undefined));
   return { projectId, project, team };
 };
+
+// 화면을 옮기면(팀 추가, 알림 누르기 등) 위에 열어 둔 대시보드는 닫아서 가려는 화면이 보이게 한다
+useApp.subscribe((s, prev) => {
+  if (s.view !== prev.view && prev.dashboardOpen && s.dashboardOpen) useApp.setState({ dashboardOpen: false });
+});
