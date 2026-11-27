@@ -1,8 +1,10 @@
 // 대시보드 상태 (칸 목록 · 끌기 중 여부). 바뀌면 설계도 형식으로 잠깐 뒤에 저장한다.
 import { create } from "zustand";
-import { dashboardApi, type Widget } from "../../lib/api";
+import { dashboardApi, type Widget, type WidgetKind } from "../../lib/api";
 import { useApp } from "../../store";
 import { applyBlueprint, blueprintOf, validateBlueprint } from "./blueprint.ts";
+import { specOf } from "./connectors/specs.ts";
+import { findFreeSpot } from "./grid.ts";
 
 interface DashState {
   widgets: Widget[];
@@ -30,8 +32,16 @@ export function patchWidget(id: string, p: Partial<Widget>) {
   useDash.getState().update((ws) => ws.map((w) => (w.id === id ? { ...w, ...p } : w)));
 }
 
-/** 저장 파일을 읽어 설계도로 검사한 뒤 칸을 넣는다. 파일이 이상하면 빈 대시보드로 시작하고 알린다. */
-export async function loadDashboard() {
+let loading: Promise<void> | null = null;
+
+/** 저장 파일을 읽어 설계도로 검사한 뒤 칸을 넣는다. 파일이 이상하면 빈 대시보드로 시작하고 알린다.
+ *  대시보드 화면과 확장 메뉴가 동시에 불러도 한 번만 읽는다. */
+export function loadDashboard() {
+  loading ??= readDashboard().finally(() => (loading = null));
+  return loading;
+}
+
+async function readDashboard() {
   try {
     const raw = (await dashboardApi.load()) as unknown;
     const obj = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
@@ -43,6 +53,15 @@ export async function loadDashboard() {
     useDash.getState().load([]);
     useApp.getState().setError(e);
   }
+}
+
+/** 빈 자리를 찾아 새 칸을 만든다. 저장된 대시보드를 읽은 뒤에 불러야 한다. */
+export function addWidget(kind: WidgetKind, config: Record<string, string> = {}) {
+  const spec = specOf(kind);
+  if (!spec) return;
+  const box = findFreeSpot(useDash.getState().widgets, spec.size.w, spec.size.h);
+  const id = `w-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  useDash.getState().update((ws) => [...ws, { id, kind, title: spec.name, ...box, config }]);
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined;

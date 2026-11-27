@@ -69,7 +69,10 @@ const SCREENS = {
   "name-menu": "이름을 바꾼 고양이를 다시 우클릭한 모습 ('원래 이름으로')",
   "name-long": "너무 긴 이름을 적고 Enter를 눌렀을 때",
   "name-hold": "터치로 고양이를 길게 눌러 메뉴를 띄운 모습",
-  dashboard: "대시보드 탭 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
+  ext: "확장 메뉴를 연 모습 (-s dash-multi 는 슬랙 연결됨, dash-empty 는 연결 필요)",
+  "ext-slack": "확장 메뉴에서 슬랙 카드를 펼친 모습 (연결 설정 / 연결 끊기)",
+  "ext-web": "확장 메뉴에서 웹사이트 카드를 펼친 모습",
+  dashboard: "대시보드 화면 (-s dash-empty · dash-multi · dash-ai 로 상태를 고른다)",
   account: "계정 화면 (맨 아래에 지금 버전 표시)",
   "account-end": "계정 화면을 맨 아래까지 내린 모습",
   "install-old": "안내: 예전 Prism이 아직 켜져 있음",
@@ -535,7 +538,7 @@ async function openScreen(page, screen, o, data) {
   await page.evaluate(
     ({ screen, focus, dark, edit }) => {
       const app = window.__app;
-      const set = { dark, critters: true, error: null, mainTab: screen === "dashboard" || screen === "draft" ? "dashboard" : "office" };
+      const set = { dark, critters: true, error: null, dashboardOpen: screen === "dashboard" || screen === "draft" };
       if (screen === "home") set.view = { name: "home" };
       else if (screen === "settings") Object.assign(set, { view: { name: "settings" }, projectId: focus });
       else Object.assign(set, { view: { name: "main" }, projectId: focus ?? app.getState().projectId });
@@ -549,6 +552,12 @@ async function openScreen(page, screen, o, data) {
     if (screen === "office" || screen === "team") await phoneTab("사무실").click();
     if (screen === "board") await phoneTab("보드").click();
     if (screen === "chat") await phoneTab("총괄").click();
+  }
+  if (screen === "ext" || screen.startsWith("ext-")) {
+    await page.getByRole("button", { name: "확장", exact: true }).click();
+    const menu = page.getByRole("dialog", { name: "확장" });
+    await menu.waitFor();
+    if (screen !== "ext") await menu.getByRole("button", { name: screen === "ext-slack" ? /^슬랙/ : /^웹사이트/ }).click();
   }
   if (screen.startsWith("account")) {
     await page.evaluate(() => window.__app.getState().openAccounts());
