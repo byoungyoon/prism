@@ -645,8 +645,9 @@ async function capture(browser, base, o, data, log) {
     const stem = `${o.name || o.scenario}-${screen}-${o.width}-${o.theme}`;
     for (let i = 0; i < o.frames; i++) {
       if (i > 0) await page.waitForTimeout(o.interval);
-      // 백엔드 연결 배지("다시 연결 중…")는 가짜 데이터라 항상 뜬다. 화면에서만 치운다
-      await page.evaluate(() => document.querySelectorAll('[role="status"]').forEach((el) => el.textContent?.includes("다시 연결") && el.remove()));
+      // 백엔드 연결 배지("다시 연결 중…")는 가짜 데이터라 항상 뜬다. 화면에서만 가린다.
+      // React가 만든 노드는 지우지 않는다: 지우면 그 앞에 새 창(고양이 메뉴 등)을 넣을 때 insertBefore 오류로 화면 전체가 하얘진다
+      await page.evaluate(() => document.querySelectorAll('[role="status"]').forEach((el) => el.textContent?.includes("다시 연결") && (el.style.display = "none")));
       const suffix = o.frames > 1 ? `-${String(i + 1).padStart(2, "0")}` : "";
       const file = path.join(o.out, `${stem}${suffix}.png`);
       await page.screenshot({ path: file, animations: "allow", timeout: 60000 });
