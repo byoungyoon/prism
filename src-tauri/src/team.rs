@@ -2825,10 +2825,8 @@ impl TeamManager {
 
     /// Adds the token figures a team's screens show to its snapshot.
     fn with_usage(&self, mut snap: TeamSnapshot) -> TeamSnapshot {
-        let mut usage = self.tokens.lock().unwrap().summary(&snap.project_id);
         // only the cards the team still lists: the snapshot goes out on every change
-        usage.cards.retain(|c| snap.tasks.iter().any(|t| t.id == c.task_id));
-        snap.usage = usage;
+        snap.usage = self.tokens.lock().unwrap().summary(&snap.project_id, snap.tasks.iter().map(|t| t.id.as_str()));
         snap
     }
 
