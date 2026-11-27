@@ -55,6 +55,10 @@ interface Sprite {
   solid?: boolean;
 }
 
+/** a view of a drawing moved by (dx, dy), for repeating a tile */
+const shifted = (d: Dots, dx: number, dy: number) =>
+  ({ rect: (x: number, y: number, w: number, h: number, c: string) => d.rect(x + dx, y + dy, w, h, c), px: (x: number, y: number, c: string) => d.px(x + dx, y + dy, c) }) as Dots;
+
 // ── the pictures ──────────────────────────────────────────
 
 const desk = (w: number, lead: boolean): Sprite => ({
@@ -533,14 +537,83 @@ const rug2: Sprite = {
   },
 };
 
-/** the lounge floor: soft checker tiles */
-const tiles: Sprite = {
+/** the lounge floor: a soft carpet, its pile in little flecks */
+const loungerug: Sprite = {
   w: 8,
   h: 8,
   draw: (d) => {
     d.rect(0, 0, 8, 8, "tileA");
-    d.rect(0, 0, 4, 4, "tileB");
-    d.rect(4, 4, 4, 4, "tileB");
+    for (const [x, y] of [
+      [1, 1],
+      [5, 3],
+      [3, 5],
+      [7, 7],
+    ]) {
+      d.px(x, y, "tileB");
+      d.px((x + 1) % 8, y, "tileB");
+    }
+    d.px(5, 0, "tileHi");
+    d.px(1, 4, "tileHi");
+  },
+};
+
+/** the playroom floor: puzzle mats in two close colours, their teeth locked into each other */
+const playmat: Sprite = {
+  w: 32,
+  h: 32,
+  draw: (d) => {
+    d.rect(0, 0, 32, 32, "matA");
+    d.rect(16, 0, 16, 16, "matB");
+    d.rect(0, 16, 16, 16, "matB");
+    // the teeth: one reaching over the middle of each edge
+    d.rect(14, 6, 2, 4, "matB");
+    d.rect(30, 6, 2, 4, "matA");
+    d.rect(16, 22, 2, 4, "matB");
+    d.rect(0, 22, 2, 4, "matA");
+    d.rect(6, 16, 4, 2, "matA");
+    d.rect(22, 16, 4, 2, "matB");
+    d.rect(6, 0, 4, 2, "matB");
+    d.rect(22, 0, 4, 2, "matA");
+  },
+};
+
+/** the doorway between the lounge and the playroom, seen from the front: a wooden arch set in the
+ *  wall, open in the middle (the floor shows through and the cats walk under it) */
+const arch: Sprite = {
+  w: 44,
+  h: 22,
+  draw: (d) => {
+    // wallpaper all over, in step with the wall on both sides
+    for (let x = 0; x < 44; x += 8) for (let y = 0; y < 22; y += 8) wall.draw(shifted(d, x, y));
+    // how far down the opening's top is, from each side toward the middle (a stepped curve)
+    const curve = [13, 11, 9, 8, 7, 6, 6, 5, 5, 4];
+    const topAt = (i: number) => curve[i] ?? 4;
+    for (let x = 3; x < 41; x++) {
+      const i = Math.min(x - 3, 40 - x);
+      const y = topAt(i);
+      d.rect(x, y, 1, 22 - y, null);
+      // the frame along the curve: a wooden band between two outlines
+      const up = i > 0 ? topAt(i - 1) : y;
+      const band = Math.max(3, up - y + 1);
+      d.rect(x, y - band, 1, band, "wood");
+      d.px(x, y - band, "line");
+      d.px(x, y - 1, "woodDk");
+    }
+    // the two posts, down to the floor
+    for (const [x, edge, inner] of [
+      [0, 0, 2],
+      [41, 43, 41],
+    ]) {
+      d.rect(x, 11, 3, 11, "wood");
+      d.rect(inner, 11, 1, 11, "woodDk");
+      d.rect(edge, 11, 1, 11, "line");
+      // a little capital and a foot
+      d.rect(x, 12, 3, 1, "woodHi");
+      d.rect(x, 20, 3, 2, "woodDk2");
+    }
+    // the keystone
+    d.rect(20, 0, 4, 4, "woodHi");
+    d.rect(20, 3, 4, 1, "woodDk");
   },
 };
 
@@ -770,7 +843,9 @@ export const SPRITES: Record<string, Sprite> = {
   ball,
   floor,
   wall,
-  tiles,
+  loungerug,
+  playmat,
+  arch,
 };
 
 // ── colours ───────────────────────────────────────────────
@@ -851,8 +926,11 @@ const LIGHT: Pal = {
   wall: "#f7ecde",
   wallStripe: "#f1e3d0",
   wallDot: "#ead8c0",
-  tileA: "#f4ead9",
-  tileB: "#eee1cd",
+  tileA: "#f3e7d5",
+  tileB: "#ebdac3",
+  tileHi: "#f9f0e2",
+  matA: "#f4ecd8",
+  matB: "#e6ead7",
   sun: "#fbeab8",
   sunEdge: "#f7e1a3",
   cardboard: "#e2b988",
@@ -946,8 +1024,11 @@ const DARK: Pal = {
   wall: "#2f2720",
   wallStripe: "#2b241d",
   wallDot: "#3a3027",
-  tileA: "#2f271f",
-  tileB: "#2a231c",
+  tileA: "#30271f",
+  tileB: "#29211a",
+  tileHi: "#372d24",
+  matA: "#2e281f",
+  matB: "#292a20",
   sun: "#4a3f27",
   sunEdge: "#41372a",
   cardboard: "#9a7650",

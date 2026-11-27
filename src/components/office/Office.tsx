@@ -1,7 +1,8 @@
 // The office: every team on screen gets a pod of desks — the 총괄's big desk (two monitors, headset
 // stand) up front, then the 팀장 desks (paper trays), then the 작업자 desks (monitor and toolbox).
 // A cat at work sits at its own desk tapping away; a cat with nothing to do strolls about the lounge
-// (sofa, coffee machine, plants) or naps there — and some of them cross over to the playroom (놀이방) to climb
+// (sofa, coffee machine, plants) or naps there — and some of them cross over to the playroom (놀이방), through the
+// doorway in the wall between the two rooms, to climb
 // the cat tower, roll the ball and sleep in the window hammock (playRules.ts). A permission request pops up over the asking cat's
 // head, with 허락 / 거절 right in the bubble (the same answer the chat's cards send).
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as RMouse, type PointerEvent as RPointer } from "react";
@@ -12,7 +13,7 @@ import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { Playroom } from "./Playroom";
-import { actsFor, dropRoom, emptyPlay, leavePlay, placeInPlay, SCRIPTS, tickPlay, type PlayState, type PlayStep, type RoomName } from "./playRules";
+import { actsFor, dropRoom, emptyPlay, leavePlay, passageRoute, placeInPlay, SCRIPTS, tickPlay, type Passage, type PlayState, type PlayStep, type RoomName } from "./playRules";
 import { CritterLayer, critterState, useReducedMotion, type PlacedCritter } from "../critters";
 import type { Pose } from "../critters/state";
 import { catName, coatKey, coatOf, temperOf, TEMPER_FLIP } from "../critters/pixel/coats";
@@ -339,7 +340,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
 
   // where the seats, the lounge (and its sofa, coffee machine and plants) and the door are,
   // measured from the laid-out room
-  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; play: Record<string, Spot>; rooms: Record<RoomName, CatRoom>; track: { x0: number; x1: number; y: number } | null; door: Spot; w: number } | null>(null);
+  const [room, setRoom] = useState<{ seats: Record<string, Spot>; lounge: Box; marks: Spot[]; blocks: Box[]; play: Record<string, Spot>; rooms: Record<RoomName, CatRoom>; passage: Passage | null; track: { x0: number; x1: number; y: number } | null; door: Spot; w: number } | null>(null);
   // (a drag's listeners are those of the drawing it started in: they read the newest measurement here)
   const roomRef = useRef(room);
   roomRef.current = room;
@@ -362,7 +363,12 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
         const frame = { x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height };
         return { frame, floor: { x: frame.x + 24, y: frame.y + size + 26, w: Math.max(10, r.width - 48), h: Math.max(10, r.height - size - 40) } };
       };
-      const rooms = { lounge: catRoom(l), play: catRoom(el.querySelector("[data-playroom]")?.getBoundingClientRect()) };
+      const pr = el.querySelector("[data-playroom]")?.getBoundingClientRect();
+      const rooms = { lounge: catRoom(l), play: catRoom(pr) };
+      // the doorway in the wall between the two rooms
+      const g = el.querySelector("[data-passage]")?.getBoundingClientRect();
+      const passage: Passage | null =
+        g && pr ? { x: g.left - o.left + g.width / 2, half: g.width / 2, top: g.top - o.top, bottom: g.bottom - o.top, left: pr.left - o.left, right: pr.right - o.left, end: pr.bottom - o.top } : null;
       const lounge = rooms.lounge.floor;
       // a cat goes to the sofa, the coffee machine or a plant: it stands just in front of it
       const clamp = (p: Spot) => ({ x: Math.min(lounge.x + lounge.w, Math.max(lounge.x, p.x)), y: Math.min(lounge.y + lounge.h, Math.max(lounge.y, p.y)) });
@@ -392,7 +398,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       const d = el.querySelector("[data-door]")?.getBoundingClientRect();
       const door = d ? { x: d.left - o.left + d.width / 2, y: d.bottom - o.top } : { x: el.clientWidth - 30, y: 60 };
       setRoom((prev) => {
-        const next = { seats, lounge, marks, blocks, play, rooms, track, door, w: el.clientWidth };
+        const next = { seats, lounge, marks, blocks, play, rooms, passage, track, door, w: el.clientWidth };
         return prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
       });
     };
@@ -411,6 +417,10 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       ro.disconnect();
     };
   }, [shape, size, owned.join("|"), layoutKey, paused]);
+
+  // a walk between the playroom and anywhere else goes through the doorway, never through the wall
+  const passage = room?.passage;
+  const route = useMemo(() => (passage ? (a: Spot, b: Spot) => passageRoute(a, b, passage, size) : undefined), [passage, size]);
 
   // lounging cats: a spot each — by the sofa, the coffee machine, a plant, or anywhere in between,
   // never on top of another cat — and now and then one gets up and wanders slowly to another
@@ -949,12 +959,20 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
               {has("화분") && <span className="of-plant of-plant-1 px-plant" data-block data-piece="화분 1" style={pieceAt("화분 1")} />}
               {has("화분") && <span className="of-plant of-plant-2 px-plant" data-block data-piece="화분 2" style={pieceAt("화분 2")} />}
             </div>
+            {/* the wall between the two rooms, with an arched doorway the cats walk through */}
+            <div className="of-divider" aria-hidden="true">
+              <span className="of-partition" />
+              <span className="of-doorway" data-passage>
+                <span className="of-arch px-arch" />
+              </span>
+              <span className="of-partition" />
+            </div>
             <Playroom count={atPlay} has={has} ball={play.ball} />
           </div>
         </div>
         <div className="of-cats">
           {/* off the screen while another tab is open: put back, each cat goes on from where it was seen */}
-          {!paused && <CritterLayer id="office" remember items={items} size={size} speed={narrow ? 95 : 135} width={room?.w} door={room?.door} />}
+          {!paused && <CritterLayer id="office" remember items={items} size={size} speed={narrow ? 95 : 135} width={room?.w} door={room?.door} route={route} />}
         </div>
         {askSpots.map(({ key, m, at }) => (
           <AskBubble key={`ask-${key}`} m={m} msgs={asks[key]} at={at} width={room!.w} half={halves[key]} />
