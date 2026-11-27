@@ -143,6 +143,13 @@ export function dashMock(dash, cmd, args) {
       return "고객센터 홈 · 자주 묻는 질문 · 1:1 문의";
     case "slack_token_status":
       return dash?.slack ?? { connected: false, team: null };
+    case "slack_oauth_config":
+      return { clientId: "1234567890.1234567890", custom: false };
+    case "slack_oauth_connect":
+      return new Promise(() => {}); // 브라우저에서 허용을 기다리는 모습
+    case "slack_oauth_reopen":
+    case "slack_oauth_cancel":
+      return null;
     case "slack_token_set":
       return { team: "고객센터팀", user: "demo" };
     case "slack_token_clear":

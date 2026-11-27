@@ -1,0 +1,29 @@
+{
+  "display_information": {
+    "name": "Prism",
+    "description": "내 슬랙 채널의 최근 메시지를 Prism 대시보드에서 읽기만 해요",
+    "background_color": "#2b2520"
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "http://localhost:47823/slack/callback",
+      "http://localhost:47824/slack/callback",
+      "http://localhost:47825/slack/callback"
+    ],
+    "scopes": {
+      "user": [
+        "channels:read",
+        "channels:history",
+        "groups:read",
+        "groups:history",
+        "users:read"
+      ]
+    },
+    "pkce_enabled": true
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

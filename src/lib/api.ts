@@ -665,6 +665,13 @@ export interface SlackStatus {
   team: string | null;
 }
 
+/** [슬랙으로 연결] 버튼 설정. clientId가 없으면 아직 슬랙 앱이 정해지지 않은 것 */
+export interface SlackOAuthConfig {
+  clientId: string | null;
+  /** 사용자가 직접 넣은 값이면 true */
+  custom: boolean;
+}
+
 export interface SlackChannel {
   id: string;
   name: string;
@@ -703,6 +710,12 @@ export const dashboardApi = {
     on<{ widgetId: string; path: string }>("dashboard://sheet-changed", fn),
 
   // slack: 토큰은 백엔드에만 머문다 (프론트 상태·저장소에 넣지 않는다). 읽기 전용.
+  slackOAuthConfig: () => call<SlackOAuthConfig>("slack_oauth_config"),
+  slackClientIdSet: (clientId: string) => call<SlackOAuthConfig>("slack_client_id_set", { clientId }),
+  /** 브라우저에서 허용할 때까지 끝나지 않는다 */
+  slackOAuthConnect: () => call<{ team: string; user: string }>("slack_oauth_connect"),
+  slackOAuthReopen: () => call<void>("slack_oauth_reopen"),
+  slackOAuthCancel: () => call<void>("slack_oauth_cancel"),
   slackTokenSet: (token: string) => call<{ team: string; user: string }>("slack_token_set", { token }),
   slackTokenStatus: () => call<SlackStatus>("slack_token_status"),
   slackTokenClear: () => call<void>("slack_token_clear"),
