@@ -1997,6 +1997,17 @@ struct Team {
     next_mgr: u8,
     next_lone: u32,
     always_allow: std::collections::HashSet<String>,
+    /// old messages and cards taken out by `trim_history`, waiting to be appended to the team's
+    /// history file on the next save (not part of the saved state itself)
+    archived: Vec<Archived>,
+}
+
+/// One line of a team's history file (`teams/<id>.history.jsonl`): `{"chat":{…}}` or `{"task":{…}}`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Archived {
+    Chat(ChatMsg),
+    Task(Task),
 }
 
 #[derive(Serialize, Clone)]
@@ -2486,15 +2497,41 @@ const SNAPSHOT_EVENTS: usize = 80;
 /// Finished cards the UI gets (newest first); older ones stay on disk.
 const SNAPSHOT_DONE_TASKS: usize = 30;
 
+/// The team keeps this much conversation (plus any question still waiting for an answer). Older
+/// messages move to the history file: the whole team is written to disk every couple of seconds
+/// while it works, so an endless conversation made every save — and the app — slower over time.
+const CHAT_KEEP: usize = 1000;
+/// Finished cards the team keeps (besides open ones and the ones its conversation and members
+/// point at); older ones move to the history file.
+const DONE_TASKS_KEEP: usize = 300;
+/// Trimming waits for this much extra, so it happens once in a while rather than on every message.
+const TRIM_SLACK: usize = 200;
+
+fn finished_task(t: &Task) -> bool {
+    t.stage == "done" || t.stage == "failed"
+}
+
+/// A message still waiting for the user (or a boss): never trimmed away.
+fn waiting_msg(m: &ChatMsg) -> bool {
+    m.escalation.as_ref().is_some_and(|e| e.answer.is_none()) || m.permission.as_ref().is_some_and(|p| p.answer.is_none())
+}
+
 /// The cards a snapshot carries: everything still open, the newest finished ones, the ones the
 /// shown conversation points at, and the cards those continue (so follow-up chains stay whole).
 fn snapshot_tasks(tasks: &[Task], chat: &[ChatMsg]) -> Vec<Task> {
-    let finished = |t: &Task| t.stage == "done" || t.stage == "failed";
-    let mut done: Vec<&Task> = tasks.iter().filter(|t| finished(t)).collect();
+    let keep = kept_tasks(tasks, chat, SNAPSHOT_DONE_TASKS, std::iter::empty());
+    tasks.iter().filter(|t| keep.contains(t.id.as_str())).cloned().collect()
+}
+
+/// Ids of the cards to keep: open ones, the newest `done_cap` finished ones, the ones `chat` and
+/// `extra` point at, and the cards those continue.
+fn kept_tasks<'a>(tasks: &'a [Task], chat: &'a [ChatMsg], done_cap: usize, extra: impl Iterator<Item = &'a str>) -> HashSet<&'a str> {
+    let mut done: Vec<&Task> = tasks.iter().filter(|t| finished_task(t)).collect();
     done.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    let mut keep: HashSet<&str> = done.iter().take(SNAPSHOT_DONE_TASKS).map(|t| t.id.as_str()).collect();
-    keep.extend(tasks.iter().filter(|t| !finished(t)).map(|t| t.id.as_str()));
+    let mut keep: HashSet<&str> = done.iter().take(done_cap).map(|t| t.id.as_str()).collect();
+    keep.extend(tasks.iter().filter(|t| !finished_task(t)).map(|t| t.id.as_str()));
     keep.extend(chat.iter().flat_map(|m| m.task_ids.iter().map(String::as_str)));
+    keep.extend(extra);
     // walk follow-ups back to their first card
     let by_id: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let mut todo: Vec<&str> = keep.iter().copied().collect();
@@ -2505,7 +2542,22 @@ fn snapshot_tasks(tasks: &[Task], chat: &[ChatMsg]) -> Vec<Task> {
             }
         }
     }
-    tasks.iter().filter(|t| keep.contains(t.id.as_str())).cloned().collect()
+    keep
+}
+
+/// Appends trimmed messages and cards to a team's history file, one JSON object per line.
+fn append_history(path: &std::path::Path, lines: &[Archived]) {
+    use std::io::Write;
+    let mut text = String::new();
+    for l in lines {
+        if let Ok(j) = serde_json::to_string(l) {
+            text.push_str(&j);
+            text.push('\n');
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(text.as_bytes());
+    }
 }
 
 fn window_label(id: &str) -> String {
@@ -2677,7 +2729,31 @@ impl Team {
         self.next_msg += 1;
         let task_ids = task_ids_in(&text);
         self.chat.push(ChatMsg { id: self.next_msg, kind: kind.into(), text, task_ids, at: now_ms(), escalation, permission: None });
+        self.trim_history();
         self.next_msg
+    }
+    /// Keep a long-running team light: past `CHAT_KEEP` messages and `DONE_TASKS_KEEP` finished
+    /// cards, the oldest move to `archived` (appended to the history file on the next save).
+    /// Questions still waiting, open cards and cards the kept conversation or members refer to stay.
+    fn trim_history(&mut self) {
+        if self.chat.len() > CHAT_KEEP + TRIM_SLACK {
+            let cut = self.chat.len() - CHAT_KEEP;
+            let mut kept = Vec::with_capacity(CHAT_KEEP + TRIM_SLACK);
+            for (i, m) in std::mem::take(&mut self.chat).into_iter().enumerate() {
+                if i >= cut || waiting_msg(&m) {
+                    kept.push(m);
+                } else {
+                    self.archived.push(Archived::Chat(m));
+                }
+            }
+            self.chat = kept;
+        }
+        if self.tasks.iter().filter(|t| finished_task(t)).count() > DONE_TASKS_KEEP + TRIM_SLACK {
+            let keep: HashSet<String> = kept_tasks(&self.tasks, &self.chat, DONE_TASKS_KEEP, self.agents.iter().filter_map(|a| a.task_id.as_deref())).into_iter().map(String::from).collect();
+            let (kept, gone): (Vec<Task>, Vec<Task>) = std::mem::take(&mut self.tasks).into_iter().partition(|t| keep.contains(&t.id));
+            self.tasks = kept;
+            self.archived.extend(gone.into_iter().map(Archived::Task));
+        }
     }
     fn set_status(&mut self, id: &str, status: &str) {
         if let Some(a) = self.agent_mut(id) {
@@ -2784,9 +2860,10 @@ impl TeamManager {
     pub fn flush(&self) {
         let ids: Vec<String> = self.dirty.lock().unwrap().drain().collect();
         for pid in ids {
-            let saved = {
-                let teams = self.teams.lock().unwrap();
-                let Some(t) = teams.get(&pid) else { continue };
+            let (saved, archived) = {
+                let mut teams = self.teams.lock().unwrap();
+                let Some(t) = teams.get_mut(&pid) else { continue };
+                let archived = std::mem::take(&mut t.archived);
                 let prefix = format!("{pid}/");
                 let transcripts = self
                     .transcripts
@@ -2795,7 +2872,7 @@ impl TeamManager {
                     .iter()
                     .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|a| (a.to_string(), v.clone())))
                     .collect();
-                SavedTeam {
+                let saved = SavedTeam {
                     run: t.run.clone(),
                     cwd: t.cwd.clone(),
                     branch: t.branch.clone(),
@@ -2811,10 +2888,15 @@ impl TeamManager {
                     always_allow: t.always_allow.iter().cloned().collect(),
                     transcripts,
                     restarted: t.restarted.clone(),
-                }
+                };
+                (saved, archived)
             };
             let path = self.saved_path(&pid);
             let _ = std::fs::create_dir_all(path.parent().unwrap());
+            // trimmed history first: if the app dies in between, it is at worst written twice, never lost
+            if !archived.is_empty() {
+                append_history(&path.with_extension("history.jsonl"), &archived);
+            }
             if let Ok(text) = serde_json::to_string(&saved) {
                 let tmp = path.with_extension("json.tmp");
                 if std::fs::write(&tmp, text).is_ok() {
@@ -2879,8 +2961,17 @@ impl TeamManager {
                     next_mgr: saved.next_mgr,
                     next_lone: saved.next_lone,
                     always_allow: saved.always_allow.into_iter().collect(),
+                    archived: vec![],
                 },
             );
+            // a file saved before history was trimmed: slim it down now (and save the slimmer one)
+            let mut teams = self.teams.lock().unwrap();
+            if let Some(t) = teams.get_mut(&pid) {
+                t.trim_history();
+                if !t.archived.is_empty() {
+                    self.dirty.lock().unwrap().insert(pid.clone());
+                }
+            }
         }
     }
 
@@ -3021,6 +3112,7 @@ impl TeamManager {
             next_mgr: 0,
             next_lone: 0,
             always_allow: Default::default(),
+            archived: vec![],
         };
         Self::place(&mut team)?;
         for (kind, home) in &homes {
@@ -6942,6 +7034,7 @@ mod windows_path_tests {
             next_mgr: 0,
             next_lone: 0,
             always_allow: Default::default(),
+            archived: vec![],
         };
         let listed = removable_copies(&r, Some(&team), now_ms(), false);
         let _ = std::fs::remove_dir_all(&root);
@@ -7099,5 +7192,137 @@ mod handover_tests {
         assert!(!on_running_card(&a, &tasks), "일시정지된 팀원은 아니다");
         let (b, _) = worker("worker", "work", "running", 0);
         assert!(!on_running_card(&b, &[]), "카드가 없으면 아니다");
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    fn team() -> Team {
+        Team {
+            restarted: None,
+            project: serde_json::from_value(json!({ "id": "p", "name": "p", "path": "/tmp/p", "isGit": false })).unwrap(),
+            homes: HashMap::new(),
+            run: "run".into(),
+            cwd: "/tmp/p".into(),
+            branch: None,
+            home: None,
+            agents: vec![],
+            tasks: vec![],
+            chat: vec![],
+            events: vec![],
+            next_task: 0,
+            next_msg: 0,
+            next_mgr: 0,
+            next_lone: 0,
+            always_allow: Default::default(),
+            archived: vec![],
+        }
+    }
+
+    fn card(id: &str, stage: &str, at: u64) -> Task {
+        serde_json::from_value(json!({
+            "id": id, "title": id, "goal": "", "files": [], "doneWhen": [], "requestedBy": "lead", "assignee": null,
+            "role": "worker", "model": null, "stage": stage, "summary": "끝냈어요", "branch": null, "base": null,
+            "createdAt": at, "updatedAt": at
+        }))
+        .unwrap()
+    }
+
+    const REPORT: &str = "## 결과\n\n- 바꾼 파일: `src/page.tsx`, `src/table.tsx`\n- 확인: 화면을 열어 표가 잘 보이는지 봤어요.\n\n표 정렬과 색을 다듬었고, 좁은 화면에서도 줄이 넘치지 않게 했어요. 다음 단계는 결제 모듈 연결이에요.";
+
+    /// One long working session: `n` messages, a card every 3 messages.
+    fn long_session(t: &mut Team, n: usize) {
+        for i in 0..n {
+            if i % 3 == 0 {
+                t.next_task += 1;
+                t.tasks.push(card(&format!("T-{}", t.next_task), "running", i as u64));
+                let prev = format!("T-{}", t.next_task - 1);
+                if let Some(prev) = t.task_mut(&prev) {
+                    prev.stage = "done".into();
+                }
+            }
+            let text = format!("T-{} {REPORT}", t.next_task);
+            t.say(if i % 2 == 0 { "lead" } else { "report" }, text, None);
+        }
+    }
+
+    #[test]
+    fn a_long_conversation_stays_bounded_and_keeps_open_questions() {
+        let mut t = team();
+        // an old question nobody answered yet
+        t.say("escalation", "어느 색으로 할까요?".into(), Some(Escalation { agent_id: "w1".into(), task_id: None, path: vec![], options: vec![], answer: None }));
+        let question = t.next_msg;
+        t.tasks.push(card("T-OPEN", "running", 0));
+        long_session(&mut t, 5000);
+        assert!(t.chat.len() <= CHAT_KEEP + TRIM_SLACK, "chat kept {}", t.chat.len());
+        assert!(t.chat.iter().any(|m| m.id == question), "a waiting question must stay");
+        assert_eq!(t.chat.last().unwrap().id, t.next_msg, "the newest message stays");
+        let done = t.tasks.iter().filter(|x| finished_task(x)).count();
+        assert!(done <= DONE_TASKS_KEEP + TRIM_SLACK + CHAT_KEEP, "finished cards kept {done}");
+        assert!(t.tasks.len() < 1667, "cards were trimmed: {}", t.tasks.len());
+        assert!(t.tasks.iter().any(|x| x.id == "T-OPEN"), "an open card stays");
+        // every card the kept conversation points at is still there
+        for id in t.chat.iter().flat_map(|m| m.task_ids.iter()) {
+            assert!(t.tasks.iter().any(|x| &x.id == id), "{id} is mentioned but gone");
+        }
+        // nothing is lost: what left the team waits for the history file
+        let chats = t.archived.iter().filter(|a| matches!(a, Archived::Chat(_))).count();
+        assert_eq!(chats + t.chat.len(), 5001);
+    }
+
+    #[test]
+    fn trimmed_history_is_appended_to_the_history_file() {
+        let dir = std::env::temp_dir().join(format!("prism-history-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.history.jsonl");
+        let mut t = team();
+        long_session(&mut t, CHAT_KEEP + TRIM_SLACK + 1);
+        let lines = std::mem::take(&mut t.archived);
+        assert!(!lines.is_empty());
+        append_history(&path, &lines);
+        append_history(&path, &lines[..1]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), lines.len() + 1);
+        let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(first["chat"]["id"], 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Before/after figures for T-137: how big one save is and how long making it takes, after a
+    /// long session. `cargo test --lib save_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn save_cost_over_a_long_session() {
+        let cost = |t: &Team| {
+            let start = std::time::Instant::now();
+            let mut bytes = 0;
+            for _ in 0..10 {
+                // what `flush` copies under the lock and writes, every couple of seconds while working
+                let saved = json!({ "agents": t.agents.clone(), "tasks": t.tasks.clone(), "chat": t.chat.clone(), "events": t.events.clone() });
+                bytes = serde_json::to_string(&saved).unwrap().len();
+            }
+            (bytes, start.elapsed().as_secs_f64() * 100.0)
+        };
+        for n in [1_000, 5_000, 20_000, 50_000] {
+            // before: nothing was ever trimmed
+            let mut old = team();
+            long_session(&mut old, n);
+            let mut untrimmed = team();
+            for a in std::mem::take(&mut old.archived) {
+                match a {
+                    Archived::Chat(m) => untrimmed.chat.push(m),
+                    Archived::Task(x) => untrimmed.tasks.push(x),
+                }
+            }
+            untrimmed.chat.append(&mut old.chat);
+            untrimmed.tasks.append(&mut old.tasks);
+            let (b0, ms0) = cost(&untrimmed);
+            let mut now = team();
+            long_session(&mut now, n);
+            let (b1, ms1) = cost(&now);
+            println!("메시지 {n:>6}개: 전 대화 {:>6}개 · 저장 1번 {:>7.1}KB · {:>6.2}ms  →  후 대화 {:>5}개 · 카드 {:>4}개 · {:>6.1}KB · {:>5.2}ms", untrimmed.chat.len(), b0 as f64 / 1024.0, ms0, now.chat.len(), now.tasks.len(), b1 as f64 / 1024.0, ms1);
+        }
     }
 }

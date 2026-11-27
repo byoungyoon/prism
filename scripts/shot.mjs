@@ -20,6 +20,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildScenario, SCENARIO_NAMES, GACHA_INFO, dashMock } from "./shot/scenarios.mjs";
+import { PERF_INIT, runPerf } from "./shot/perf.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -97,6 +98,8 @@ const HELP = `사용법: pnpm shot -- [옵션]
   --scale <n>             화면 배율 (기본 2 = 레티나)
   --out <폴더>            저장 폴더 (기본 shots/, 저장소에 안 올라감)
   --name <이름>           파일 이름 앞부분 (기본 시나리오-화면-폭-테마)
+  --perf <n>              오래 켜 둔 앱 흉내: 스냅샷을 n번 보내며 메모리·화면 요소·리스너·타이머·그리기 시간을 잰다
+  --perf-gap <ms>         스냅샷 사이 간격 (기본 100, 실제 앱은 최대 400ms마다)
   --list                  시나리오·화면 목록을 보여주고 끝냄
   -h, --help              이 도움말`;
 
@@ -113,10 +116,12 @@ function parseArgs(argv) {
     scale: 2,
     out: path.join(ROOT, "shots"),
     name: "",
+    perf: 0,
+    perfGap: 100,
     list: false,
     help: false,
   };
-  const map = { "-s": "scenario", "--scenario": "scenario", "-w": "width", "--width": "width", "--height": "height", "--theme": "theme", "--frames": "frames", "--interval": "interval", "--wait": "wait", "--scale": "scale", "--out": "out", "--screen": "screen", "--name": "name" };
+  const map = { "-s": "scenario", "--scenario": "scenario", "-w": "width", "--width": "width", "--height": "height", "--theme": "theme", "--frames": "frames", "--interval": "interval", "--wait": "wait", "--scale": "scale", "--out": "out", "--screen": "screen", "--name": "name", "--perf": "perf", "--perf-gap": "perfGap" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-h" || a === "--help") o.help = true;
@@ -128,7 +133,7 @@ function parseArgs(argv) {
       o[map[a]] = v;
     } else throw new Error(`모르는 옵션: ${a}\n\n${HELP}`);
   }
-  for (const k of ["width", "height", "frames", "interval", "wait", "scale"]) o[k] = Number(o[k]);
+  for (const k of ["width", "height", "frames", "interval", "wait", "scale", "perf", "perfGap"]) o[k] = Number(o[k]);
   if (![o.width, o.height, o.frames, o.scale].every((n) => Number.isFinite(n) && n > 0)) throw new Error("폭·높이·장수·배율은 0보다 큰 숫자여야 해요");
   o.screens = o.screen.split(",").map((s) => s.trim()).filter(Boolean);
   return o;
@@ -643,11 +648,24 @@ async function capture(browser, base, o, data, log) {
         route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify(e.message) });
       }
     });
+    // --perf: 앱의 이벤트 소켓을 가짜 백엔드가 받는다 (스냅샷을 실제 앱과 같은 길로 보낸다)
+    let ws = null;
+    if (o.perf) {
+      await page.addInitScript(PERF_INIT);
+      await page.routeWebSocket(/\/api\/events/, (w) => (ws = w));
+    }
     await page.goto(base, { waitUntil: "domcontentloaded" });
     // 팀 목록이 가짜 데이터로 채워질 때까지 기다린다 (앱이 시작하면서 불러온다)
     await page.waitForFunction((n) => !!window.__app && Object.keys(window.__app.getState().teams).length >= n, Object.keys(data.teams).length, { timeout: 30000 });
     await openScreen(page, screen, o, data);
     await page.waitForTimeout(o.wait);
+    if (o.perf) {
+      if (!ws) throw new Error("앱이 이벤트 소켓을 열지 않았어요");
+      const rows = await runPerf(page, ws, o, data, log);
+      const file = path.join(o.out, `perf-${o.name || o.scenario}-${screen}-${o.width}.json`);
+      fs.writeFileSync(file, JSON.stringify(rows, null, 2));
+      saved.push(file);
+    }
 
     const stem = `${o.name || o.scenario}-${screen}-${o.width}-${o.theme}`;
     for (let i = 0; i < o.frames; i++) {
