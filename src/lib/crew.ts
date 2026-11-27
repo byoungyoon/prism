@@ -23,6 +23,12 @@ const better = (a: Agent, b: Agent, tasks: Task[]) => {
 };
 
 /**
+ * A 팀장·작업자 the backend marked broken while its card is still to be done (same rule as
+ * `faults::is_broken`): it stays on screen, even when its program is gone, with 다시 시작.
+ */
+export const isBroken = (a: Agent, tasks: Task[]) => a.role !== "lead" && !a.restSince && !!a.stuck && tasks.some((t) => t.id === a.taskId && t.stage === "running");
+
+/**
  * The card a member is on now — none when the one it last held is already done or failed (it may be
  * answering a message after that, or be a stale session the backend is about to settle).
  */
@@ -42,7 +48,7 @@ export function liveCrew(team: TeamSnapshot, { withLead = false }: { withLead?: 
   for (const a of team.agents) {
     if (a.role === "lead") {
       if (a.status === "off" && !withLead) continue;
-    } else {
+    } else if (!isBroken(a, team.tasks)) {
       if (a.status === "off" || a.status === "done") continue;
       // idle on a finished card — unless it's resting in the lounge on purpose, waiting for the next card
       if (a.status === "wait" && !a.restSince && cardFinished(a, team.tasks)) continue;

@@ -2080,6 +2080,13 @@ pub struct TeamManager {
     tokens: Mutex<crate::tokens::Ledger>,
     /// "project/agent" whose long conversation is being handed over to a new one (mid-card) → its state
     handovers: Mutex<HashMap<String, Handover>>,
+    /// notices already sent (or about to be): "project/agent" for a broken member, "project/perm/id"
+    /// for a request left waiting. Cleared when the member shows life or starts again (see `faults`)
+    told: Mutex<HashSet<String>>,
+    /// "project/card" → how many times an AI boss restarted its member (see `faults::MAX_AI_RESTARTS`)
+    restarts: Mutex<HashMap<String, u32>>,
+    /// things the 총괄 couldn't be told because it was off, by project; handed over when it returns
+    missed: Mutex<HashMap<String, Vec<String>>>,
     watchdog: std::sync::Once,
 }
 
@@ -2725,7 +2732,7 @@ impl TeamManager {
     pub fn new(app: AppHandle, pty: Pty, port: u16, token: String) -> Self {
         let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("prism"));
         let tokens = Mutex::new(crate::tokens::Ledger::load(data_dir.join("usage.json")));
-        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), sent: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
+        Self { app, pty, teams: Mutex::default(), port, token, data_dir, perm_waiters: Mutex::default(), perm_batches: Mutex::default(), permission_turns: Mutex::default(), drivers: Mutex::default(), transcripts: Mutex::default(), usage: Mutex::default(), dirty: Mutex::default(), outbox: Mutex::default(), sent: Mutex::default(), report_turns: Mutex::default(), delivered: Mutex::default(), launches: Mutex::default(), renewing: Mutex::default(), handovers: Mutex::default(), told: Mutex::default(), restarts: Mutex::default(), missed: Mutex::default(), tokens, watchdog: std::sync::Once::new() }
     }
 
     /// Adds the token figures a team's screens show to its snapshot.
@@ -2903,6 +2910,9 @@ impl TeamManager {
             a.resume_as = None;
         }
         back_to_lounge(&mut team.agents);
+        if let Some(text) = self.lead_catch_up(team) {
+            self.inject(team, "lead", text);
+        }
         team.log(
             match why.as_deref() {
                 Some("update") => "앱이 업데이트로 다시 시작됐다. 팀이 하던 일을 이어서 한다.",
@@ -2938,6 +2948,11 @@ impl TeamManager {
             self.launch_agent(team, aid, None)?;
         }
         team.log(format!("{}이(가) 다시 일을 시작했다.", a.name), None);
+        if aid == "lead" {
+            if let Some(text) = self.lead_catch_up(team) {
+                self.inject(team, "lead", text);
+            }
+        }
         self.emit(team);
         Ok(())
     }
@@ -3150,7 +3165,9 @@ impl TeamManager {
                 if a.status != "done" {
                     a.status = "off".into();
                 }
+                a.stuck = None;
             }
+            self.told.lock().unwrap().retain(|k| !k.starts_with(&format!("{pid}/")));
             let ids: Vec<String> = team.agents.iter().map(|a| a.id.clone()).collect();
             for id in ids {
                 self.kill_driver(pid, &id);
@@ -3204,6 +3221,7 @@ impl TeamManager {
                     if a.status != "done" {
                         a.status = "off".into();
                     }
+                    a.stuck = None;
                 }
                 team.log(if why == "update" { "업데이트를 위해 앱이 다시 시작된다. 하던 일은 다시 켜지면 이어서 한다." } else { "앱이 꺼졌다. 다시 켜지면 하던 일을 이어서 한다." }, None);
                 self.emit(team);
@@ -3549,9 +3567,11 @@ impl TeamManager {
         self.delivered.lock().unwrap().remove(&format!("{pid}/{aid}"));
         let mut teams = self.teams.lock().unwrap();
         let Some(team) = teams.get_mut(pid) else { return };
-        // any sign of life clears "응답이 없어요"
-        if let Some(a) = team.agent_mut(aid) {
-            a.stuck = None;
+        // any sign of life clears "응답이 없어요" (the token counts that come with a failed turn aren't one)
+        if !matches!(ev, Event::Context(_) | Event::Tokens { .. }) {
+            if team.agent_mut(aid).is_some_and(|a| a.stuck.take().is_some()) {
+                self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+            }
         }
         match ev {
             Event::Started(sid) => {
@@ -3623,6 +3643,20 @@ impl TeamManager {
                     if a.status != "done" && a.status != "block" && a.status != "off" {
                         a.status = "wait".into();
                         a.status_since = now_ms();
+                    }
+                }
+                // an error turn leaves the card unfinished with nobody working on it: mark it, tell the boss.
+                // (For the 총괄 the mark alone matters: it shows "멈추고 다시" and fails a 묶음 지시.)
+                if error {
+                    let why = format!("오류로 일이 멈췄어요: {}", short(result.as_deref().unwrap_or("알 수 없는 오류"), 200));
+                    let broke = team.agent(aid).is_some_and(|a| a.role == "lead" || crate::faults::on_open_work(a, &team.tasks).is_some() && a.status != "block");
+                    if broke {
+                        if let Some(a) = team.agent_mut(aid) {
+                            a.stuck = Some(why);
+                        }
+                        if role != "lead" {
+                            self.queue_fault(pid, aid);
+                        }
                     }
                 }
                 // the 총괄's answer to "write the hand-over memo": it starts the new conversation, not a chat line
@@ -3730,11 +3764,14 @@ impl TeamManager {
                     Some(0) | None => format!("{name}의 세션이 종료됐다."),
                     Some(c) => format!("{name}의 세션이 종료됐다 (코드 {c}). claude CLI가 설치돼 있는지 확인하세요."),
                 };
-                a.stuck = Some(format!("{name}이(가) 예상치 못하게 꺼졌어요"));
+                // (a failed turn just before may already say why: keep that)
+                a.stuck.get_or_insert_with(|| format!("{name}이(가) 예상치 못하게 꺼졌어요"));
                 let lead = a.role == "lead";
                 team.log(note, Some("block"));
                 if lead {
                     team.say("lead", format!("문제가 생겨 멈췄어요: {name} 프로그램이 꺼졌어요. 아래 '멈추고 다시'를 누르면 하던 대화를 이어서 다시 시작해요."), None);
+                } else {
+                    self.queue_fault(pid, aid);
                 }
             }
         }
@@ -3969,6 +4006,10 @@ impl TeamManager {
         }
         match self.launch_agent(team, "lead", None) {
             Ok(()) => {
+                let first = match self.lead_catch_up(team) {
+                    Some(more) => format!("{first}\n\n{more}"),
+                    None => first,
+                };
                 self.inject(team, "lead", first);
                 team.log(if memo.is_some() { "총괄 대화를 새로 시작했다 (인수인계 메모 전달)." } else { "총괄 대화를 새로 시작했다 (메모 없이 카드 목록만 전달)." }, None);
             }
@@ -4074,9 +4115,11 @@ impl TeamManager {
             ),
             Err(e) => {
                 if let Some(a) = team.agent_mut(aid) {
-                    a.stuck = Some("새 대화를 시작하지 못했어요".into());
+                    a.stuck = Some(format!("새 대화를 시작하지 못했어요: {}", short(&e, 160)));
+                    a.status = "off".into();
                 }
                 team.log(format!("{name}: 새 대화를 시작하지 못했어요 ({e})."), Some("block"));
+                self.queue_fault(&pid, aid);
             }
         }
     }
@@ -4276,6 +4319,7 @@ impl TeamManager {
         self.settle_stale_members(now);
         self.check_no_reply(now);
         self.close_idle_reviewers(now);
+        self.check_faults(now);
         let running: std::collections::HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
         let mut teams = self.teams.lock().unwrap();
         for team in teams.values_mut() {
@@ -4416,12 +4460,234 @@ impl TeamManager {
         Ok(CleanupReport { removed: gone.len(), freed_bytes })
     }
 
+    /// The user's 종료. It is marked off first, so the exit isn't taken for a crash; a member with a
+    /// card left undone shows as broken (with 다시 시작) and its boss hears that the user closed it.
     pub fn kill_agent(&self, pid: &str, aid: &str) {
+        {
+            let mut teams = self.teams.lock().unwrap();
+            if let Some(team) = teams.get_mut(pid) {
+                let unfinished = team.agent(aid).is_some_and(|a| crate::faults::on_open_work(a, &team.tasks).is_some());
+                if let Some(a) = team.agent_mut(aid).filter(|a| a.status != "done" && a.rest_since.is_none()) {
+                    a.status = "off".into();
+                    a.status_since = now_ms();
+                    a.stuck = unfinished.then(|| crate::faults::KILLED_BY_USER.to_string());
+                }
+                if unfinished {
+                    self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+                    self.queue_fault(pid, aid);
+                }
+                self.emit(team);
+            }
+        }
         self.kill_driver(pid, aid);
         let teams = self.teams.lock().unwrap();
         if let Some(pty) = teams.get(pid).and_then(|t| t.agent(aid)).and_then(|a| a.pty_id) {
             self.pty.kill(pty);
         }
+    }
+
+    // ── broken members (see `faults`) ─────────────────
+
+    /// `aid` was just marked broken: its boss is told once, after a moment (so the failed turn and the
+    /// exit that follows it make one notice).
+    fn queue_fault(&self, pid: &str, aid: &str) {
+        if !self.told.lock().unwrap().insert(format!("{pid}/{aid}")) {
+            return;
+        }
+        let app = self.app.clone();
+        let (pid, aid) = (pid.to_string(), aid.to_string());
+        std::thread::spawn(move || {
+            std::thread::sleep(crate::faults::GATHER);
+            if let Some(m) = app.try_state::<Arc<TeamManager>>() {
+                m.tell_fault(&pid, &aid);
+            }
+        });
+    }
+
+    fn tell_fault(&self, pid: &str, aid: &str) {
+        let mut teams = self.teams.lock().unwrap();
+        let Some(team) = teams.get_mut(pid) else { return };
+        // recovered, finished or restarted meanwhile: nothing to say
+        let found = team.agent(aid).filter(|a| crate::faults::is_broken(a, &team.tasks)).and_then(|a| {
+            let t = team.tasks.iter().find(|t| Some(&t.id) == a.task_id.as_ref())?;
+            Some((a.name.clone(), a.parent_id.clone(), t.id.clone(), t.title.clone(), a.stuck.clone()?))
+        });
+        let Some((name, parent, tid, title, reason)) = found else {
+            self.told.lock().unwrap().remove(&format!("{pid}/{aid}"));
+            return;
+        };
+        team.log(format!("고장: {name} · {tid} — {}", short(&reason, 80)), Some("block"));
+        let msg = crate::faults::notice(&name, &tid, &short(&title, 40), &reason);
+        self.tell_boss(team, parent.as_deref(), Some(&tid), msg);
+        self.emit(team);
+    }
+
+    /// Sends `msg` to `boss` if it can take it, else to the 총괄. A 총괄 that is off hears it when it returns.
+    fn tell_boss(&self, team: &mut Team, boss: Option<&str>, card: Option<&str>, msg: String) {
+        let pid = team.project.id.clone();
+        let running = |a: &str| self.drivers.lock().unwrap().contains_key(&format!("{pid}/{a}"));
+        let to = boss.filter(|b| *b != "lead" && running(b)).unwrap_or("lead").to_string();
+        // while the 총괄 writes its hand-over memo, anything sent to it is lost with the old conversation
+        let busy_renewing = to == "lead" && self.renewing.lock().unwrap().contains_key(&pid);
+        let up = running(&to) || team.agent(&to).is_some_and(|a| a.pty_id.is_some());
+        if !busy_renewing && up {
+            if let Some(card) = card {
+                self.report_turns.lock().unwrap().insert(format!("{pid}/{to}"), card.to_string());
+            }
+            if self.inject(team, &to, msg.clone()) {
+                return;
+            }
+        }
+        if to == "lead" {
+            self.missed.lock().unwrap().entry(pid).or_default().push(msg);
+        }
+    }
+
+    /// What a 총괄 that just started (again) should know: notices it missed and members still broken.
+    fn lead_catch_up(&self, team: &Team) -> Option<String> {
+        let missed = self.missed.lock().unwrap().remove(&team.project.id).unwrap_or_default();
+        let broken = crate::faults::broken_lines(&team.agents, &team.tasks);
+        let mut out = vec![];
+        if !missed.is_empty() {
+            out.push(format!("[꺼져 있는 동안 온 알림]\n{}", missed.join("\n\n")));
+        }
+        if !broken.is_empty() {
+            out.push(format!("[지금 멈춰 있는 팀원]\n{}\n필요하면 restart_agent로 다시 시작하세요. 사용량 한도·로그인 문제거나 사용자가 끈 팀원은 사용자에게 먼저 알려주세요.", broken.join("\n")));
+        }
+        (!out.is_empty()).then(|| format!("[Prism 고장 알림]\n{}", out.join("\n\n")))
+    }
+
+    /// The watchdog's part: members that broke without an event saying so, long silences, and requests
+    /// left waiting on the user.
+    fn check_faults(&self, now: u64) {
+        let running: HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+        let handing: HashSet<String> = self.handovers.lock().unwrap().keys().cloned().collect();
+        let mut teams = self.teams.lock().unwrap();
+        for team in teams.values_mut() {
+            let pid = team.project.id.clone();
+            // a team nobody is in has nothing to watch
+            if team.agent("lead").is_none_or(|a| a.status == "off") && !running.iter().any(|k| k.starts_with(&format!("{pid}/"))) {
+                continue;
+            }
+            let alive = |a: &str| running.contains(&format!("{pid}/{a}")) || handing.contains(&format!("{pid}/{a}"));
+            let found = crate::faults::silent_faults(&team.agents, &team.tasks, now, &alive);
+            let changed = !found.is_empty();
+            for (aid, why) in found {
+                if let Some(a) = team.agent_mut(&aid) {
+                    a.stuck = Some(why);
+                    if !alive(&aid) {
+                        a.status = "off".into();
+                        a.status_since = now;
+                    }
+                }
+                self.queue_fault(&pid, &aid);
+            }
+            for aid in crate::faults::long_silent(&team.agents, &team.tasks, now) {
+                self.queue_fault(&pid, &aid);
+            }
+            let waiting: Vec<(u64, String, String)> = team
+                .chat
+                .iter()
+                .filter(|m| now.saturating_sub(m.at) > crate::faults::PERMISSION_WAIT_MS)
+                .filter_map(|m| m.permission.as_ref().filter(|p| p.answer.is_none() && p.decider.is_none() && p.agent_id != "lead").map(|p| (m.id, p.agent_id.clone(), p.detail.clone())))
+                .filter(|(id, ..)| self.perm_waiters.lock().unwrap().contains_key(id))
+                .collect();
+            for (id, aid, detail) in waiting {
+                if self.told.lock().unwrap().insert(format!("{pid}/perm/{id}")) {
+                    let parent = team.agent(&aid).and_then(|a| a.parent_id.clone());
+                    let msg = crate::faults::permission_notice(&team.name_of(&aid), &short(&detail, 80));
+                    self.tell_boss(team, parent.as_deref(), None, msg);
+                    self.emit(team);
+                }
+            }
+            if changed {
+                self.emit(team);
+            }
+        }
+    }
+
+    /// Starts a broken (or hung) member again on the same card, folder and branch: its own
+    /// conversation when it's small enough, else (or with `fresh`) a new one that gets the card again.
+    /// `by`: the AI boss asking (limited per card), or None for the user.
+    fn restart_member(&self, team: &mut Team, aid: &str, note: Option<&str>, fresh: bool, by: Option<&str>) -> Result<String, String> {
+        let pid = team.project.id.clone();
+        let key = format!("{pid}/{aid}");
+        let a = team.agent(aid).cloned().ok_or("그런 팀원이 없어요.")?;
+        let card_key = format!("{pid}/{}", a.task_id.as_deref().unwrap_or(""));
+        let done = self.restarts.lock().unwrap().get(&card_key).copied().unwrap_or(0);
+        crate::faults::restart_check(&a, &team.tasks, by.is_some(), done)?;
+        if self.handovers.lock().unwrap().contains_key(&key) {
+            return Err("이 팀원은 지금 대화를 이어가는 중이에요. 잠시 뒤에 다시 해 주세요.".into());
+        }
+        let tid = a.task_id.clone().ok_or("맡은 작업 카드가 없어요")?;
+        // requests it was waiting on belong to the program that goes away now
+        let pending: Vec<u64> = team.chat.iter().filter(|m| m.permission.as_ref().is_some_and(|p| p.agent_id == aid && p.answer.is_none())).map(|m| m.id).collect();
+        for id in pending {
+            self.resolve_permission(team, id, "timeout", "다시 시작")?;
+        }
+        // off first, so the old program's exit isn't taken for a crash
+        team.set_status(aid, "off");
+        self.kill_driver(&pid, aid);
+        if let Some(pty) = a.pty_id {
+            self.pty.kill(pty);
+        }
+        self.delivered.lock().unwrap().remove(&key);
+        self.told.lock().unwrap().remove(&key);
+        let resume = (!fresh && !a.session_id.is_empty() && a.context < FRESH_CONTEXT).then(|| a.session_id.clone());
+        let message = crate::faults::restart_message(a.stuck.as_deref(), note, resume.is_none());
+        let now = now_ms();
+        let (Some(m), Some(t)) = (team.agents.iter_mut().find(|x| x.id == aid), team.tasks.iter_mut().find(|x| x.id == tid)) else {
+            return Err("담당 카드나 팀원을 찾을 수 없어요".into());
+        };
+        reopen_on_card(m, t, now);
+        m.pty_id = None;
+        m.thought = None;
+        m.pending.clear();
+        if resume.is_none() {
+            start_fresh_conversation(m, message.clone());
+        }
+        let launched = match &resume {
+            Some(sid) => self.launch_agent(team, aid, Some(sid.clone())).or_else(|_| self.launch_agent(team, aid, None)),
+            None => self.launch_agent(team, aid, None),
+        };
+        if let Err(e) = launched {
+            if let Some(m) = team.agent_mut(aid) {
+                m.status = "off".into();
+                m.status_since = now_ms();
+                m.stuck = Some(format!("다시 시작하지 못했어요: {}", short(&e, 160)));
+            }
+            self.emit(team);
+            return Err(format!("다시 시작하지 못했어요: {e}"));
+        }
+        // a new conversation got the card (with the note) as its first message
+        if resume.is_some() {
+            self.inject(team, aid, message);
+        }
+        if by.is_some() {
+            *self.restarts.lock().unwrap().entry(card_key).or_default() += 1;
+        } else {
+            self.restarts.lock().unwrap().remove(&card_key);
+        }
+        let name = team.name_of(aid);
+        team.log(format!("{}이(가) {name}을(를) 다시 시작했다 ({tid}).", by.unwrap_or("사용자")), None);
+        Ok(format!("{name}을(를) {tid}에서 다시 시작했어요{}. 끝나면 '[Prism 보고]'가 와요.", if resume.is_some() { " (하던 대화를 이어서)" } else { " (새 대화)" }))
+    }
+
+    /// The screen's 다시 시작 on a broken member. Its boss is told, so it doesn't restart it again.
+    pub fn restart_agent(&self, pid: &str, aid: &str) -> Result<(), String> {
+        let mut teams = self.teams.lock().unwrap();
+        let team = teams.get_mut(pid).ok_or("팀이 출근하지 않았어요")?;
+        if team.agent("lead").is_none_or(|a| a.status == "off") {
+            return Err("팀이 출근한 뒤에 다시 시작할 수 있어요.".into());
+        }
+        self.restart_member(team, aid, None, false, None)?;
+        let name = team.name_of(aid);
+        let parent = team.agent(aid).and_then(|a| a.parent_id.clone());
+        let card = team.agent(aid).and_then(|a| a.task_id.clone()).unwrap_or_default();
+        let msg = format!("[Prism 알림] 사용자가 멈춘 {name}({card})을(를) 다시 시작했어요. 따로 할 일은 없어요. 이 알림에는 — 한 글자로만 답하세요.");
+        self.tell_boss(team, parent.as_deref(), None, msg);
+        self.emit(team);
+        Ok(())
     }
 
     pub fn set_usage(&self, list: Vec<Usage>) {
@@ -4579,8 +4845,14 @@ impl TeamManager {
                 _ => "",
             });
         }
-        if answer != "timeout" {
+        // answered or timed out, the member goes on either way — unless it's still waiting for another answer
+        let still_waiting = team.chat.iter().any(|m| {
+            m.permission.as_ref().is_some_and(|p| p.agent_id == aid && p.answer.is_none()) || m.escalation.as_ref().is_some_and(|e| e.agent_id == aid && e.answer.is_none())
+        });
+        if !still_waiting && team.agent(&aid).is_some_and(|a| a.status == "block") {
             team.set_status(&aid, "work");
+        }
+        if answer != "timeout" {
             let name = team.name_of(&aid);
             team.log(format!("{by}가 {name}의 요청을 {}했다: {}", if answer == "deny" { "거부" } else { "허락" }, short(&detail, 40)), None);
         }
@@ -4720,6 +4992,15 @@ impl TeamManager {
                 "options": { "type": "array", "items": { "type": "string" }, "description": "선택지 (최대 3개)" }
             }, "required": ["question"] }
         });
+        let restart = json!({
+            "name": "restart_agent",
+            "description": "고장 났거나 멈춘 하위 에이전트를 같은 카드·같은 작업 폴더에서 다시 시작한다. 하던 대화를 이어가고, 대화가 너무 길면 새 대화에 카드를 다시 준다. 열린(진행 중·검토 중) 카드만 되고, 한 카드에 3번까지. 사용량 한도·로그인 문제에는 쓰지 말고 사용자에게 알린다.",
+            "inputSchema": { "type": "object", "properties": {
+                "agent": { "type": "string", "description": "팀원 이름 (예: W1)" },
+                "note": { "type": "string", "description": "다시 시작하며 전할 말 (선택)" },
+                "fresh": { "type": "boolean", "description": "true면 이전 대화를 버리고 새 대화로. 같은 오류가 반복될 때만" }
+            }, "required": ["agent"] }
+        });
         // used by Claude Code itself (--permission-prompt-tool), not by the model
         let approve = json!({
             "name": "approve",
@@ -4739,8 +5020,8 @@ impl TeamManager {
             }, "required": ["decision"] }
         });
         match role.as_str() {
-            "lead" => vec![delegate, list, message, complete, decide, approve],
-            "mgr" => vec![delegate, list, message, complete, report, escalate, decide, approve],
+            "lead" => vec![delegate, list, message, complete, restart, decide, approve],
+            "mgr" => vec![delegate, list, message, complete, restart, report, escalate, decide, approve],
             "worker" => vec![report, escalate, approve],
             _ => vec![],
         }
@@ -4793,7 +5074,14 @@ impl TeamManager {
                     who: None,
                 });
                 team.log(format!("{}이(가) {id} \"{}\"를 만들었다.", me.name, short(&s("title").unwrap_or_default(), 30)), None);
-                self.process_queue(team);
+                let failed = self.start_queued(team);
+                for (tid, parent, why) in failed.iter().filter(|f| f.0 != id) {
+                    self.tell_boss(team, Some(parent), Some(tid), start_failed_notice(tid, why));
+                }
+                if let Some((_, _, why)) = failed.iter().find(|f| f.0 == id) {
+                    self.emit(team);
+                    return Err(format!("{id}의 작업자를 시작하지 못했어요: {why}. 카드는 실패로 남았어요. 같은 문제가 반복되면 사용자에게 쉬운 말로 알려주세요."));
+                }
                 let t = team.tasks.iter().find(|t| t.id == id).unwrap();
                 match &t.assignee {
                     Some(a) => format!("{id} 배정 → {} ({}). 끝나면 '[Prism 보고]'가 옵니다. 기다리지 말고 다음 일을 하세요.", team.name_of(a), team.agent(a).map(|x| x.model.clone()).unwrap_or_default()),
@@ -4849,7 +5137,8 @@ impl TeamManager {
                 }
             }
             "list_tasks" => {
-                task_lines(team)
+                let broken = crate::faults::broken_lines(&team.agents, &team.tasks);
+                if broken.is_empty() { task_lines(team) } else { format!("{}\n\n[멈춰 있는 팀원 — restart_agent로 다시 시작할 수 있어요]\n{}", task_lines(team), broken.join("\n")) }
             }
             "message_agent" => {
                 let target = s("agent").ok_or("agent 필요")?;
@@ -4867,6 +5156,21 @@ impl TeamManager {
                     Delivery::Live => format!("{name}에게 전달했어요."),
                     Delivery::Reopen => format!("{name}에게 전달했어요. 끝났던 카드를 다시 진행하게 했어요. 끝나면 '[Prism 보고]'가 와요."),
                 }
+            }
+            "restart_agent" => {
+                if me.role != "lead" && me.role != "mgr" {
+                    return Err("팀원을 다시 시작할 수 있는 건 총괄과 팀장뿐이에요".into());
+                }
+                let target = s("agent").ok_or("agent 필요")?;
+                let running: HashSet<String> = self.drivers.lock().unwrap().keys().cloned().collect();
+                let alive = |a: &str| running.contains(&format!("{pid}/{a}"));
+                let target = member_by_name(&team.agents, &team.tasks, &target, &alive).ok_or("그런 에이전트가 없어요")?;
+                // a 팀장 restarts only the members under it
+                if target == aid || (me.role == "mgr" && !team.agent(&target).is_some_and(|a| a.parent_id.as_deref() == Some(aid))) {
+                    return Err("네 아래 팀원만 다시 시작할 수 있어요".into());
+                }
+                let fresh = args.get("fresh").and_then(Value::as_bool).unwrap_or(false);
+                self.restart_member(team, &target, s("note").as_deref(), fresh, Some(&me.name))?
             }
             "complete_task" => {
                 let tid = s("task_id").ok_or("task_id 필요")?;
@@ -4919,7 +5223,9 @@ impl TeamManager {
                         self.report_turns.lock().unwrap().insert(format!("{}/{parent}", team.project.id), tid.clone());
                     }
                     team.set_status(&parent, "work");
-                    self.inject(team, &parent, msg);
+                    if !self.inject(team, &parent, msg.clone()) && to_lead {
+                        self.missed.lock().unwrap().entry(team.project.id.clone()).or_default().push(msg);
+                    }
                 }
                 "보고를 전달했어요. 이제 멈추고 기다리세요.".into()
             }
@@ -5078,8 +5384,16 @@ impl TeamManager {
         Ok(())
     }
 
-    /// Starts queued cards while the role and team limits allow.
+    /// Starts queued cards while the role and team limits allow; whoever asked hears of one that couldn't start.
     fn process_queue(&self, team: &mut Team) {
+        for (tid, parent, why) in self.start_queued(team) {
+            self.tell_boss(team, Some(&parent), Some(&tid), start_failed_notice(&tid, &why));
+        }
+    }
+
+    /// `process_queue` without the notices: returns the cards that couldn't start `(card, requester, why)`.
+    fn start_queued(&self, team: &mut Team) -> Vec<(String, String, String)> {
+        let mut failed = vec![];
         let cfg = team.project.team.clone();
         let queued: Vec<(String, String, String)> = team
             .tasks
@@ -5088,6 +5402,7 @@ impl TeamManager {
             .map(|t| (t.id.clone(), t.role.clone(), t.requested_by.clone()))
             .collect();
         for (tid, role, parent) in queued {
+            let asked_by = parent.clone();
             let max = if role == "mgr" { cfg.managers.max } else { cfg.workers.max } as usize;
             let busy = team.active("mgr") + team.active("worker");
             if team.active(&role) >= max || busy >= cfg.concurrent as usize {
@@ -5120,10 +5435,16 @@ impl TeamManager {
                         t.summary = Some(format!("에이전트 시작 실패: {e}"));
                     }
                     team.log(format!("{tid} 에이전트 시작 실패: {}", short(&e, 60)), Some("block"));
+                    failed.push((tid, asked_by, short(&e, 200)));
                 }
             }
         }
+        failed
     }
+}
+
+fn start_failed_notice(tid: &str, why: &str) -> String {
+    format!("[Prism 고장 알림] {tid}의 작업자를 시작하지 못해 카드가 실패했어요: {why}\n원인을 확인한 뒤 필요하면 다시 맡기고, 해결할 수 없으면 사용자에게 쉬운 말로 알려주세요.")
 }
 
 /// One short line for a finished tool call, for the live activity feed.
@@ -5337,6 +5658,11 @@ pub fn agent_pause(teams: Teams<'_>, project_id: String, agent_id: String) -> Re
 #[tauri::command]
 pub fn agent_resume(teams: Teams<'_>, project_id: String, agent_id: String) -> Result<(), String> {
     teams.resume_agent(&project_id, &agent_id)
+}
+
+#[tauri::command]
+pub fn agent_restart(teams: Teams<'_>, project_id: String, agent_id: String) -> Result<(), String> {
+    teams.restart_agent(&project_id, &agent_id)
 }
 
 #[tauri::command]

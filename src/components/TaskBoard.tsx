@@ -8,8 +8,9 @@ import type { Agent, Project, Role, TeamSnapshot } from "../lib/api";
 import { clock } from "../data/types";
 import { modelLabel } from "../data/models";
 import { ChevronDown } from "./icons";
-import { currentCard, finishedCrew, liveCrew, useDismissed } from "../lib/crew";
+import { currentCard, finishedCrew, isBroken, liveCrew, useDismissed } from "../lib/crew";
 import { MergeActions, MergeAllButton } from "./MergeActions";
+import { RestartButton } from "./RestartButton";
 import { TeamUsageBox } from "./TokenUse";
 import { catName, givenName } from "./critters/pixel/coats";
 
@@ -26,6 +27,7 @@ function stateOf(a: Agent, team: TeamSnapshot) {
   // its card now (a card that is already over is not shown next to a member still at work)
   const task = currentCard(team, a);
   if (a.restSince) return { task: undefined, word: "휴게실", problem: false };
+  if (isBroken(a, team.tasks)) return { task, word: "고장", problem: true };
   if (a.status === "block") return { task, word: "막힘", problem: true };
   if (task?.stage === "failed") return { task, word: "실패", problem: true };
   if (a.role === "lead") return { task, word: a.status === "work" ? "지시를 나누는 중" : a.status === "off" ? "퇴근" : "지시를 기다려요", problem: false };
@@ -40,7 +42,8 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
   // 팀이 여럿이면 총괄 줄이 팀 제목이다: 제목은 팀 이름 그대로, 지어 준 고양이 이름은 그 옆에 따로 적는다
   const isTitle = a.role === "lead" && multi;
   const leadName = isTitle ? givenName(a) : undefined;
-  return (
+  const broken = isBroken(a, team.tasks);
+  const row = (
     <button
       data-critter-anchor={`member:${project.id}:${a.id}${st.task ? ` task:${project.id}:${st.task.id}` : ""}`}
       onClick={() => openIn(project.id, { name: "agent", id: a.id })}
@@ -63,6 +66,19 @@ function MemberRow({ a, team, project, multi, tree }: { a: Agent; team: TeamSnap
         {st.word}
       </span>
     </button>
+  );
+  if (!broken) return row;
+  // why, and 다시 시작, under the row (a button can't sit inside the row, itself a button)
+  return (
+    <div className="flex min-w-0 flex-col">
+      {row}
+      <div className="flex min-w-0 items-center gap-2 pb-1 pl-2">
+        <span className="line-clamp-2 min-w-0 flex-auto text-[11.5px] leading-snug" style={{ color: "var(--block-ink)" }} title={a.stuck ?? undefined}>
+          {a.stuck}
+        </span>
+        <RestartButton projectId={project.id} agentId={a.id} name={catName(a)} />
+      </div>
+    </div>
   );
 }
 
@@ -138,7 +154,7 @@ export function TaskBoard() {
   // one rule for "who is on the team" (lib/crew): the same people the office and the team tabs show
   const members = (team: TeamSnapshot, role: Role) => liveCrew(team, { withLead: true }).filter((a) => a.role === role);
   // only who is at work (or the 총괄) shows by default; idle and finished members fold into one line
-  const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
+  const isActive = (a: Agent, team: TeamSnapshot) => a.role === "lead" || isBroken(a, team.tasks) || a.status === "work" || a.status === "block" || (!a.restSince && !!currentCard(team, a));
   const crewOf = (team: TeamSnapshot) => FLOORS.flatMap((f) => members(team, f.role));
   const trees = shown.map(({ project, team }) => ({ project, team, ...teamTree(team, crewOf(team).filter((a) => isActive(a, team))) }));
   const activeN = trees.reduce((k, t) => k + t.ids.size, 0);

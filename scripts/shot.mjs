@@ -46,6 +46,7 @@ const SCREENS = {
   office: "사무실 (관제탑 가운데: 팀 요약 탭 + 사무실)",
   team: "팀 탭 (팀 하나의 보고 목록)",
   board: "작업 보드 (오른쪽 카드 칸)",
+  agent: "작업자 화면: 고장 난 작업자(없으면 첫 작업자)의 작업 화면 (-s broken)",
   chat: "총괄 채팅 (왼쪽)",
   edit: "편집 (파일 편집 화면, 엔진이 없으면 설치 안내)",
   home: "홈 (프로젝트 목록)",
@@ -224,6 +225,8 @@ function fakeApi(cmd, args, data) {
     case "cli_status":
     case "task_files":
     case "task_engine_files":
+    case "agent_transcript":
+    case "git_changes":
       return [];
     case "knowledge_get":
       return "";
@@ -540,7 +543,11 @@ async function openScreen(page, screen, o, data) {
       const app = window.__app;
       const set = { dark, critters: true, error: null, dashboardOpen: screen === "dashboard" || screen === "draft" };
       if (screen === "home") set.view = { name: "home" };
-      else if (screen === "settings") Object.assign(set, { view: { name: "settings" }, projectId: focus });
+      else if (screen === "agent") {
+        const agents = window.__app.getState().teams?.[focus]?.agents ?? [];
+        const a = agents.find((x) => x.stuck) ?? agents.find((x) => x.role === "worker");
+        if (a) Object.assign(set, { view: { name: "agent", id: a.id }, projectId: focus });
+      } else if (screen === "settings") Object.assign(set, { view: { name: "settings" }, projectId: focus });
       else Object.assign(set, { view: { name: "main" }, projectId: focus ?? app.getState().projectId });
       app.setState(set);
       if (screen === "edit" && edit) window.__openEdit(edit.projectId, edit.taskId, edit.path);

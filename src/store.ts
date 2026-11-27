@@ -182,6 +182,8 @@ interface AppState {
   killAgent(agentId: string): Promise<void>;
   pauseAgent(agentId: string): Promise<void>;
   resumeAgent(agentId: string): Promise<void>;
+  /** 다시 시작 on a broken member of that project's team */
+  restartAgent(projectId: string, agentId: string): Promise<void>;
 }
 
 /** Why a team could not clock in, in plain words. */
@@ -589,6 +591,7 @@ export const useApp = create<AppState>((set, get) => {
     killAgent: guard(async (agentId: string) => api.killAgent(pid(), agentId)),
     pauseAgent: guard(async (agentId: string) => api.pauseAgent(pid(), agentId)),
     resumeAgent: guard(async (agentId: string) => api.resumeAgent(pid(), agentId)),
+    restartAgent: guard(async (projectId: string, agentId: string) => api.restartAgent(projectId, agentId)),
   };
 });
 

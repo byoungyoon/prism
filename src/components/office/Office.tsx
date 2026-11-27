@@ -9,7 +9,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { useApp, useOfficeTeams, waitsForMe } from "../../store";
 import type { Agent, ChatMsg, Project, Task, TeamSnapshot } from "../../lib/api";
 import { plainAction } from "../../lib/plainAction";
-import { currentCard, liveCrew, loungeOnlyCrew } from "../../lib/crew";
+import { currentCard, isBroken, liveCrew, loungeOnlyCrew } from "../../lib/crew";
 import { pickLine } from "./chatter";
 import { ensurePixelOffice } from "./pixelOffice";
 import { Playroom } from "./Playroom";
@@ -47,8 +47,9 @@ function useNarrow() {
   return n;
 }
 
-/** at the desk: working, stuck or asking — and the 총괄 of a team at work */
-const atDesk = (a: Agent) => a.status === "work" || a.status === "block" || a.role === "lead";
+/** at the desk: working, stuck, broken or asking — and the 총괄 of a team at work */
+const atDesk = (m: Member) => m.agent.status === "work" || m.agent.status === "block" || m.agent.role === "lead" || broken(m);
+const broken = (m: Member) => isBroken(m.agent, m.team.tasks);
 
 /** how a lounging cat rests: coffee, a nap, or just sitting — by cat, shuffled now and then */
 const REST_POSES: Pose[] = ["coffee", "sleep", "sit", "coffee", "sleep"];
@@ -318,13 +319,13 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       const crew = liveCrew(team).map(member);
       // reported 작업자, and resting ones while nobody is in: in the lounge with or without the 총괄
       const reported = loungeOnlyCrew(team).map(({ agent, reported }): Member => ({ ...member(agent), reported }));
-      const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || asks[m.key]?.length);
+      const busy = crew.some((m) => m.agent.status === "work" || m.agent.status === "block" || broken(m) || asks[m.key]?.length);
       if (!busy) {
         const waiting = [...crew.filter((m) => m.agent.role !== "lead"), ...reported];
         idle.push(...waiting);
         continue;
       }
-      const seated = (m: Member) => atDesk(m.agent) || !!asks[m.key]?.length;
+      const seated = (m: Member) => atDesk(m) || !!asks[m.key]?.length;
       pods.push({ project, desks: crew.filter(seated), waiting: [...crew.filter((m) => !seated(m)), ...reported] });
     }
     return { pods, idle };
@@ -548,7 +549,7 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
     const t = setInterval(() => {
       if (document.hidden || pausedRef.current) return;
       const { members: ms, deskMembers: ds, asks: ak } = talkRef.current;
-      const quiet = ms.filter((m) => !ak[m.key]?.length);
+      const quiet = ms.filter((m) => !ak[m.key]?.length && !broken(m));
       if (!quiet.length) return;
       const n = Math.random() < 0.3 ? 2 : 1;
       const picked = [...quiet].sort(() => Math.random() - 0.5).slice(0, n);
@@ -657,20 +658,20 @@ export function Office({ paused = false }: { onTeam?: (projectId: string) => voi
       from: enterFrom[m.key],
       // a cat on a break naps now and then instead of hopping about
       // (a held cat looks limp and teary: "fail")
-      state: mine ? "fail" : desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
+      state: mine || broken(m) ? "fail" : desk ? (asks[m.key] ? "block" : st) : st === "done" ? "done" : "idle",
       // the lounge isn't all coffee: each cat has its own way of resting (it changes now and then)
       pose: mine ? "lift" : desk ? undefined : (md?.pose ?? fun?.pose ?? restPose(m.key, restTurn)),
       // a lounging cat ambles; one at its desk fidgets now and then (not while asking)
       // (the walk over from its desk goes at the usual pace; the ambling starts once it's there)
       speed: desk || mine || md?.fast || !settled(m.key) ? undefined : fun ? (fun.speed ?? 90) * (narrow ? 0.7 : 1) : narrow ? 38 : 52,
-      fidget: desk && !asks[m.key]?.length,
+      fidget: desk && !asks[m.key]?.length && !broken(m),
       // (one just put down by hand walks back to its seat)
       snap: desk && !!seat && !md?.fast && onSeat.current.has(m.key),
       drag: !!mine,
       flag: mine || asks[m.key]?.length ? undefined : flags[m.key]?.text,
       // a rebel wriggles in the hand
       struggle: !!mine && !mine.compliant,
-      say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : (md?.say ?? chatter[m.key] ?? (!m.reported && m.agent.status !== "block" && fun?.say ? fun.say : m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
+      say: asks[m.key]?.length ? "" : mine ? (mine.compliant ? "" : "하악!") : broken(m) ? "멈췄어요" : (md?.say ?? chatter[m.key] ?? (!m.reported && m.agent.status !== "block" && fun?.say ? fun.say : m.agent.status === "block" ? "질문이 있어요" : m.reported ? `보고함${m.task ? ` · ${m.task.id}` : ""}` : "")),
     });
   }
 

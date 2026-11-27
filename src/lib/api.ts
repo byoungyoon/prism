@@ -583,6 +583,8 @@ export const api = {
   killAgent: (projectId: string, agentId: string) => call<void>("agent_kill", { projectId, agentId }),
   pauseAgent: (projectId: string, agentId: string) => call<void>("agent_pause", { projectId, agentId }),
   resumeAgent: (projectId: string, agentId: string) => call<void>("agent_resume", { projectId, agentId }),
+  /** a broken member starts again on the same card */
+  restartAgent: (projectId: string, agentId: string) => call<void>("agent_restart", { projectId, agentId }),
 
   transcript: (projectId: string, agentId: string) => call<TranscriptEntry[]>("agent_transcript", { projectId, agentId }),
   onEntry: (fn: (e: { projectId: string; agentId: string; entry: TranscriptEntry }) => void): Promise<UnlistenFn> =>

@@ -8,6 +8,8 @@ import { Transcript } from "../components/Transcript";
 import { ChevronLeft } from "../components/icons";
 import { MemberUsage } from "../components/TokenUse";
 import { catName } from "../components/critters/pixel/coats";
+import { RestartButton } from "../components/RestartButton";
+import { isBroken } from "../lib/crew";
 
 const Svg = ({ children }: { children: ReactNode }) => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -86,6 +88,7 @@ export function AgentScreen({ id }: { id: string }) {
   const escs = team.chat.filter((m) => m.escalation && !m.escalation.answer && m.escalation.agentId === id);
   const live = (agent.structured || agent.ptyId != null) && agent.status !== "off" && agent.status !== "done";
   const app = useApp.getState();
+  const broken = isBroken(agent, team.tasks);
 
   const send = () => {
     const v = text.trim();
@@ -113,7 +116,7 @@ export function AgentScreen({ id }: { id: string }) {
         </span>
         <span className="font-mono text-[12px] text-ink-2">{usd(agent.costUsd)}</span>
         <div className="flex-auto" />
-        {agent.status === "off" ? (
+        {broken ? null : agent.status === "off" ? (
           <button onClick={() => void app.resumeAgent(id)} title="하던 대화를 이어서 다시 시작해요" className={`glass ${pill}`}>
             <Svg><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></Svg>이어서 다시 시작
           </button>
@@ -150,6 +153,13 @@ export function AgentScreen({ id }: { id: string }) {
           </button>
         )}
       </header>
+
+      {broken && (
+        <div role="alert" className="mx-3 flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 text-[12.5px]" style={{ background: "var(--block-bg)" }}>
+          <span className="min-w-0 flex-auto">⚠ 고장: {agent.stuck}</span>
+          <RestartButton projectId={team.projectId} agentId={agent.id} name={catName(agent)} />
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-auto flex-wrap gap-3 overflow-auto p-3">
         <section

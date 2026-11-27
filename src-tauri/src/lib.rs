@@ -4,6 +4,7 @@ mod batch;
 mod clis;
 mod dashboard;
 mod engines;
+mod faults;
 mod install;
 mod launch;
 mod projects;
@@ -279,6 +280,7 @@ pub fn run() {
             team::usage_get,
             team::agent_pause,
             team::agent_resume,
+            team::agent_restart,
             team::agent_transcript,
             team::usage_refresh,
             launch::models_list,
