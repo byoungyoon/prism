@@ -13,7 +13,7 @@ import { modelLabel } from "../data/models";
 import { LiveWork } from "./LiveWork";
 import { ChatFilter, FoldCard, firstLine, type ChatView } from "./ReportFold";
 import { PermissionAsks } from "./PermissionAsks";
-import { MergeGroup, ReportMerge } from "./MergeActions";
+import { MergeGroup, ReportMerge, redoOf } from "./MergeActions";
 import { Markdown } from "./Markdown";
 import { catName } from "./critters/pixel/coats";
 
@@ -469,8 +469,8 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
   const live = !!lead && lead.status !== "off";
   const queued = team?.tasks.filter((t) => t.stage === "queued").length ?? 0;
   const chat = team?.chat ?? [];
-  // 합치기를 기다리는 카드 (보고가 채팅에 있는 것만) — 2장 이상이면 한 카드로 묶어 보여준다
-  const pending = (team?.tasks ?? []).filter((t) => t.stage === "review" && chat.some((m) => m.kind === "report" && m.taskIds[0] === t.id));
+  // 적용을 기다리는 카드 (보고가 채팅에 있는 것만) — 2장 이상이면 한 카드로 묶어 보여준다
+  const pending = (team?.tasks ?? []).filter((t) => t.stage === "review" && !redoOf(team?.tasks ?? [], t.id) && chat.some((m) => m.kind === "report" && m.taskIds[0] === t.id));
   const lastPendingMsgId = [...chat].reverse().find((m) => m.kind === "report" && pending.some((t) => t.id === m.taskIds[0]))?.id;
   const pendingPerms = chat.filter((m) => m.permission && !m.permission.answer && !m.permission.decider).length;
   const waiting = pendingPerms + chat.filter((m) => m.escalation && !m.escalation.answer).length;
@@ -693,7 +693,7 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
               if (view === "chat" && m.kind === "report") return null;
               if (view === "report" && m.kind !== "report") return null;
               if (m.kind === "report" && pending.length >= 2 && project && m.taskIds[0] && pending.some((t) => t.id === m.taskIds[0])) {
-                // 같은 팀의 합치기 대기 카드는 마지막 보고 자리에 한 카드로 묶는다
+                // 같은 팀의 적용 대기 카드는 마지막 보고 자리에 한 카드로 묶는다
                 if (m.id !== lastPendingMsgId) return null;
                 return (
                   <motion.div key={m.id} {...bubbleIn} className="flex max-w-[92%] flex-col gap-2">
@@ -713,9 +713,10 @@ export function LeadChat({ projectId: forProject, multi = false }: { projectId?:
                     <FoldCard
                       id={m.taskIds[0]}
                       failed={team.tasks.find((t) => t.id === m.taskIds[0])?.stage === "failed"}
-                      line={firstLine(m.text)}
+                      // waiting to be applied: the words sit with the buttons below
+                      line={team.tasks.find((t) => t.id === m.taskIds[0])?.stage === "review" ? "" : firstLine(m.text)}
                       text={m.text}
-                      footer={project && <ReportMerge project={project} team={team} taskId={m.taskIds[0]} />}
+                      footer={project && <ReportMerge project={project} team={team} taskId={m.taskIds[0]} text={m.text} />}
                     />
                   ) : (
                     <div className="glass-soft rounded-[14px_14px_14px_4px] px-[13px] py-[9px] leading-normal select-text"><Markdown text={m.text} /></div>

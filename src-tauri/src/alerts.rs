@@ -12,7 +12,7 @@ use crate::projects::{Projects, Settings};
 /// 알림에 실어 두는 팀 id. 이 값이 없는 알림(다른 소식)은 눌러도 화면을 옮기지 않는다.
 const TEAM_KEY: &str = "projectId";
 
-/// 알림 종류: 허락 요청 | 일 소식(끝남·합치기·실패·막힘). 설정에서 따로 끈다.
+/// 알림 종류: 허락 요청 | 일 소식(끝남·적용·실패·막힘). 설정에서 따로 끈다.
 #[derive(Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {

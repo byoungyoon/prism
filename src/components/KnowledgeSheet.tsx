@@ -10,7 +10,7 @@ const spring = { type: "spring" as const, stiffness: 320, damping: 30 };
 
 const EXAMPLE = `예)
 - 개발 서버: dev.example.com (접속: ssh 이름@dev.example.com)
-- 배포: main에 합치면 자동으로 올라가요
+- 배포: main에 적용하면 자동으로 올라가요
 - 디자인 규칙: 버튼은 둥글게, 주황색 하나만 강조색으로
 - 비밀번호·키는 프로젝트의 .env 파일에 있어요 (여기엔 적지 마세요)`;
 
